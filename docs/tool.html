@@ -613,14 +613,40 @@ function toggleHourlyMode(rid) {
 function init() {
   return (async () => {
     document.getElementById('libCnt').textContent = '⏳ 连接Supabase中...';
-    const hasSb = await loadFromSupabase();
+    // 加载 Supabase 数据（3秒超时后使用本地备份）
+    const hasSb = await Promise.race([
+      loadFromSupabase(),
+      new Promise(r => setTimeout(() => r(false), 3000))
+    ]);
     if (!hasSb) {
-      document.getElementById('libCnt').textContent = '⚠️ Supabase不可用，使用内置数据';
-      DB = JSON.parse(JSON.stringify(DB_EMBEDDED));
-      ALL = [];
-      Object.keys(DB).forEach(sh => { (DB[sh]||[]).forEach(it => ALL.push({...it, sheet: sh})); });
-      SHEETS = Object.keys(DB);
-      rebuildBenchMap();
+      document.getElementById('libCnt').textContent = '⚠️ 数据库不可用，加载本地备份...';
+      try {
+        const r = await fetch('benchmark_data.json');
+        if (r.ok) {
+          const items = await r.json();
+          DB = {};
+          items.forEach(it => {
+            if (!DB[it.trade_team]) DB[it.trade_team] = [];
+            DB[it.trade_team].push({
+              id: it.internal_code, trade: it.work_type||'', name: it.item_name,
+              spec: it.spec||'', unit: it.unit, price: parseFloat(it.unit_price),
+              remark: it.remark||'', auxType: '', auxFixedK: 0, auxRateDetail: null
+            });
+          });
+          ALL = [];
+          Object.keys(DB).forEach(sh => { (DB[sh]||[]).forEach(it => ALL.push({...it, sheet: sh})); });
+          SHEETS = Object.keys(DB);
+          rebuildBenchMap();
+          document.getElementById('libCnt').textContent = '✅ '+items.length+' 条基准价';
+        } else throw new Error('HTTP '+r.status);
+      } catch(e) {
+        document.getElementById('libCnt').textContent = '⚠️ 使用内置数据';
+        DB = JSON.parse(JSON.stringify(DB_EMBEDDED));
+        ALL = [];
+        Object.keys(DB).forEach(sh => { (DB[sh]||[]).forEach(it => ALL.push({...it, sheet: sh})); });
+        SHEETS = Object.keys(DB);
+        rebuildBenchMap();
+      }
     }
     // 构建侧栏
     const tabs = document.getElementById('ftabs');
@@ -2458,7 +2484,12 @@ function doLogoutTool() {
   localStorage.removeItem('sb-access-token');
   localStorage.removeItem('sb-refresh-token');
   localStorage.removeItem('sb-user');
-  window.location.href = 'index.html';
+  // 本地开发环境跳转回 tool.html（无需登录），线上跳转登录页
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    window.location.href = 'tool.html';
+  } else {
+    window.location.href = 'index.html';
+  }
 }
 
 
@@ -2476,7 +2507,12 @@ function openUnmatchedModal() {
 // ═══════════ BOOT ═══════════
 (async function() {
   let token = localStorage.getItem('sb-access-token');
-  if (!token) { window.location.href = 'index.html'; return; }
+  if (!token) {
+    // 无 token 时，localhost 允许离线使用，其他域名跳转登录
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      window.location.href = 'index.html'; return;
+    }
+  }
   // 尝试刷新 token（如已过期）
   const rt = localStorage.getItem('sb-refresh-token');
   if (rt) {
