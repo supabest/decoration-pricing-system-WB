@@ -230,7 +230,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
             </tr>
           </thead>
           <tbody id="bmBrowseBody">
-            <tr><td colspan="13" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>
+            <tr><td colspan="12" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -794,12 +794,13 @@ function renderBmIntegrity(list) {
   document.getElementById('bmIntegrityBar').innerHTML = pcs.join(' &nbsp;|&nbsp; ');
 }
 
+let _bmLoading = false;  // 防止并发加载
+
 /** 初始化 Tab */
 async function initBenchmarkTab() {
   if (bmData.length === 0) {
-    // 并行加载基准价 + 辅材信息价
     await Promise.all([refreshBmData(), loadBmMatPrices()]);
-    renderBmBrowse();
+    // refreshBmData 内部已调用 renderBmBrowse()，此处不重复调用
   } else {
     renderBmBrowse();
   }
@@ -841,8 +842,10 @@ async function loadBmMatPrices() {
 
 /** 从 Supabase 加载全部基准价（无 token 时从本地 JSON 加载） */
 async function refreshBmData() {
+  if (_bmLoading) return;
+  _bmLoading = true;
   const tbody = document.getElementById('bmBrowseBody');
-  tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>';
   const h = authHeaders();
   const token = localStorage.getItem('sb-access-token');
   let data = [];
@@ -854,13 +857,14 @@ async function refreshBmData() {
       if (!r.ok) throw new Error(await r.text());
       data = await r.json();
     } catch(e) {
-      tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#cf1322;padding:40px">❌ 加载失败：'+esc(e.message.substring(0,60))+'</td></tr>';
+      _bmLoading = false;
+      tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#cf1322;padding:40px">❌ 加载失败：'+esc(e.message.substring(0,60))+'</td></tr>';
       return;
     }
   } else {
     // 无 token（localhost）→ 从本地 JSON 加载
     try {
-      const r = await fetch('benchmark_data.json');
+      const r = await fetch('benchmark_data.json?_=' + Date.now());
       if (!r.ok) throw new Error('HTTP '+r.status);
       const items = await r.json();
       data = items.map(it => ({
@@ -879,7 +883,8 @@ async function refreshBmData() {
         material_price: null,
       }));
     } catch(e) {
-      tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#cf1322;padding:40px">❌ 无法加载数据：'+esc(e.message)+'</td></tr>';
+      _bmLoading = false;
+      tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#cf1322;padding:40px">❌ 无法加载数据：'+esc(e.message)+'</td></tr>';
       return;
     }
   }
@@ -892,12 +897,14 @@ async function refreshBmData() {
   const curVal = sel.value;
   sel.innerHTML = '<option value="">全部班组</option>' + bmTeamList.map(t => '<option value="'+esc(t)+'">'+esc(t)+'</option>').join('');
   if (curVal) sel.value = curVal;
+  _bmLoading = false;
   renderBmBrowse();
 }
 
 /** 渲染基准价浏览表 */
 function renderBmBrowse() {
-  const keyword = (document.getElementById('bmSearchInput').value||'').trim().toLowerCase();
+  try {
+    const keyword = (document.getElementById('bmSearchInput').value||'').trim().toLowerCase();
   const teamFilter = document.getElementById('bmTeamFilter').value;
   let list = bmData;
   if (keyword) {
@@ -915,7 +922,7 @@ function renderBmBrowse() {
 
   const tbody = document.getElementById('bmBrowseBody');
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#888;padding:40px">暂无数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#888;padding:40px">暂无数据</td></tr>';
     return;
   }
 
@@ -957,6 +964,9 @@ function renderBmBrowse() {
     '<td class="num" style="color:#888;font-size:11px">'+matPriceHtml+'</td>' +
     '</tr>';
   }).join('');
+  } catch(e) {
+    document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="12" style="text-align:center;color:#cf1322;padding:40px">⚠️ 渲染错误：'+esc(e.message)+'</td></tr>';
+  }
 }
 
 // ═══════════ Excel 文件处理 ═══════════
