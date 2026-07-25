@@ -283,8 +283,9 @@ function switchTab(tab) {
 async function loadUsers() {
   const token = localStorage.getItem('sb-access-token');
   const user = JSON.parse(localStorage.getItem('sb-user')||'{}');
-  if (!token) { showMsg('请先登录', true); return; }
-  document.getElementById('userLabel').textContent = user.display_name || user.email || user.id || '';
+  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  if (!token && !isLocal) { showMsg('请先登录', true); return; }
+  document.getElementById('userLabel').textContent = user.display_name || user.email || user.id || '本地预览';
   const h = authHeaders();
   const g = async (url) => { const r=await fetch(url,{headers:h}); if(!r.ok)throw new Error(await r.text()); return r.json(); };
   try {
@@ -804,40 +805,94 @@ async function initBenchmarkTab() {
   }
 }
 
-/** 加载辅材信息价 */
+/** 加载辅材信息价（无 token 时用内嵌数据） */
 async function loadBmMatPrices() {
-  try {
-    const items = await fetch(SUPABASE_URL+'/rest/v1/material_prices?select=*&order=effective_month.desc',{headers:authHeaders()}).then(r=>r.json());
-    if (!items || !items.length) return;
-    const latest = {};
-    items.forEach(it => {
-      if (!latest[it.name] || it.effective_month > latest[it.name].effective_month) {
-        latest[it.name] = {price:parseFloat(it.price)||0, unit:it.unit||''};
-      }
-    });
-    bmMatPriceLib = latest;
-  } catch(e) { console.warn('辅材信息价加载失败', e); }
+  const token = localStorage.getItem('sb-access-token');
+  if (token) {
+    try {
+      const items = await fetch(SUPABASE_URL+'/rest/v1/material_prices?select=*&order=effective_month.desc',{headers:authHeaders()}).then(r=>r.json());
+      if (!items || !items.length) return;
+      const latest = {};
+      items.forEach(it => {
+        if (!latest[it.name] || it.effective_month > latest[it.name].effective_month) {
+          latest[it.name] = {price:parseFloat(it.price)||0, unit:it.unit||''};
+        }
+      });
+      bmMatPriceLib = latest;
+    } catch(e) { console.warn('辅材信息价加载失败', e); }
+  } else {
+    // localhost: 内嵌辅材信息价（从 benchmark_data.json 之外的 material_prices 数据）
+    bmMatPriceLib = {
+      '100mm隔音棉':{price:15,unit:'m2'},'12mm阻燃板基层':{price:35,unit:'m2'},
+      '9mm石膏板':{price:16,unit:'m2'},'9mm防潮石膏板':{price:16,unit:'m2'},
+      '9mm阻燃夹板':{price:26.25,unit:'m'},'C15细石混凝土':{price:350,unit:'m3'},
+      '专用瓷砖背胶':{price:3.61,unit:'m2'},'专用美缝剂':{price:18,unit:'m'},
+      '单组份聚氨酯防水涂料(I型)':{price:13,unit:'kg'},
+      '吊顶钢架':{price:3500,unit:'t'},'水泥砂浆':{price:350,unit:'m3'},
+      '水泥自流平漆':{price:10,unit:'m2'},'灰砂砖':{price:320,unit:'千块'},
+      '瓷砖粘合剂':{price:12.5,unit:'m2'},'石材粘合剂':{price:16.5,unit:'m2'},
+      '聚合物水泥防水涂料(II型)':{price:10,unit:'kg'},
+      '聚氨酯橡胶隔声垫':{price:45,unit:'m2'},'钢筋混凝土':{price:1000,unit:'m3'},
+      '镀锌钢材':{price:3500,unit:'t'},'陶粒混凝土':{price:400,unit:'m3'},
+      '隔音涂料':{price:15,unit:'m2'},
+    };
+  }
 }
 
-/** 从 Supabase 加载全部基准价 */
+/** 从 Supabase 加载全部基准价（无 token 时从本地 JSON 加载） */
 async function refreshBmData() {
-  document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="13" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>';
+  const tbody = document.getElementById('bmBrowseBody');
+  tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>';
   const h = authHeaders();
-  try {
-    const r = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items?select=*&order=trade_team.asc',{headers:h});
-    if (!r.ok) throw new Error(await r.text());
-    bmData = await r.json();
-    const teams = new Set();
-    bmData.forEach(d => { if (d.trade_team) teams.add(d.trade_team); });
-    bmTeamList = [...teams].sort((a,b) => a.localeCompare(b,'zh'));
-    const sel = document.getElementById('bmTeamFilter');
-    const curVal = sel.value;
-    sel.innerHTML = '<option value="">全部班组</option>' + bmTeamList.map(t => '<option value="'+esc(t)+'">'+esc(t)+'</option>').join('');
-    if (curVal) sel.value = curVal;
-    renderBmBrowse();
-  } catch(e) {
-    document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="13" style="text-align:center;color:#cf1322;padding:40px">❌ 加载失败：'+esc(e.message.substring(0,60))+'</td></tr>';
+  const token = localStorage.getItem('sb-access-token');
+  let data = [];
+
+  if (token) {
+    // 有 token → 从 Supabase 加载
+    try {
+      const r = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items?select=*&order=trade_team.asc',{headers:h});
+      if (!r.ok) throw new Error(await r.text());
+      data = await r.json();
+    } catch(e) {
+      tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#cf1322;padding:40px">❌ 加载失败：'+esc(e.message.substring(0,60))+'</td></tr>';
+      return;
+    }
+  } else {
+    // 无 token（localhost）→ 从本地 JSON 加载
+    try {
+      const r = await fetch('benchmark_data.json');
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const items = await r.json();
+      data = items.map(it => ({
+        trade_team: it.trade_team,
+        internal_code: it.internal_code,
+        work_type: it.work_type || '',
+        item_name: it.item_name,
+        spec: it.spec || '',
+        unit: it.unit,
+        unit_price: it.unit_price,
+        remark: it.remark || '',
+        aux_rule_type: it.aux_rule_type || '',
+        aux_fixed_k: parseFloat(it.aux_fixed_k) || 0,
+        aux_rate_detail: (typeof it.aux_rate_detail === 'string' && it.aux_rate_detail ? JSON.parse(it.aux_rate_detail) : it.aux_rate_detail) || null,
+        auxiliary_price: null,
+        material_price: null,
+      }));
+    } catch(e) {
+      tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#cf1322;padding:40px">❌ 无法加载数据：'+esc(e.message)+'</td></tr>';
+      return;
+    }
   }
+
+  bmData = data;
+  const teams = new Set();
+  bmData.forEach(d => { if (d.trade_team) teams.add(d.trade_team); });
+  bmTeamList = [...teams].sort((a,b) => a.localeCompare(b,'zh'));
+  const sel = document.getElementById('bmTeamFilter');
+  const curVal = sel.value;
+  sel.innerHTML = '<option value="">全部班组</option>' + bmTeamList.map(t => '<option value="'+esc(t)+'">'+esc(t)+'</option>').join('');
+  if (curVal) sel.value = curVal;
+  renderBmBrowse();
 }
 
 /** 渲染基准价浏览表 */
@@ -913,17 +968,18 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function load() {
   const token = localStorage.getItem('sb-access-token');
-  if (!token) {
+  // localhost 免登录，其他环境需要登录
+  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  if (!token && !isLocal) {
     showMsg('请先登录（打开 tool.html 登录后回到此页面）', true);
     return;
   }
   document.getElementById('loadMsg').classList.add('hidden');
   document.getElementById('content').classList.remove('hidden');
 
-  // URL hash 指定初始 Tab（admin.html#prices → 信息价录入, admin.html#benchmark → 基准价管理）
   const targetTab = location.hash.replace(/^#/, '') || '';
   if (['users','prices','knowledge','benchmark'].includes(targetTab)) {
-    await loadUsers(); // 先加载用户数据（后台加载）
+    await loadUsers();
     switchTab(targetTab);
   } else {
     await loadUsers();
