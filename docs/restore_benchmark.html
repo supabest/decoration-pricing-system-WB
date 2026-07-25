@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>恢复基准价数据</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:640px;margin:40px auto;padding:0 20px;line-height:1.6;color:#333}
+h2{margin-top:0}
+.box{background:#f6f8fa;padding:14px 18px;border-radius:8px;margin:12px 0;font-size:14px}
+button{padding:11px 28px;font-size:15px;cursor:pointer;border:none;border-radius:6px;background:#1677ff;color:#fff;font-weight:600}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.danger{background:#ff4d4f}
+.progress{height:10px;background:#f0f0f0;border-radius:5px;margin:16px 0;overflow:hidden}
+.progress-fill{height:100%;background:#52c41a;width:0%;transition:width .3s}
+.log{background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:6px;font-size:12px;font-family:Menlo,Monaco,monospace;max-height:340px;overflow:auto;white-space:pre-wrap;word-break:break-all}
+.log .ok{color:#52c41a}.log .err{color:#ff7875}.log .info{color:#69b1ff}.log .warn{color:#faad14}
+.step{display:inline-block;width:22px;height:22px;line-height:22px;text-align:center;background:#1677ff;color:#fff;border-radius:50%;font-size:12px;margin-right:6px}
+</style>
+</head>
+<body>
+<h2>🔄 恢复 497 条基准价到数据库</h2>
+
+<div class="box">
+<span class="step">1</span>先在另一个标签页打开 <a href="tool.html" target="_blank"><b>tool.html</b></a> 并<b>登录管理员账号</b>（如已登录可跳过）<br>
+<span class="step">2</span>回到本页，点击下方"开始恢复"<br>
+<span class="step">3</span>等待绿色进度条走完，看到"全部完成"即成功
+</div>
+
+<p>当前登录状态：<b id="authStatus" style="color:#ff4d4f">检查中…</b></p>
+
+<button id="btnRestore" onclick="doRestore()" disabled>▶ 开始恢复</button>
+<button class="danger" id="btnClear" onclick="doClear()" style="margin-left:8px" disabled>🗑 先清空再恢复</button>
+
+<div class="progress"><div class="progress-fill" id="progFill"></div></div>
+<p id="progText" style="font-size:13px;color:#666;margin-top:0"></p>
+
+<div class="log" id="log">等待操作…</div>
+
+<script>
+const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
+
+function authHeaders() {
+  const h = {'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY};
+  const t = localStorage.getItem('sb-access-token');
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+function log(msg, type='info') {
+  const el = document.getElementById('log');
+  el.innerHTML += '<div class="'+type+'">'+msg+'</div>';
+  el.scrollTop = el.scrollHeight;
+}
+function setProg(pct, text) {
+  document.getElementById('progFill').style.width = pct + '%';
+  if (text) document.getElementById('progText').textContent = text;
+}
+
+// 启动时检查登录状态
+async function checkAuth() {
+  const token = localStorage.getItem('sb-access-token');
+  const statusEl = document.getElementById('authStatus');
+  if (!token) {
+    statusEl.textContent = '❌ 未登录（请先打开 tool.html 登录管理员账号）';
+    statusEl.style.color = '#ff4d4f';
+    return false;
+  }
+  // 测试 token 是否有效：读取 profiles 自己的记录
+  try {
+    const r = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items?select=id&limit=1', {headers: authHeaders()});
+    if (r.status === 401) {
+      statusEl.textContent = '❌ 登录已过期（请重新打开 tool.html 登录）';
+      statusEl.style.color = '#ff4d4f';
+      return false;
+    }
+    statusEl.textContent = '✅ 已登录，可以恢复';
+    statusEl.style.color = '#52c41a';
+    return true;
+  } catch(e) {
+    statusEl.textContent = '⚠️ 网络异常';
+    return false;
+  }
+}
+checkAuth().then(ok => {
+  if (ok) {
+    document.getElementById('btnRestore').disabled = false;
+    document.getElementById('btnClear').disabled = false;
+  }
+});
+
+async function doClear() {
+  if (!confirm('确定清空 benchmark_items 表全部数据？此操作不可撤销。')) return;
+  document.getElementById('btnClear').disabled = true;
+  document.getElementById('btnRestore').disabled = true;
+  log('清空旧数据…', 'info');
+  try {
+    const r = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items', {
+      method:'DELETE', headers:{...authHeaders(), 'Prefer':'return=minimal'}
+    });
+    if (r.ok) log('✅ 已清空', 'ok');
+    else { const t = await r.text(); log('❌ 清空失败: '+t.substring(0,120), 'err'); }
+  } catch(e) { log('❌ '+e.message, 'err'); }
+  document.getElementById('btnClear').disabled = false;
+  document.getElementById('btnRestore').disabled = false;
+}
+
+async function doRestore() {
+  const btn = document.getElementById('btnRestore');
+  btn.disabled = true; document.getElementById('btnClear').disabled = true;
+  log('加载数据文件…', 'info');
+  let data;
+  try {
+    const resp = await fetch('benchmark_data.json');
+    if (!resp.ok) throw new Error('HTTP '+resp.status);
+    data = await resp.json();
+    log('✅ 已加载 '+data.length+' 条', 'ok');
+  } catch(e) { log('❌ 加载失败: '+e.message, 'err'); btn.disabled=false; return; }
+
+  const BATCH = 50;
+  const total = data.length;
+  let success = 0, fail = 0;
+  let rlsBlocked = false;
+
+  for (let i = 0; i < total; i += BATCH) {
+    const batch = data.slice(i, i + BATCH);
+    try {
+      const r = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items', {
+        method:'POST',
+        headers:{...authHeaders(), 'Prefer':'return=minimal'},
+        body: JSON.stringify(batch)
+      });
+      if (r.ok) {
+        success += batch.length;
+      } else {
+        const t = await r.text();
+        if (t.includes('row-level security') || t.includes('42501')) {
+          rlsBlocked = true;
+          log('❌ RLS 策略阻止写入：'+t.substring(0,100), 'err');
+          break;
+        }
+        log('⚠️ 批量失败(HTTP '+r.status+')，逐条重试…', 'warn');
+        for (const item of batch) {
+          try {
+            const r2 = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items', {
+              method:'POST', headers:authHeaders(), body: JSON.stringify(item)
+            });
+            if (r2.ok) success++;
+            else { const t2 = await r2.text(); log('  ❌ '+item.internal_code+': '+t2.substring(0,60), 'err'); fail++; }
+          } catch(e2) { fail++; }
+        }
+      }
+    } catch(e) {
+      log('❌ 网络错误: '+e.message, 'err');
+      fail += batch.length;
+    }
+    setProg(Math.round((i + BATCH) / total * 100), success+' 成功 / '+fail+' 失败 / '+total+' 总计');
+  }
+
+  log('—'.repeat(40), 'info');
+  if (rlsBlocked) {
+    log('❌ 数据库 RLS 策略不允许通过浏览器写入。', 'err');
+    log('请改用 SQL 方式：打开 Supabase Dashboard → SQL Editor → 粘贴 restore_benchmark_items.sql → Run', 'warn');
+    log('（我会把 SQL 文件内容显示给你复制）', 'warn');
+  } else if (fail === 0) {
+    log('🎉 全部完成！'+success+' 条基准价已写入数据库', 'ok');
+    log('现在可以打开 tool.html 查看基准价库了', 'ok');
+    setProg(100, '完成：'+success+' 条');
+  } else {
+    log('⚠️ 完成：'+success+' 成功，'+fail+' 失败', success > 0 ? 'ok' : 'err');
+  }
+  btn.disabled = false; document.getElementById('btnClear').disabled = false;
+}
+</script>
+</body>
+</html>
