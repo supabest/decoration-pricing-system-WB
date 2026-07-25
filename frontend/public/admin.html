@@ -787,7 +787,6 @@ function renderBmIntegrity(list) {
   const pcs = [];
   if (noRule>0) pcs.push('<span style="color:#cf1322" title="aux_rule_type 为空">🔴 缺规则 '+noRule+'</span>');
   else pcs.push('<span style="color:#52c41a">✅ 规则</span>');
-  if (fixedK0>0) pcs.push('<span style="color:#faad14" title="FIXED 类型但 K=0">🟡 K=0 '+fixedK0+'</span>');
   if (noDetail>0) pcs.push('<span style="color:#cf1322" title="RATE/GROUP 缺配方 JSON">🔴 缺配方 '+noDetail+'</span>');
   if (unmappedMats.size>0) pcs.push('<span style="color:#faad14" title="配方引用材料不在 material_prices 中">🟡 未匹配材料 '+unmappedMats.size+'</span>');
   else pcs.push('<span style="color:#52c41a">✅ 材料</span>');
@@ -890,6 +889,8 @@ async function refreshBmData() {
   }
 
   bmData = data;
+  _bmLoading = false;
+
   const teams = new Set();
   bmData.forEach(d => { if (d.trade_team) teams.add(d.trade_team); });
   bmTeamList = [...teams].sort((a,b) => a.localeCompare(b,'zh'));
@@ -897,8 +898,8 @@ async function refreshBmData() {
   const curVal = sel.value;
   sel.innerHTML = '<option value="">全部班组</option>' + bmTeamList.map(t => '<option value="'+esc(t)+'">'+esc(t)+'</option>').join('');
   if (curVal) sel.value = curVal;
-  _bmLoading = false;
-  renderBmBrowse();
+  // 延迟渲染，避免 innerHTML 改动触发 onchange 竞态
+  setTimeout(() => renderBmBrowse(), 0);
 }
 
 /** 渲染基准价浏览表 */
