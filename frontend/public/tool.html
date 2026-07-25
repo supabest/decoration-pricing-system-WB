@@ -2181,7 +2181,7 @@ async function testApi() {
   try {
     const r=await fetch('https://api.deepseek.com/chat/completions',{
       method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+k},
-      body:JSON.stringify({model:'deepseek-chat',max_tokens:10,temperature:0,messages:[{role:'user',content:'reply ok'}]})
+      body:JSON.stringify({model:'deepseek-v4-flash',max_tokens:10,temperature:0,messages:[{role:'user',content:'reply ok'}]})
     });
     if(r.ok) toast('✅ 连接成功');
     else { const t=await r.text(); toast('❌ 失败 '+r.status+': '+t.substring(0,60)); }
@@ -2229,7 +2229,7 @@ async function callDs(key,sys,user) {
   const r=await fetch('https://api.deepseek.com/chat/completions',{
     method:'POST',
     headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-    body:JSON.stringify({model:'deepseek-chat',max_tokens:600,temperature:0,
+    body:JSON.stringify({model:'deepseek-v4-flash',max_tokens:600,temperature:0,
       messages:[{role:'system',content:sys},{role:'user',content:user}]})
   });
   if(!r.ok){const t=await r.text();throw new Error(r.status+': '+t.substring(0,100));}
