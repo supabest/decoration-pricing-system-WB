@@ -121,7 +121,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
 <div class="hdr">
   <span class="hdr-title">⚙ 管理面板 · 装修成本分析系统</span>
   <div style="display:flex;gap:10px;align-items:center">
-    <span id="userLabel" style="font-size:12px;color:#888"></span>
+    <span id="userLabel" style="font-size:12px;color:#888;cursor:pointer" onclick="setOwnDisplayName()" title="点击修改自己的昵称"></span>
     <a href="javascript:void(0)" onclick="if(window!==window.top){window.parent.location.hash='#/pricing'}else{location.href='tool.html'}" class="btn btn-sm" style="color:#0b7b50;border-color:#0b7b50;text-decoration:none">← 返回套价工具</a>
   </div>
 </div>
@@ -329,7 +329,7 @@ async function loadUsers() {
   const token = localStorage.getItem('sb-access-token');
   const user = JSON.parse(localStorage.getItem('sb-user')||'{}');
   if (!token) { showMsg('请先登录', true); return; }
-  document.getElementById('userLabel').textContent = user.email || user.id || '';
+  document.getElementById('userLabel').textContent = user.display_name || user.email || user.id || '';
   const h = authHeaders();
   const g = async (url) => { const r=await fetch(url,{headers:h}); if(!r.ok)throw new Error(await r.text()); return r.json(); };
   try {
@@ -409,6 +409,20 @@ async function setDisplayName(id) {
     if (!r.ok) { const t = await r.text(); throw new Error(t.substring(0,80)); }
     loadUsers();
   } catch(e) { alert('修改失败：'+e.message); }
+}
+
+/** 管理员修改自己的显示名称 */
+function setOwnDisplayName() {
+  const user = JSON.parse(localStorage.getItem('sb-user')||'{}');
+  if (!user.id) { alert('无法获取用户信息'); return; }
+  const curName = prompt('设置您的显示名称（昵称）：', user.display_name || '');
+  if (curName === null) return;
+  const name = curName.trim();
+  if (!name) { alert('名称不能为空'); return; }
+  const h = {...authHeaders(),'Prefer':'return=minimal'};
+  fetch(SUPABASE_URL+'/rest/v1/profiles?id=eq.'+user.id,{method:'PATCH',headers:h,body:JSON.stringify({display_name: name})})
+    .then(r => { if (!r.ok) throw new Error(); user.display_name = name; document.getElementById('userLabel').textContent = name; loadUsers(); })
+    .catch(() => alert('修改失败'));
 }
 
 
