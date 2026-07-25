@@ -248,6 +248,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
         <button class="btn btn-sm" onclick="refreshBmData()">🔄 刷新</button>
       </div>
       <div class="bm-wrap" id="bmBrowseWrap">
+        <div id="bmIntegrityBar" style="margin-bottom:8px;font-size:12px"></div>
         <table class="bm-table">
           <thead>
             <tr>
@@ -259,12 +260,14 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
               <th style="width:100px">项目特征</th>
               <th style="width:40px">单位</th>
               <th style="width:70px" class="num">人工单价</th>
-              <th style="width:60px" class="num">辅材费</th>
+              <th style="width:64px">规则</th>
+              <th style="width:70px" class="num">辅材单价</th>
+              <th style="min-width:160px">辅材配方</th>
               <th style="width:60px" class="num">主材费</th>
             </tr>
           </thead>
           <tbody id="bmBrowseBody">
-            <tr><td colspan="10" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>
+            <tr><td colspan="13" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>
           </tbody>
         </table>
       </div>
@@ -765,6 +768,7 @@ async function delKnowledge(id) {
 let bmData = [];          // 已有基准价数据（从 Supabase 拉取）
 let bmParsed = [];        // 已解析的导入数据 [{row, status, matchId, ...}]
 let bmTeamList = [];      // 班组列表
+let bmMatPriceLib = {};   // 辅材信息价库 {材料名: {price, unit}}
 
 function bmMsg(text, isErr) {
   const el = document.getElementById('bmMsg');
@@ -797,21 +801,91 @@ const BM_COL_MAP = {
 /** 必填字段 */
 const BM_REQUIRED = ['trade_team','item_name','unit','unit_price'];
 
+/** 辅材计价：根据 aux 配方 + material_prices 信息价计算 */
+function computeBmAux(d) {
+  const auxType = d.aux_rule_type || '';
+  const fixedK = parseFloat(d.aux_fixed_k) || 0;
+  const rd = d.aux_rate_detail; // JSONB, PostgREST 已解析为对象
+  if (!auxType) return {total:0, fixedK:0, rates:[], detail:null, type:'', issue:''};
+  let rates = [], rateSum = 0;
+  if (rd && rd.type === 'RATE') {
+    const mp = bmMatPriceLib[rd.materialName];
+    const p = mp ? mp.price : 0;
+    const cost = p * (rd.consume||0);
+    rates.push({name:rd.materialName, unit:rd.unit||'', price:p, consume:rd.consume||0, cost, missing:!mp});
+    rateSum += cost;
+  } else if (rd && rd.type === 'GROUP') {
+    (rd.items||[]).forEach(it => {
+      const mp = bmMatPriceLib[it.name];
+      const p = mp ? mp.price : 0;
+      const cost = p * (it.consume||0);
+      rates.push({name:it.name, unit:it.unit||'', price:p, consume:it.consume||0, cost, missing:!mp});
+      rateSum += cost;
+    });
+  }
+  const total = fixedK + rateSum;
+  const missingMats = rates.filter(r=>r.missing).map(r=>r.name);
+  let issue = '';
+  if (auxType==='FIXED' && fixedK===0) issue = 'K=0';
+  if ((auxType==='RATE' || auxType==='GROUP') && !rd) issue = '配方缺失';
+  if (missingMats.length) issue = (issue?issue+'; ':'') + '缺材料:'+missingMats.join(',');
+  return {total, fixedK, rates, detail:rd, type:auxType, issue};
+}
+
+/** 完整性检查条 */
+function renderBmIntegrity(list) {
+  let noRule=0, fixedK0=0, noDetail=0, unmappedMats=new Set();
+  list.forEach(d => {
+    const aux = computeBmAux(d);
+    if (!d.aux_rule_type) noRule++;
+    if (d.aux_rule_type==='FIXED' && aux.fixedK===0) fixedK0++;
+    if ((d.aux_rule_type==='RATE'||d.aux_rule_type==='GROUP') && !d.aux_rate_detail) noDetail++;
+    aux.rates.forEach(r => { if(r.missing) unmappedMats.add(r.name); });
+  });
+  const pcs = [];
+  if (noRule>0) pcs.push('<span style="color:#cf1322" title="aux_rule_type 为空">🔴 缺规则 '+noRule+'</span>');
+  else pcs.push('<span style="color:#52c41a">✅ 规则</span>');
+  if (fixedK0>0) pcs.push('<span style="color:#faad14" title="FIXED 类型但 K=0">🟡 K=0 '+fixedK0+'</span>');
+  if (noDetail>0) pcs.push('<span style="color:#cf1322" title="RATE/GROUP 缺配方 JSON">🔴 缺配方 '+noDetail+'</span>');
+  if (unmappedMats.size>0) pcs.push('<span style="color:#faad14" title="配方引用材料不在 material_prices 中">🟡 未匹配材料 '+unmappedMats.size+'</span>');
+  else pcs.push('<span style="color:#52c41a">✅ 材料</span>');
+  document.getElementById('bmIntegrityBar').innerHTML = pcs.join(' &nbsp;|&nbsp; ');
+}
+
 /** 初始化 Tab */
 async function initBenchmarkTab() {
-  if (bmData.length === 0) await refreshBmData();
-  renderBmBrowse();
+  if (bmData.length === 0) {
+    // 并行加载基准价 + 辅材信息价
+    await Promise.all([refreshBmData(), loadBmMatPrices()]);
+    renderBmBrowse();
+  } else {
+    renderBmBrowse();
+  }
+}
+
+/** 加载辅材信息价 */
+async function loadBmMatPrices() {
+  try {
+    const items = await fetch(SUPABASE_URL+'/rest/v1/material_prices?select=*&order=effective_month.desc',{headers:authHeaders()}).then(r=>r.json());
+    if (!items || !items.length) return;
+    const latest = {};
+    items.forEach(it => {
+      if (!latest[it.name] || it.effective_month > latest[it.name].effective_month) {
+        latest[it.name] = {price:parseFloat(it.price)||0, unit:it.unit||''};
+      }
+    });
+    bmMatPriceLib = latest;
+  } catch(e) { console.warn('辅材信息价加载失败', e); }
 }
 
 /** 从 Supabase 加载全部基准价 */
 async function refreshBmData() {
-  document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="10" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>';
+  document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="13" style="text-align:center;color:#888;padding:40px">⏳ 加载中...</td></tr>';
   const h = authHeaders();
   try {
     const r = await fetch(SUPABASE_URL+'/rest/v1/benchmark_items?select=*&order=trade_team.asc',{headers:h});
     if (!r.ok) throw new Error(await r.text());
     bmData = await r.json();
-    // 提取班组列表
     const teams = new Set();
     bmData.forEach(d => { if (d.trade_team) teams.add(d.trade_team); });
     bmTeamList = [...teams].sort((a,b) => a.localeCompare(b,'zh'));
@@ -821,7 +895,7 @@ async function refreshBmData() {
     if (curVal) sel.value = curVal;
     renderBmBrowse();
   } catch(e) {
-    document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="10" style="text-align:center;color:#cf1322;padding:40px">❌ 加载失败：'+esc(e.message.substring(0,60))+'</td></tr>';
+    document.getElementById('bmBrowseBody').innerHTML = '<tr><td colspan="13" style="text-align:center;color:#cf1322;padding:40px">❌ 加载失败：'+esc(e.message.substring(0,60))+'</td></tr>';
   }
 }
 
@@ -841,13 +915,38 @@ function renderBmBrowse() {
   if (teamFilter) list = list.filter(d => d.trade_team === teamFilter);
 
   document.getElementById('bmBrowseCount').textContent = '共 ' + list.length + ' 条';
+  renderBmIntegrity(list);
+
   const tbody = document.getElementById('bmBrowseBody');
   if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#888;padding:40px">暂无数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:#888;padding:40px">暂无数据</td></tr>';
     return;
   }
-  tbody.innerHTML = list.map((d,i) =>
-    '<tr>' +
+
+  const TYPE_STYLE = {FIXED:'background:#e6f7ff;color:#1677ff', RATE:'background:#f6ffed;color:#389e0d', GROUP:'background:#fff7e6;color:#d46b08'};
+  const TYPE_ICON = {FIXED:'🔵', RATE:'🟢', GROUP:'🟠'};
+
+  tbody.innerHTML = list.map((d,i) => {
+    const aux = computeBmAux(d);
+    const tt = aux.type || '';
+    let typeHtml = tt ? '<span style="padding:1px 5px;border-radius:3px;font-size:11px;font-weight:600;'+TYPE_STYLE[tt]+'">'+TYPE_ICON[tt]+' '+tt+'</span>' : '<span style="color:#ccc;font-size:11px">—</span>';
+    if (aux.issue) typeHtml += ' <span style="color:#cf1322;cursor:help;font-size:11px" title="'+esc(aux.issue)+'">⚠️</span>';
+
+    let priceHtml = aux.total > 0 ? '¥'+aux.total.toFixed(2) : '<span style="color:#ccc">—</span>';
+    if (aux.type && aux.total===0 && aux.issue) priceHtml = '<span style="color:#faad14;cursor:help" title="'+esc(aux.issue)+'">¥0.00</span>';
+
+    let detailHtml = '';
+    if (aux.type==='FIXED') detailHtml = '<span style="color:#888;font-size:11px">K='+aux.fixedK.toFixed(2)+'</span>';
+    else if (aux.rates.length) {
+      detailHtml = aux.rates.map(r =>
+        '<span title="'+esc(r.name)+':'+r.price+'×'+r.consume+'='+r.cost.toFixed(2)+(r.missing?' ⚠️缺信息价':'')+'">'+
+        esc(r.name.substring(0,8))+'×'+r.consume+'</span>'
+      ).join(' + ');
+    } else detailHtml = '<span style="color:#ccc;font-size:11px">—</span>';
+
+    let matPriceHtml = d.material_price ? '¥'+parseFloat(d.material_price).toFixed(2) : '<span style="color:#ccc">—</span>';
+
+    return '<tr>' +
     '<td style="color:#aaa;font-size:11px">'+(i+1)+'</td>' +
     '<td style="font-size:11px;color:#888">'+esc(d.internal_code||'')+'</td>' +
     '<td>'+esc(d.trade_team)+'</td>' +
@@ -855,11 +954,13 @@ function renderBmBrowse() {
     '<td><span title="'+esc(d.spec||'')+'">'+esc(d.item_name)+'</span></td>' +
     '<td style="font-size:11px;color:#888;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(d.spec||'')+'">'+esc((d.spec||'').substring(0,30))+'</td>' +
     '<td>'+esc(d.unit)+'</td>' +
-    '<td class="num">'+(d.unit_price?parseFloat(d.unit_price).toFixed(2):'—')+'</td>' +
-    '<td class="num" style="color:#888;font-size:11px">'+(d.auxiliary_price?parseFloat(d.auxiliary_price).toFixed(2):'—')+'</td>' +
-    '<td class="num" style="color:#888;font-size:11px">'+(d.material_price?parseFloat(d.material_price).toFixed(2):'—')+'</td>' +
-    '</tr>'
-  ).join('');
+    '<td class="num" style="font-weight:600">'+(d.unit_price?parseFloat(d.unit_price).toFixed(2):'—')+'</td>' +
+    '<td style="text-align:center">'+typeHtml+'</td>' +
+    '<td class="num" style="font-weight:600">'+priceHtml+'</td>' +
+    '<td style="font-size:11px">'+detailHtml+'</td>' +
+    '<td class="num" style="color:#888;font-size:11px">'+matPriceHtml+'</td>' +
+    '</tr>';
+  }).join('');
 }
 
 // ═══════════ Excel 文件处理 ═══════════
