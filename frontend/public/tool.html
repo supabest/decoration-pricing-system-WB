@@ -261,6 +261,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       </div>
     </div>
     <div class="lib-count" id="libCnt"></div>
+    <div id="diagBar" style="margin:6px 8px;padding:6px 8px;background:#fffbe6;border:1px solid #faad14;border-radius:4px;font-size:11px;color:#856404;display:none"></div>
     <div class="lib-list" id="libList"></div>
   </div>
   <div class="main">
@@ -530,6 +531,11 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 <input type="file" id="knowledgeFileIn" accept=".xlsx,.xls" style="display:none" onchange="handleKnowledgeFile(event)">
 
 <script>
+// 全局错误捕获（显示在页面诊断条，方便排查）
+window.addEventListener('error', function(e) {
+  const el = document.getElementById('diagBar');
+  if (el) { el.style.display = 'block'; el.style.background = '#fff1f0'; el.style.borderColor = '#ffa39e'; el.style.color = '#a8071a'; el.textContent = '❌ JS错误: ' + (e.message || '未知') + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''); }
+});
 // ═══════════ SUPABASE ═══════════
 const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
@@ -612,12 +618,16 @@ function toggleHourlyMode(rid) {
 // ═══════════ INIT ═══════════
 function init() {
   return (async () => {
+    const diag = (msg) => { const el = document.getElementById('diagBar'); if (el) { el.style.display = 'block'; el.textContent = '🔍 诊断: ' + msg; } };
     document.getElementById('libCnt').textContent = '⏳ 连接Supabase中...';
+    const hasToken = !!localStorage.getItem('sb-access-token');
+    diag('token=' + (hasToken ? '有' : '无') + '，正在加载数据...');
     // 加载 Supabase 数据（3秒超时后使用本地备份）
     const hasSb = await Promise.race([
       loadFromSupabase(),
       new Promise(r => setTimeout(() => r(false), 3000))
     ]);
+    diag('token=' + (hasToken ? '有' : '无') + '，Supabase返回=' + (hasSb ? '有数据' : '空') + '，当前ALL=' + ALL.length + '条');
     if (!hasSb) {
       document.getElementById('libCnt').textContent = '⚠️ 数据库不可用，加载本地备份...';
       try {
@@ -659,6 +669,7 @@ function init() {
     });
     buildCoefOpts();
     renderLib();
+    diag('完成！token=' + (hasToken ? '有' : '无') + '，Supabase=' + (hasSb ? '在线' : '离线') + '，已加载ALL=' + ALL.length + '条，班组=' + SHEETS.length + '个');
   })();
 }
 
