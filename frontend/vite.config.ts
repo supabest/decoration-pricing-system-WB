@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
-  base: '/decoration-pricing-system/',
+  base: '/',
   server: {
     port: 8080,
   },
