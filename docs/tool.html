@@ -1941,14 +1941,27 @@ function doConfigExport() {
     return {wch: w};
   });
 
-  // Row heights — 不设固定高度让 Excel 自动撑开，配合 wrapText 自动换行
-  ws['!rows'] = rows.map(rd => {
+  // Row heights — 根据内容长度自动估算行高（配合 wrapText 自动换行）
+  ws['!rows'] = rows.map((rd, i) => {
     const row = {};
     if (groupRows && rd.level > 0) row.level = rd.level;
-    // 标题行和表头行给较大高度
-    if (rd.level === 0 && rows.indexOf(rd) === 0) { row.level = 0; row.hpt = 30; }
-    else if (rd.level === 0 && rows.indexOf(rd) === 1) { row.level = 0; row.hpt = 22; }
-    // 数据行不设固定高度 → Excel 根据内容自动撑开，配合 wrapText 自动换行
+    // 标题行和表头行给较大固定高度
+    if (i === 0) { row.level = 0; row.hpt = 30; return row; }
+    if (i === 1) { row.level = 0; row.hpt = 22; return row; }
+    // 数据行/子目行：根据内容估算行高（字符数 ÷ 列宽 ≈ 行数 × 行高）
+    if (rd._dataRow || (groupRows && rd.level >= 1)) {
+      let maxLines = 1;
+      rd.cells.forEach((cell, j) => {
+        const col = selected[j];
+        const txt = String(cell.val || '');
+        if (!txt || !col) return;
+        const cw = col.wide || 10;
+        const cpl = Math.max(1, Math.floor(cw * 2.2)); // 中文字符宽，每行约可容纳字符数
+        const lines = Math.ceil(txt.length / cpl);
+        if (lines > maxLines) maxLines = lines;
+      });
+      row.hpt = Math.max(15, Math.min(300, maxLines * 15)); // 每行15pt
+    }
     return Object.keys(row).length ? row : undefined;
   });
   if (groupRows) {
