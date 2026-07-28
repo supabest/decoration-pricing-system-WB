@@ -1920,10 +1920,12 @@ function doConfigExport() {
       if (ws[ref]) {
         const isTitle = r === 0;
         const isHeader = r === 1;
+        const colKey = selected[c]?.key;
+        const isCenterCol = colKey === 'seq' || colKey === 'unit';
         ws[ref].s = {
           alignment: {
-            vertical: isTitle || isHeader ? 'center' : 'top',
-            horizontal: selected[c]?.num ? 'right' : 'left',
+            vertical: 'center',
+            horizontal: isTitle || isHeader ? 'center' : (selected[c]?.num ? 'right' : (isCenterCol ? 'center' : 'left')),
             wrapText: true,
             shrinkToFit: false,
           },
@@ -2128,6 +2130,7 @@ function doTemplateExport() {
         if (!ws[ref].s) ws[ref].s = {};
         if (!ws[ref].s.alignment) ws[ref].s.alignment = {};
         ws[ref].s.alignment.wrapText = true;
+        ws[ref].s.alignment.vertical = 'center';
       }
     }
   }
