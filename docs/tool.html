@@ -1430,7 +1430,7 @@ function processFile(file) {
             name, unit,
             spec: cm.spec!==undefined?String(row[cm.spec]||'').replace(/\n/g,' ').trim():'',
             qty: (qty!==''&&qty!==null&&qty!==undefined)?String(qty):'',
-            remark: (cm.remark!==undefined?String(row[cm.remark]||'').trim():'')||sheetName,
+            remark: (cm.remark!==undefined?String(row[cm.remark]||'').trim():''),
           }));
           totalN++;
         }
