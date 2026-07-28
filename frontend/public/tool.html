@@ -1874,7 +1874,7 @@ function doConfigExport() {
               else val = '';
               return {val, num: c.num};
             });
-            rows.push({level: groupRows ? 3 : 0, cells: subCells});
+            rows.push({level: groupRows ? 3 : 0, cells: subCells, _dataRow: true});
           });
         }
       });
