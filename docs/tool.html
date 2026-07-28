@@ -1844,7 +1844,7 @@ function doConfigExport() {
         // Data row — level 3 (or 0 if no folding)
         const dataCells = selected.map(c => ({val: c.get(r), num: c.num}));
         const dataLevel = groupRows ? 3 : 0;
-        rows.push({level: dataLevel, cells: dataCells});
+        rows.push({level: dataLevel, cells: dataCells, _dataRow: true});
 
         // Sub-item rows — level 4 (nested under parent)
         if (showSubs && r.subs && r.subs.length) {
@@ -1881,11 +1881,53 @@ function doConfigExport() {
     });
   });
 
-  // Write all rows
+  // Write all rows — first pass: values
   rows.forEach((rd, i) => {
     rd.cells.forEach((cell, j) => {
       sc(i, j, cell.val, cell.num ? '#,##0.00' : null);
     });
+  });
+
+  // Second pass: replace computed cells with Excel formulas
+  const colIdx = {};
+  selected.forEach((c, i) => { colIdx[c.key] = i; });
+  function cl(k) { return colIdx[k] !== undefined ? XLSX.utils.encode_col(colIdx[k]) : null; }
+  const labC = cl('lab'), matC = cl('mat'), wasteC = cl('waste'), auxC = cl('aux');
+  const mgmtC = cl('mgmt'), profitC = cl('profit'), uspC = cl('usp'), totalC = cl('total'), qtyC = cl('qty');
+  const mgmtRate = globalMgmtRate / 100, profitRate = globalProfitRate / 100;
+  rows.forEach((rd, i) => {
+    if (rd._dataRow) {
+      const R = i + 1; // Excel 1-based row
+      // 管理费 = 人工单价 × 管理费率
+      if (mgmtC && labC) {
+        const ref = XLSX.utils.encode_cell({r:i, c:colIdx['mgmt']});
+        ws[ref].f = labC+R+'*'+mgmtRate; ws[ref].t = 'n';
+      }
+      // 利润 = 人工单价 × 利润率
+      if (profitC && labC) {
+        const ref = XLSX.utils.encode_cell({r:i, c:colIdx['profit']});
+        ws[ref].f = labC+R+'*'+profitRate; ws[ref].t = 'n';
+      }
+      // 综合单价 = 人工 + 主材×(1+损耗率/100) + 辅材 + 管理费 + 利润
+      if (uspC) {
+        const parts = [];
+        if (labC) parts.push(labC+R);
+        if (matC && wasteC) parts.push(matC+R+'*(1+'+wasteC+R+'/100)');
+        else if (matC) parts.push(matC+R);
+        if (auxC) parts.push(auxC+R);
+        if (mgmtC) parts.push(mgmtC+R);
+        if (profitC) parts.push(profitC+R);
+        if (parts.length) {
+          const ref = XLSX.utils.encode_cell({r:i, c:colIdx['usp']});
+          ws[ref].f = '='+parts.join('+'); ws[ref].t = 'n';
+        }
+      }
+      // 合价 = 综合单价 × 工程量
+      if (totalC && uspC && qtyC) {
+        const ref = XLSX.utils.encode_cell({r:i, c:colIdx['total']});
+        ws[ref].f = uspC+R+'*'+qtyC+R; ws[ref].t = 'n';
+      }
+    }
   });
 
   // Column widths — 为文字较长的列（spec/name）加宽，确保导出不截断
