@@ -1825,25 +1825,25 @@ function doConfigExport() {
 
   // Data rows with outline levels
   groups.forEach(g => {
-    // Group header — level 1
+    // Group header — level 0（不参与折叠，纯文本分隔）
     const grpCells = selected.map(() => '');
     grpCells[0] = '【'+g.sheetName+'】';
-    rows.push({level: groupRows ? 1 : 0, cells: grpCells.map(v => ({val: v, num: false}))});
+    rows.push({level: 0, cells: grpCells.map(v => ({val: v, num: false}))});
 
     g.sections.forEach(sec => {
-      // Section header — level 2
+      // Section header — level 1（分部折叠）
       const secCells = selected.map(() => '');
       secCells[0] = sec.name;
-      rows.push({level: groupRows ? 2 : 0, cells: secCells.map(v => ({val: v, num: false}))});
+      rows.push({level: groupRows ? 1 : 0, cells: secCells.map(v => ({val: v, num: false}))});
 
       sec.rows.forEach(r => {
         seq++; r._seq = seq;
         const code = (r.subs && r.subs.length) ? (r.subs[0].bid||'') : '';
         r._code = code;
 
-        // Data row — level 3 (or 0 if no folding)
+        // Data row — level 2（清单项）
         const dataCells = selected.map(c => ({val: c.get(r), num: c.num}));
-        const dataLevel = groupRows ? 3 : 0;
+        const dataLevel = groupRows ? 2 : 0;
         rows.push({level: dataLevel, cells: dataCells, _dataRow: true});
 
         // Sub-item rows — level 4 (nested under parent)
@@ -1874,7 +1874,7 @@ function doConfigExport() {
               else val = '';
               return {val, num: c.num};
             });
-            rows.push({level: groupRows ? 4 : 0, cells: subCells});
+            rows.push({level: groupRows ? 3 : 0, cells: subCells});
           });
         }
       });
