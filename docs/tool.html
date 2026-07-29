@@ -1838,8 +1838,7 @@ function doConfigExport() {
 
       sec.rows.forEach(r => {
         seq++; r._seq = seq;
-        const code = (r.subs && r.subs.length) ? (r.subs[0].bid||'') : '';
-        r._code = code;
+        r._code = '';  // 编号只在子目行显示，清单行不显示（因一个清单可能有多个子目，编号不唯一）
 
         // Data row — level 2（清单项）
         const dataCells = selected.map(c => ({val: c.get(r), num: c.num}));
@@ -1874,7 +1873,7 @@ function doConfigExport() {
               else val = '';
               return {val, num: c.num};
             });
-            rows.push({level: groupRows ? 3 : 0, cells: subCells, _dataRow: true});
+            rows.push({level: groupRows ? 3 : 0, cells: subCells, _dataRow: true, _hidden: true});
           });
         }
       });
@@ -1945,6 +1944,7 @@ function doConfigExport() {
   ws['!rows'] = rows.map((rd, i) => {
     const row = {};
     if (groupRows && rd.level > 0) row.level = rd.level;
+    if (rd._hidden) row.hidden = true;  // 子目行初始折叠
     // 标题行和表头行给较大固定高度
     if (i === 0) { row.level = 0; row.hpt = 30; return row; }
     if (i === 1) { row.level = 0; row.hpt = 22; return row; }
@@ -1965,7 +1965,7 @@ function doConfigExport() {
     return Object.keys(row).length ? row : undefined;
   });
   if (groupRows) {
-    ws['!outline'] = {summaryBelow: true};
+    ws['!outline'] = {summaryBelow: false};
   }
 
   // Cell style: 自动换行 + 边框 + 对齐 + 字号
