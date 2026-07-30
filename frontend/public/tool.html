@@ -1998,6 +1998,37 @@ function doConfigExport() {
     }
   }
 
+  // 合计行：最后一行，SUM 汇总
+  const sumRow = rows.length;
+  const hasDataRows = rows.some(rd => rd._dataRow);
+  if (hasDataRows) {
+    const firstDataR = rows.findIndex(rd => rd._dataRow); // Excel 1-based
+    const lastDataR = sumRow - 1;
+    selected.forEach((col, j) => {
+      const ref = XLSX.utils.encode_cell({r: sumRow, c: j});
+      const C = XLSX.utils.encode_col(j);
+      const cell = { t: 's', v: '', s: { alignment: { vertical: 'center', horizontal: col.num ? 'right' : 'center', wrapText: true }, font: { bold: true, sz: 10 }, border: { top: { style: 'thin', color: { auto: 1 } }, bottom: { style: 'thin', color: { auto: 1 } }, left: { style: 'thin', color: { auto: 1 } }, right: { style: 'thin', color: { auto: 1 } } }, fill: { fgColor: { rgb: 'F5F5F5' }, patternType: 'solid' } } };
+      if (j === 0) { cell.v = '合计'; }
+      else if (col.key === 'total' && totalC) {
+        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
+      } else if (col.key === 'qty' && qtyC) {
+        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
+      } else if (col.key === 'lab' && labC) {
+        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
+      } else if (col.key === 'mat' && matC) {
+        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
+      } else if (col.key === 'aux' && auxC) {
+        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
+      }
+      ws[ref] = cell;
+      // Extend range
+      const rng = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+      rng.e.r = Math.max(rng.e.r, sumRow);
+      rng.e.c = Math.max(rng.e.c, j);
+      ws['!ref'] = XLSX.utils.encode_range(rng);
+    });
+  }
+
   // Merge title row
   if (selected.length > 1) {
     ws['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:selected.length-1}}];
