@@ -1965,7 +1965,7 @@ function doConfigExport() {
     return Object.keys(row).length ? row : undefined;
   });
   if (groupRows) {
-    ws['!outline'] = {summaryBelow: true};
+    ws['!outline'] = {summaryBelow: false};
   }
 
   // Cell style: 自动换行 + 边框 + 对齐 + 字号
