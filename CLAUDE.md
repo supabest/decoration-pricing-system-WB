@@ -6,205 +6,116 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 装修成本分析系统 — 装修工程人工费+材料费智能套价工具。
 
-**生产地址**: `https://supabest.github.io/decoration-pricing-system/`
-**后端**: Supabase（PostgreSQL + Auth + REST API）
-**前端主站**: React + TypeScript + Vite（GitHub Pages 部署）
-**套价工具**: `docs/tool.html`（纯 HTML/CSS/JS，V4 版）
-
-## 分支策略
-
-- **`main`**: 生产分支，GitHub Actions 自动部署到 Pages
-- **`feat/material-pricing`**: 材料价格库 + 材料计价功能开发中
+- **后端**: Supabase PostgreSQL + Auth + REST API
+- **前端**: React + TypeScript + Vite（Cloudflare Pages 部署）
+- **套价工具**: `docs/tool.html`（~2600行纯 HTML/CSS/JS 单页）
+- **仓库**: 私有（GitHub）
 
 ## 本地开发
 
 ```bash
-# 启动套价工具
+# 套价工具 + 管理面板（纯 HTML，无需构建）
 cd docs && python3 -m http.server 8080
-# 打开 http://localhost:8080/tool.html
+# → http://localhost:8080/tool.html
+# → http://localhost:8080/admin.html
 
-# 启动 React 前端
+# React 前端
 cd frontend && npm run dev
-# 打开 http://localhost:5173
+# → http://localhost:5173
 ```
+
+localhost 环境自动免登录（tool.html 和 admin.html 均已适配）。
 
 ## 核心文件
 
-| 文件 | 用途 |
+| 文件 | 说明 |
 |------|------|
-| `docs/tool.html` | **核心套价工具**（1600+ 行 V4 单页应用） |
-| `docs/index.html` | 登录/注册/管理员审批（旧版纯 HTML） |
-| `docs/admin.html` | 管理面板（材料库+知识库+用户审批） |
-| `frontend/src/pages/` | React 页面（基准价查询、辅材规则等） |
-| `frontend/src/api/index.ts` | React 版 Supabase 查询封装 |
-| `data/seeds/` | 种子数据（JSON/SQL 导入文件） |
+| `docs/tool.html` | **核心套价工具** — BOQ 导入、基准价侧栏、AI 套价、Excel 导出 |
+| `docs/admin.html` | 管理面板 — 用户管理 / 信息价录入 / 知识库 / 基准价浏览（含辅材完整性检查） |
+| `docs/index.html` | React 入口（生产构建） |
+| `docs/benchmark_data.json` | 497 条基准价完整备份（含辅材配方），localhost 离线备用 |
+| `frontend/src/` | React 页面（登录、工作台、基准价查询、辅材规则等） |
+| `data/seeds/` | 种子 SQL/JSON — 数据库恢复用 |
+| `scripts/` | 数据生成脚本（Excel 解析、辅材匹配、SQL 生成） |
 
 ## 计价公式
 
 ```
-综合单价 = 人工单价 + 主材费×(1+损耗率/100) + 辅材费
-定额合价 = 综合单价 × 工程量
+综合单价 = 人工单价 + 主材费×(1+损耗率/100) + 辅材费 + 管理费 + 利润
+管理费   = 人工单价 × 管理费率%
+利润     = 人工单价 × 利润率%
+合价     = 综合单价 × 工程量
 ```
-
-表头列：`序号 | 项目名称 | 项目特征 | 单位 | 工程量 | 人工单价 | 主材费 | 损耗率 | 辅材费 | 管理费% | 利润% | 综合单价 | 备注 | 操作`
 
 ## Supabase
 
 - URL: `https://lnvtykghcpsjpwczbqsm.supabase.co`
-- Key: `sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q`
-- RLS 使用 `public.is_admin()` 安全定义器函数避免递归
-- 前端通过 Fetch API 直连（不依赖 Supabase JS SDK）
+- Anon key: `sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q`
+- 前端通过 Fetch API 直连（`_get`/`_post`/`_patch`/`_del` 封装在 tool.html:536-540）
 
-## 数据库表
+### RLS 策略
 
-| 表 | 用途 |
-|------|------|
-| `profiles` | 用户资料（is_admin, is_approved） |
-| `benchmark_items` | 基准价 497 条 |
-| `projects` | 历史套价方案（groups_json 存完整清单） |
-| `feedback` | 意见反馈 |
-| `ai_knowledge` | AI 知识库（技巧/同义词/规则） |
-| `material_prices` | 材料价格库（主材+辅材） |
-| `auxiliary_rules` | 辅材计算规则（20 条种子数据） |
+| 表 | SELECT | INSERT/UPDATE/DELETE |
+|----|--------|---------------------|
+| `benchmark_items` | `authenticated` 均可读 | 需 `is_admin=true` |
+| `material_prices` | 公开（无 RLS） | 需 `is_admin=true` |
+| `profiles` | — | 仅管理员 |
 
-## 当前进度（feat/material-pricing，2026-07-19 更新）
+`is_admin()` 函数检查 `profiles` 表。
 
-### ✅ 已完成
+## 数据库当前状态（2026-07-31）
 
-**辅材数据库**：3阶段全部完成
-- benchmark_items 497条辅材配方（FIXED 414 / RATE 81 / GROUP 2）
-- material_prices 21种辅材信息价，按月版本化
-- tool.html 辅材自动计价（computeAuxForRow）
-- admin.html 信息价录入页（月份选择+复制上月+Excel粘贴+Upsert保存）
+| 表 | 行数 | 备注 |
+|----|------|------|
+| `benchmark_items` | 497 | FIXED 432 / RATE 63 / GROUP 2，含 aux 辅材配方 |
+| `material_prices` | 21 | 21 种辅材信息价（2024-01 基准价） |
+| `main_material_categories` | 23 | 主材品类 |
+| `main_material_catalog` | 226 | 主材目录 |
+| `main_material_prices` | 226 | 主材价格 |
+| `profiles` | 1 | Lee 管理员（leening222@126.com） |
+| `auxiliary_rules` | 0 | 旧版 keyword 规则（V2 系统不依赖） |
+| `ai_knowledge` | 0 | 已丢失 |
 
-**主材数据库**：✅ 完成并部署
-- 3张表：main_material_categories(23品类) + main_material_catalog(226材料) + main_material_prices(226价格)
-- Supabase 已部署，数据源：`/Users/alick/Downloads/主要材料和设备 (1)/`
-- 解析脚本：parse_main_materials.py（含税/不含税分离+尺寸/厚度/颜色提取）
-- 聚类脚本：cluster_main_materials.py（同规格取最低价去重）
-- 主材选品弹窗：品类筛选+搜索+含税/不含税双价格
-- 12个品类有数据 + 11个预留待补充
+## Excel 导出配置
 
-**tool.html 导出**：双模式
-- 方式一：配置导出（勾选列+改名+预设模板保存localStorage）
-- 方式二：模板导出（上传Excel模板→智能列匹配→填入数据→保留原格式）
+`doConfigExport()` (tool.html:1791)：用户勾选列 + 预设模板。
 
-**admin.html**：3 Tab（用户管理+信息价录入+知识库）
+关键格式设置：
+- **全部单元格**: `vertical: 'center'` + `wrapText: true`
+- **标题/表头**: 水平居中
+- **序号/单位列**: 水平居中
+- **数字列**: 右对齐
+- **行高**: 根据内容字数自动估算
+- **折叠**: `summaryBelow: false`，层级：分部(1)→清单(2)→子目(3)
+- **公式**: 管理费=lab×rate, 利润=lab×rate, 综合单价=Σ各项, 合价=usp×qty
+- **合计行**: 末行 SUM 公式汇总
+- **编号列**: 仅子目行显示基准价编号，清单行留空
+- **子目初始折叠**: `hidden: true`
 
-### ⚠️ 部署前必须执行
+`doTemplateExport()` (tool.html:2046)：上传 Excel 模板，匹配列名填入数据，保留原格式。
 
-在 Supabase SQL Editor 按顺序执行：
-```
-1) data/seeds/migration_aux_fields.sql    (ALTER TABLE benchmark_items)
-2) data/seeds/seed_material_prices.sql    (建 material_prices 表 + 21种辅材信息价)
-3) data/seeds/seed_benchmark_aux.sql      (497条辅材灌入)
-4) data/seeds/seed_main_materials.sql     (建3张主材表 + 23品类 + 226材料 + 价格)
-5) RLS策略 SQL（见 memory 文件）
-```
-不跑这些 SQL 的话，辅材和主材功能不可用。
+## 数据库恢复
 
-### 待做
-- 11个预留品类补充价格数据
-- 主材管理页（admin.html 新 Tab）
-- 端到端测试
-- Windows exe 打包（Tauri）
+如果 Supabase 数据丢失，按顺序执行：
 
-### 主材更新流程
-```
-供应商新报价 Excel → 放入 主要材料和设备 (1)/对应品类/
-  → python3 scripts/parse_main_materials.py
-  → 手动审核 + 生成 UPSERT SQL
-  → Supabase 执行 → tool.html 自动取最新月份价
-```
-### 已完成
+```sql
+-- 1. RLS 修复
+DROP POLICY IF EXISTS benchmark_read_approved ON benchmark_items;
+CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated USING (true);
 
-- **阶段 1**：从 `基准价2024（格式化）.xlsx` 解析 254 条辅材规则（FIXED:179 / RATE:79 / GROUP:2），语义匹配到 497 条 benchmark_items。生成 SQL 迁移文件：
-  - `data/seeds/migration_aux_fields.sql` — benchmark_items 加 3 个字段（`aux_rule_type`/`aux_fixed_k`/`aux_rate_detail`）
-  - `data/seeds/seed_benchmark_aux.sql` — 497 条辅材配方灌入
-  - `data/seeds/seed_material_prices.sql` — 建 `material_prices` 表 + 21 种初始信息价
-
-- **阶段 2**：`docs/tool.html` 💰辅材价格面板已完成：
-  - `loadFromSupabase()` 带出 aux 字段；`loadMaterialPrices()` 加载信息价
-  - `computeAuxForRow(r)` 实时算辅材：`fixedK + Σ(priceLib[材料名] × consume)`，只读显示
-  - 展开行显示辅材明细（固定K + 各材料价×消耗量 = 合计）
-  - 💰可拖拽浮动面板：21 种材料，"默认信息价"+"我的价格"覆盖，改价联动全部行重算
-  - `userPriceOverrides` 按项目保存/恢复（`price_overrides` 字段存在 projects 表）
-  - 旧 keyword 版 `auxiliary_rules` + `calcAuxFromRule` 保留为兜底
-
-- **阶段 3**：`docs/admin.html` 💰信息价录入页已完成（2026-07）：
-  - 三个 Tab：👥用户管理 | 💰信息价录入 | 🧠知识库
-  - 📅 月份选择器（`<input type="month">`），默认当月
-  - 动态从 `material_prices` 表加载材料列表（名称+单位+最新/上月价格）
-  - 参考列显示上月信息价（自动取 selectedMonth 之前的最近有效月份）
-  - 📋 "复制上月价格"按钮 — 一键将参考价填入本月输入框
-  - 📥 "从 Excel 粘贴" — 弹窗 textarea，支持 TSV 格式（Tab 分隔的材料名+价格），模糊匹配材料名
-  - 💾 "保存本月信息价" — PostgREST upsert（`resolution=merge-duplicates`），利用 (name, effective_month) 唯一约束
-  - 已保存行显示绿点标记，底部状态栏显示统计
-
-- **生成脚本**（可重复运行）：
-  - `scripts/match_aux_to_benchmark.py` — 语义匹配 Excel→benchmark
-  - `scripts/gen_aux_migration.py` — 从审核 Excel 生成 SQL，含材料名归并
-
-### 数据架构
-
-```
-benchmark_items (497条)           material_prices (21种, 按月版本化)
-├─ aux_rule_type                 ├─ name, unit
-├─ aux_fixed_k                   ├─ price, effective_month
-└─ aux_rate_detail (配方JSON)    └─ source
-
-tool.html 计算: 辅材 = fixedK + Σ(getMaterialPrice(材料) × consume)
-                getMaterialPrice: 用户覆盖价 > 信息价 > 0
-                
-admin.html 维护: 管理员每月录入 21 种材料信息价 → material_prices 表
-                 tool.html 自动取最新月份价作为默认价
+-- 2. 数据恢复（任选其一）
+-- 方式 A: Table Editor → Import CSV → benchmark_items.csv
+-- 方式 B: SQL Editor 执行 data/seeds/ 下所有 SQL 文件
 ```
 
-### ⚠️ 部署前必须先执行
+`docs/benchmark_data.json` 作为前端离线备用，`data/seeds/` 包含完整 SQL 恢复脚本。
 
-在 Supabase SQL Editor 按顺序执行：
-```
-1) data/seeds/migration_aux_fields.sql    (ALTER TABLE)
-2) data/seeds/seed_material_prices.sql    (建表 + 21 种信息价)
-3) data/seeds/seed_benchmark_aux.sql      (497 条灌入)
-```
-不跑这三个 SQL 的话，tool.html 辅材永远是 0。
+## 注意事项
 
-### 主材数据库（2026-07 已建初版 ✅）
-
-**数据源**：`~/Documents/材料劳务价格数据库/主要材料和设备/`（22 品类目录，112 Excel 报价文件）
-
-**处理流程**：
-1. `scripts/parse_main_materials.py` — 批量解析 98 个 Excel → 5,485 条原始记录
-2. `scripts/cluster_main_materials.py` — 清洗（滤人工/项目总价）→ 材料名规范化 → 聚类 → 四档自动分档
-3. 输出 `data/seeds/main_material_categories.json`（141 组）+ `data/seeds/seed_main_materials.sql`（608行）
-
-**数据库表**：
-- `main_material_categories`: 品类 + 材料类型 + 单位 + 四档价格 + 规格样例 + 统计
-- `main_material_prices`: 按月版本化的历史价格（category_id, grade, price, effective_month）
-
-**tool.html 集成**：
-- 每行主材费旁有 📦 按钮，点击弹出选品弹窗
-- 品类下拉 → 材料类型下拉 → 四档位 radio（经济型/标准型/高端型/豪华型）
-- 选中后自动填入 matPrice + matName
-- `loadMainMaterialCategories()` 在启动时加载
-
-**141 组分布**：木饰面30 | 石材27 | 暖通15 | 铝板10 | 不锈钢9 | 卫浴五金8 | 金属门窗7 | 油漆涂料7 | 成品隔断6 | 玻璃6 | 照明4 | 织物4 | 木地板3 | 瓷砖3 | 厨房设备1 | 地毯1
-
-**后续优化**：
-- admin.html 主材价格管理 Tab（品类+档位编辑、历史价格查看）
-- 石材目录混入的木饰面报价文件需清理归类
-- 暖通设备品类可进一步细化型号
-- 在 Supabase 执行 seed_main_materials.sql 后才能使用主材选品功能
-
-1. **`docs/tool.html` JS 语法检查**：使用 `node -e "new vm.Script(js)"`，注意 localStorage 在 Node.js 中不存在，会误报
-2. **敏感数据不入 GitHub**：材料价格只存 Supabase，Excel 源文件本地保留
-3. **修改 tool.html 时注意**：
-   - `renderBoq()` 中不要调用 `renderBoq()` 递归（子目系数 onchange 已移除 renderBoq）
-   - 系数输入框 `onchange` 直接调用 `updCoef()` 或 `updField()`，不触发重新渲染
-   - 新增行字段需同步更新 `makeRow()`、`rowTotal()`、`renderBoq()`、`exportResult()`
-4. **辅材规则表 V2**（`auxiliary_rules`）：
-   - `calc_method` 为 `FIXED`（固定辅材价）、`RATE`（材料×消耗量）、`GROUP`（多辅材汇总）、`FORMULA`（公式计算）
-   - `rule_config` JSONB 列存储规则配置，格式见 `data/seeds/auxiliary_rules_seed_v2.json`
-   - 前端通过 `calcAuxFromRule()` 函数计算辅材单价（位于 `rowTotal()` 后）
-   - 启动时通过 `loadAuxRules()` 自动缓存规则到 `auxRulesCache`
+- `docs/tool.html` 和 `frontend/public/tool.html` 必须保持同步（`cp`）
+- 同理 `docs/admin.html` ↔ `frontend/public/admin.html`
+- JS 语法检查: `node -e "new Function(js)"`（注意 localStorage 在 Node.js 不可用）
+- `renderBoq()` 不递归调用自身；系数输入框 `onchange` 用 `updCoef()`/`updField()`
+- 新增 BOQ 行字段需同步改 `makeRow()`、`rowTotal()`、`renderBoq()`、`exportResult()`
+- DeepSeek 模型: `deepseek-v4-pro`
+- 敏感数据（材料价格）只存 Supabase，不入 git
