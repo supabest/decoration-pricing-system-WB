@@ -1,4 +1,6 @@
 """通用 Pydantic 模型"""
+from __future__ import annotations
+
 from pydantic import BaseModel
 from typing import Generic, TypeVar, List, Optional
 
@@ -24,7 +26,7 @@ class Page(BaseModel, Generic[T]):
 class ApiResponse(BaseModel, Generic[T]):
     code: int = 200
     message: str = "success"
-    data: T | None = None
+    data: Optional[T] = None
 
 
 class BatchOperationRequest(BaseModel):

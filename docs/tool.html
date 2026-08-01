@@ -539,6 +539,7 @@ window.addEventListener('error', function(e) {
 // ═══════════ SUPABASE ═══════════
 const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
+const BACKEND_URL = 'http://localhost:8000';  // FastAPI 后端
 const _h = ()=>{const h={'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY};const t=localStorage.getItem('sb-access-token');if(t)h['Authorization']='Bearer '+t;return h};
 const _get=async(t,p)=>{let c,tm;try{const q=new URLSearchParams();q.set('select',p?.select||'*');if(p?.eq)q.set(p.eq.col,'eq.'+encodeURIComponent(p.eq.val));if(p?.order)q.set('order',p.order.col+(p.order.asc?'.asc':'.desc'));if(p?.limit)q.set('limit',''+p.limit);c=new AbortController();tm=setTimeout(()=>c.abort(),10000);const r=await fetch(SUPABASE_URL+'/rest/v1/'+t+'?'+q,{headers:_h(),signal:c.signal});clearTimeout(tm);if(!r.ok){const t=await r.text();if(t.includes('JWT expired')){localStorage.removeItem('sb-access-token');localStorage.removeItem('sb-refresh-token');const h=location.hostname;if(h!=='localhost'&&h!=='127.0.0.1')window.location.href='index.html';return[]}return[]}return await r.json()}catch(e){clearTimeout(tm);return[]}};
 const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};
@@ -1788,256 +1789,103 @@ function getExpLabel(key) {
   return col ? col.label : key;
 }
 
-function doConfigExport() {
+function collectExportData() {
+  const selected = EXP_COLS.filter(c => document.getElementById('expchk_'+c.key)?.checked);
+  const groupRows = document.getElementById('expGroupFolding')?.checked !== false;
+  const showSubs = document.getElementById('expShowSubs')?.checked || false;
+  const proj = document.getElementById('projName').value || '套价表';
+
+  const columns = selected.map(c => ({
+    key: c.key,
+    label: getExpLabel(c.key),
+    num: c.num,
+    width: c.wide,
+  }));
+
+  const exportGroups = groups.map(g => ({
+    sheet_name: g.sheetName,
+    sections: g.sections.map(sec => ({
+      name: sec.name,
+      rows: sec.rows.map(r => {
+        const labor = rowUnitPrice(r) || 0;
+        return {
+          seq: 0,
+          name: r.name || '',
+          spec: r.spec || '',
+          unit: r.unit || '',
+          qty: parseFloat(r.qty) || 0,
+          remark: r.remark || '',
+          mat_name: r.matName || '',
+          mat_price: parseFloat(r.matPrice) || 0,
+          waste_rate: parseFloat(r.wasteRate) || 0,
+          aux_cost: parseFloat(r.auxCost) || 0,
+          labor_price: labor,
+          subs: (r.subs || []).map(sub => {
+            const it = getBench(sub.bid, sub.bsh);
+            return {
+              bid: sub.bid || '',
+              name: it ? (it.name || '') : '',
+              spec: it ? (it.spec || '') : '',
+              unit: it ? (it.unit || '') : '',
+              coef: sub.coef || 1.0,
+              conv: sub.conv || 1.0,
+              unit_price: effPrice(sub),
+            };
+          }).filter(s => s.name),
+        };
+      }),
+    })),
+  }));
+
+  return {
+    project_name: proj,
+    columns,
+    groups: exportGroups,
+    mgmt_rate: globalMgmtRate,
+    profit_rate: globalProfitRate,
+    group_folding: groupRows,
+    show_subs: showSubs,
+  };
+}
+
+async function doConfigExport() {
   if (!groups.length) { toast('暂无数据'); return; }
   const selected = EXP_COLS.filter(c => document.getElementById('expchk_'+c.key)?.checked);
   if (!selected.length) { toast('请至少勾选一列'); return; }
 
-  const groupRows = document.getElementById('expGroupFolding')?.checked !== false;
-  const showSubs = document.getElementById('expShowSubs')?.checked || false;
+  const btn = event?.target?.closest('button');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
 
-  const wb = XLSX.utils.book_new();
-  const ws = {};
-  let ri = 0, seq = 0;
-  const proj = document.getElementById('projName').value || '套价表';
-
-  function sc(r,c,v,fmt) {
-    const ref = XLSX.utils.encode_cell({r,c});
-    const cell = { v: (v===null||v===undefined)?'':v, t: typeof v==='number'?'n':'s' };
-    if (fmt && typeof v==='number') cell.z = fmt;
-    ws[ref] = cell;
-    const range = XLSX.utils.decode_range(ws['!ref']||'A1');
-    range.e.r = Math.max(range.e.r, r);
-    range.e.c = Math.max(range.e.c, c);
-    ws['!ref'] = XLSX.utils.encode_range(range);
-  }
-
-  // Build row definitions [{level, cells: [{val, num}]}]
-  const rows = [];
-
-  // Title row — level 0
-  const titleCells = selected.map(() => '');
-  titleCells[0] = proj + '  套价表';
-  rows.push({level: 0, cells: titleCells.map(v => ({val: v, num: false}))});
-
-  // Header row — level 0
-  rows.push({level: 0, cells: selected.map(c => ({val: getExpLabel(c.key), num: false}))});
-
-  // Data rows with outline levels
-  groups.forEach(g => {
-    // Group header — level 0（不参与折叠，纯文本分隔）
-    const grpCells = selected.map(() => '');
-    grpCells[0] = '【'+g.sheetName+'】';
-    rows.push({level: 0, cells: grpCells.map(v => ({val: v, num: false}))});
-
-    g.sections.forEach(sec => {
-      // Section header — level 1（分部折叠）
-      const secCells = selected.map(() => '');
-      secCells[0] = sec.name;
-      rows.push({level: groupRows ? 1 : 0, cells: secCells.map(v => ({val: v, num: false}))});
-
-      sec.rows.forEach(r => {
-        seq++; r._seq = seq;
-        r._code = '';  // 编号只在子目行显示，清单行不显示（因一个清单可能有多个子目，编号不唯一）
-
-        // Data row — level 2（清单项）
-        const dataCells = selected.map(c => ({val: c.get(r), num: c.num}));
-        const dataLevel = groupRows ? 2 : 0;
-        rows.push({level: dataLevel, cells: dataCells, _dataRow: true});
-
-        // Sub-item rows — level 4 (nested under parent)
-        if (showSubs && r.subs && r.subs.length) {
-          r.subs.forEach(sub => {
-            const it = getBench(sub.bid, sub.bsh);
-            if (!it) return;
-            const ep = effPrice(sub);
-            const subQty = (parseFloat(r.qty)||0) * (sub.conv||1.0) * sub.coef;
-            const subCells = selected.map(c => {
-              let val;
-              const ck = c.key;
-              if (ck === 'seq') val = '';
-              else if (ck === 'code') val = String(sub.bid||'');
-              else if (ck === 'name') val = '  └ ' + (it.name||'');
-              else if (ck === 'spec') val = it.spec||'';
-              else if (ck === 'unit') val = it.unit||'';
-              else if (ck === 'qty') val = subQty;
-              else if (ck === 'lab') val = ep;
-              else if (ck === 'mat') val = 0;
-              else if (ck === 'waste') val = parseFloat(r.wasteRate)||0;
-              else if (ck === 'aux') val = 0;
-              else if (ck === 'mgmt') val = ep * (globalMgmtRate / 100);
-              else if (ck === 'profit') val = ep * (globalProfitRate / 100);
-              else if (ck === 'usp') val = ep;
-              else if (ck === 'total') val = ep * subQty;
-              else if (ck === 'remark') val = '';
-              else val = '';
-              return {val, num: c.num};
-            });
-            rows.push({level: groupRows ? 3 : 0, cells: subCells, _dataRow: true, _hidden: true});
-          });
-        }
-      });
+  try {
+    const payload = collectExportData();
+    const resp = await fetch(BACKEND_URL + '/api/v1/export/excel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
-  });
 
-  // Write all rows — first pass: values
-  rows.forEach((rd, i) => {
-    rd.cells.forEach((cell, j) => {
-      sc(i, j, cell.val, cell.num ? '#,##0.00' : null);
-    });
-  });
-
-  // Second pass: replace computed cells with Excel formulas
-  const colIdx = {};
-  selected.forEach((c, i) => { colIdx[c.key] = i; });
-  function cl(k) { return colIdx[k] !== undefined ? XLSX.utils.encode_col(colIdx[k]) : null; }
-  const labC = cl('lab'), matC = cl('mat'), wasteC = cl('waste'), auxC = cl('aux');
-  const mgmtC = cl('mgmt'), profitC = cl('profit'), uspC = cl('usp'), totalC = cl('total'), qtyC = cl('qty');
-  const mgmtRate = globalMgmtRate / 100, profitRate = globalProfitRate / 100;
-  rows.forEach((rd, i) => {
-    if (rd._dataRow) {
-      const R = i + 1; // Excel 1-based row
-      // 管理费 = 人工单价 × 管理费率
-      if (mgmtC && labC) {
-        const ref = XLSX.utils.encode_cell({r:i, c:colIdx['mgmt']});
-        ws[ref].f = labC+R+'*'+mgmtRate; ws[ref].t = 'n';
-      }
-      // 利润 = 人工单价 × 利润率
-      if (profitC && labC) {
-        const ref = XLSX.utils.encode_cell({r:i, c:colIdx['profit']});
-        ws[ref].f = labC+R+'*'+profitRate; ws[ref].t = 'n';
-      }
-      // 综合单价 = 人工 + 主材×(1+损耗率/100) + 辅材 + 管理费 + 利润
-      if (uspC) {
-        const parts = [];
-        if (labC) parts.push(labC+R);
-        if (matC && wasteC) parts.push(matC+R+'*(1+'+wasteC+R+'/100)');
-        else if (matC) parts.push(matC+R);
-        if (auxC) parts.push(auxC+R);
-        if (mgmtC) parts.push(mgmtC+R);
-        if (profitC) parts.push(profitC+R);
-        if (parts.length) {
-          const ref = XLSX.utils.encode_cell({r:i, c:colIdx['usp']});
-          ws[ref].f = '='+parts.join('+'); ws[ref].t = 'n';
-        }
-      }
-      // 合价 = 综合单价 × 工程量
-      if (totalC && uspC && qtyC) {
-        const ref = XLSX.utils.encode_cell({r:i, c:colIdx['total']});
-        ws[ref].f = uspC+R+'*'+qtyC+R; ws[ref].t = 'n';
-      }
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error('后端导出失败: ' + (err || resp.status));
     }
-  });
 
-  // Column widths — 为文字较长的列（spec/name）加宽，确保导出不截断
-  ws['!cols'] = selected.map(c => {
-    let w = c.wide;
-    if (c.key === 'spec') w = Math.max(w, showSubs ? 55 : 48);
-    if (c.key === 'name') w = Math.max(w, showSubs ? 40 : 32);
-    if (c.key === 'remark') w = Math.max(w, 28);
-    // 数字列不需要太宽
-    if (c.num) w = Math.min(w, 14);
-    return {wch: w};
-  });
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = payload.project_name + '_套价结果.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
 
-  // Row heights — 根据内容长度自动估算行高（配合 wrapText 自动换行）
-  ws['!rows'] = rows.map((rd, i) => {
-    const row = {};
-    if (groupRows && rd.level > 0) row.level = rd.level;
-    if (rd._hidden) row.hidden = true;  // 子目行初始折叠
-    // 标题行和表头行给较大固定高度
-    if (i === 0) { row.level = 0; row.hpt = 30; return row; }
-    if (i === 1) { row.level = 0; row.hpt = 22; return row; }
-    // 数据行/子目行：根据内容估算行高（字符数 ÷ 列宽 ≈ 行数 × 行高）
-    if (rd._dataRow || (groupRows && rd.level >= 1)) {
-      let maxLines = 1;
-      rd.cells.forEach((cell, j) => {
-        const col = selected[j];
-        const txt = String(cell.val || '');
-        if (!txt || !col) return;
-        const cw = col.wide || 10;
-        const cpl = Math.max(1, Math.floor(cw * 2.2)); // 中文字符宽，每行约可容纳字符数
-        const lines = Math.ceil(txt.length / cpl);
-        if (lines > maxLines) maxLines = lines;
-      });
-      row.hpt = Math.max(15, Math.min(300, maxLines * 15)); // 每行15pt
-    }
-    return Object.keys(row).length ? row : undefined;
-  });
-  if (groupRows) {
-    ws['!outline'] = {summaryBelow: false};
+    closeExportModal();
+    toast('✓ 已导出：' + payload.project_name + '_套价结果.xlsx');
+  } catch (e) {
+    console.error('导出失败', e);
+    toast('❌ 导出失败: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '导出 Excel'; }
   }
-
-  // Cell style: 自动换行 + 边框 + 对齐 + 字号
-  const range = XLSX.utils.decode_range(ws['!ref']||'A1');
-  for (let r = range.s.r; r <= range.e.r; r++) {
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const ref = XLSX.utils.encode_cell({r,c});
-      if (ws[ref]) {
-        const isTitle = r === 0;
-        const isHeader = r === 1;
-        const colKey = selected[c]?.key;
-        const isCenterCol = colKey === 'seq' || colKey === 'unit';
-        ws[ref].s = {
-          alignment: {
-            vertical: 'center',
-            horizontal: isTitle || isHeader ? 'center' : (selected[c]?.num ? 'right' : (isCenterCol ? 'center' : 'left')),
-            wrapText: true,
-            shrinkToFit: false,
-          },
-          font: isTitle ? {bold: true, sz: 14} : (isHeader ? {bold: true, sz: 10} : {sz: 10}),
-          border: {
-            top: {style:'thin', color:{auto:1}},
-            bottom: {style:'thin', color:{auto:1}},
-            left: {style:'thin', color:{auto:1}},
-            right: {style:'thin', color:{auto:1}},
-          },
-          fill: isHeader ? {fgColor:{rgb:'F0F0F0'}, patternType:'solid'} : undefined,
-        };
-      }
-    }
-  }
-
-  // 合计行：最后一行，SUM 汇总
-  const sumRow = rows.length;
-  const hasDataRows = rows.some(rd => rd._dataRow);
-  if (hasDataRows) {
-    const firstDataR = rows.findIndex(rd => rd._dataRow); // Excel 1-based
-    const lastDataR = sumRow - 1;
-    selected.forEach((col, j) => {
-      const ref = XLSX.utils.encode_cell({r: sumRow, c: j});
-      const C = XLSX.utils.encode_col(j);
-      const cell = { t: 's', v: '', s: { alignment: { vertical: 'center', horizontal: col.num ? 'right' : 'center', wrapText: true }, font: { bold: true, sz: 10 }, border: { top: { style: 'thin', color: { auto: 1 } }, bottom: { style: 'thin', color: { auto: 1 } }, left: { style: 'thin', color: { auto: 1 } }, right: { style: 'thin', color: { auto: 1 } } }, fill: { fgColor: { rgb: 'F5F5F5' }, patternType: 'solid' } } };
-      if (j === 0) { cell.v = '合计'; }
-      else if (col.key === 'total' && totalC) {
-        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
-      } else if (col.key === 'qty' && qtyC) {
-        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
-      } else if (col.key === 'lab' && labC) {
-        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
-      } else if (col.key === 'mat' && matC) {
-        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
-      } else if (col.key === 'aux' && auxC) {
-        cell.f = '=SUM(' + C + (firstDataR + 1) + ':' + C + (lastDataR + 1) + ')'; cell.t = 'n';
-      }
-      ws[ref] = cell;
-      // Extend range
-      const rng = XLSX.utils.decode_range(ws['!ref'] || 'A1');
-      rng.e.r = Math.max(rng.e.r, sumRow);
-      rng.e.c = Math.max(rng.e.c, j);
-      ws['!ref'] = XLSX.utils.encode_range(rng);
-    });
-  }
-
-  // Merge title row
-  if (selected.length > 1) {
-    ws['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:selected.length-1}}];
-  }
-
-  XLSX.utils.book_append_sheet(wb, ws, '套价清单');
-  XLSX.writeFile(wb, proj+'_套价结果.xlsx');
-  closeExportModal();
-  toast('✓ 已导出：'+proj+'_套价结果.xlsx');
 }
 
 // ═══════════ 方式二：模板导出 ═══════════

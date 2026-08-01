@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     auto_match,
     auto_pricing,
     project,
+    export,
 )
 
 api_router = APIRouter()
@@ -21,3 +22,4 @@ api_router.include_router(ai_recommend.router, prefix="/ai/recommend", tags=["AI
 api_router.include_router(auto_match.router, prefix="/ai/match", tags=["AI清单匹配"])
 api_router.include_router(auto_pricing.router, prefix="/ai/pricing", tags=["AI自动计价"])
 api_router.include_router(project.router, prefix="/projects", tags=["项目管理"])
+api_router.include_router(export.router, prefix="/export", tags=["导出"])
