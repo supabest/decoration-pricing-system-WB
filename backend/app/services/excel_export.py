@@ -186,7 +186,7 @@ class ExcelExporter:
             cell = self.ws.cell(row=r, column=i + 1)
             if i == 0:
                 cell.value = "合计"
-            elif col.key in ("qty", "lab", "mat", "aux", "total"):
+            elif col.key == "total":
                 col_letter = get_column_letter(i + 1)
                 if use_continuous:
                     cell.value = f"=SUM({col_letter}{ranges[0][0]}:{col_letter}{ranges[0][1]})"
