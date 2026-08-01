@@ -398,6 +398,9 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
             <div id="tmplMapList" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto"></div>
             <button class="btn btn-sm" onclick="autoMatchTmplCols()" style="margin-top:6px">🔄 自动匹配</button>
           </div>
+          <div style="margin-bottom:8px;font-size:11px;display:flex;gap:12px">
+            <label><input type="checkbox" id="tmplShowSubs"> 📌 包含套价子目</label>
+          </div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button class="btn btn-sm" onclick="closeExportModal()">取消</button>
             <button class="btn btn-sm btn-suc" id="tmplExportBtn" disabled onclick="doTemplateExport()">✅ 填入并导出</button>
@@ -1889,20 +1892,28 @@ async function doConfigExport() {
 }
 
 // ═══════════ 方式二：模板导出 ═══════════
-let tmplWB = null;       // 模板 workbook
+let tmplWB = null;       // 模板 workbook（解析用）
+let tmplFileData = null; // 模板原始文件 ArrayBuffer（发送给后端）
+let tmplHeaderRow = 0;   // 模板中表头行的 0-based 行索引
 let tmplSheetName = '';  // 模板 sheet 名
 let tmplHeaders = [];    // [{col, label}] 模板表头的列索引和标签
 let tmplMapping = {};    // {templateColIndex: dataFieldKey}
 
 const TMPL_FIELDS = [
   {key:'seq',     label:'序号',     patterns:['序号','项次','NO','编号']},
+  {key:'code',    label:'定额编号',   patterns:['定额编号','编码','定额号','清单编码']},
   {key:'name',    label:'项目名称',   patterns:['项目名称','名称','清单项目名称','项目']},
   {key:'spec',    label:'项目特征',   patterns:['项目特征','特征描述','规格','特征']},
   {key:'unit',    label:'单位',      patterns:['单位','计量单位','计价单位']},
   {key:'qty',     label:'工程量',    patterns:['工程量','数量','工程数量']},
   {key:'lab',     label:'人工单价',   patterns:['人工单价','人工费','劳务单价','基准单价']},
-  {key:'mat',     label:'主材费',    patterns:['主材费','材料费','主材单价','材料单价']},
+  {key:'mat_name', label:'主材名称',   patterns:['主材名称','材料名称']},
+  {key:'mat_price',label:'主材单价',   patterns:['主材单价','材料单价']},
+  {key:'mat',     label:'主材费',     patterns:['主材费','材料费']},
+  {key:'waste',   label:'主材损耗率',  patterns:['主材损耗率','损耗率','损耗','材料损耗']},
   {key:'aux',     label:'辅材费',    patterns:['辅材费','辅材']},
+  {key:'mgmt',    label:'管理费',    patterns:['管理费','管理','企业管理费']},
+  {key:'profit',  label:'利润',      patterns:['利润','利润额']},
   {key:'usp',     label:'综合单价',   patterns:['综合单价','定额单价','全费用单价','单价']},
   {key:'total',   label:'合价',      patterns:['合价','总价','金额','定额合价']},
   {key:'remark',  label:'备注',      patterns:['备注','说明','注释']},
@@ -1913,6 +1924,7 @@ async function handleTmplFile(event) {
   if (!file) return;
   document.getElementById('tmplStatus').textContent = '读取中...';
   const data = await file.arrayBuffer();
+  tmplFileData = data;  // 保存原始文件，供后端导出使用
   tmplWB = XLSX.read(data, {type:'array', cellStyles:true, cellFormula:false});
   tmplSheetName = tmplWB.SheetNames[0];
   const ws = tmplWB.Sheets[tmplSheetName];
@@ -1935,7 +1947,9 @@ async function handleTmplFile(event) {
   }
   
   if (bestRow < 0) { document.getElementById('tmplStatus').textContent = '未识别到表头行'; return; }
-  
+
+  tmplHeaderRow = bestRow;  // 保存表头行索引（0-based）
+
   // Extract header labels
   tmplHeaders = [];
   for (let c = range.s.c; c <= range.e.c; c++) {
@@ -1980,105 +1994,52 @@ function renderTmplMapping() {
   }).join('');
 }
 
-function doTemplateExport() {
-  if (!tmplWB || !groups.length) { toast('请先上传模板'); return; }
-  
-  // Clone the template sheet
-  const srcWs = tmplWB.Sheets[tmplSheetName];
-  const ws = {};
-  // Copy all cells from template
-  const range = XLSX.utils.decode_range(srcWs['!ref']||'A1');
-  for (let r = range.s.r; r <= range.e.r; r++) {
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const ref = XLSX.utils.encode_cell({r,c});
-      if (srcWs[ref]) {
-        ws[ref] = {...srcWs[ref]};
-      }
-    }
-  }
-  ws['!ref'] = srcWs['!ref'];
-  if (srcWs['!merges']) ws['!merges'] = JSON.parse(JSON.stringify(srcWs['!merges']));
-  if (srcWs['!cols']) ws['!cols'] = JSON.parse(JSON.stringify(srcWs['!cols']));
-  if (srcWs['!rows']) ws['!rows'] = JSON.parse(JSON.stringify(srcWs['!rows']));
-  
-  // Find data start row (first row after header with data or first empty row)
-  const hdrRow = (() => {
-    for (let r = range.s.r; r <= Math.min(range.s.r + 15, range.e.r); r++) {
-      let score = 0;
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const ref = XLSX.utils.encode_cell({r,c});
-        if (ws[ref] && ws[ref].v) {
-          const v = String(ws[ref].v);
-          for (const f of TMPL_FIELDS) { if (f.patterns.some(p => v.includes(p))) score++; }
-        }
-      }
-      if (score >= 2) return r;
-    }
-    return range.s.r;
-  })();
-  
-  // Flatten data rows
-  const dataRows = [];
-  let seq = 0;
-  groups.forEach(g => {
-    g.sections.forEach(sec => {
-      sec.rows.forEach(r => {
-        seq++; r._seq = seq;
-        dataRows.push(r);
-      });
+async function doTemplateExport() {
+  if (!tmplFileData || !groups.length) { toast('请先上传模板并导入BOQ数据'); return; }
+  if (!Object.keys(tmplMapping).length) { toast('请先匹配至少一列数据字段'); return; }
+
+  const btn = document.getElementById('tmplExportBtn');
+  btn.disabled = true; btn.textContent = '生成中…';
+
+  try {
+    // 构建导出数据（复用 collectExportData 的数据收集，覆盖模板专属选项）
+    const payload = collectExportData();
+    payload.header_row = tmplHeaderRow;
+    payload.column_mapping = tmplMapping;
+    payload.show_subs = document.getElementById('tmplShowSubs')?.checked || false;
+    payload.group_folding = true;  // 模板导出始终启用分组折叠（与方式一行为一致）
+
+    const formData = new FormData();
+    formData.append('template', new Blob([tmplFileData], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), 'template.xlsx');
+    formData.append('data', JSON.stringify(payload));
+
+    const resp = await fetch(BACKEND_URL + '/api/v1/export/template', {
+      method: 'POST',
+      body: formData,
     });
-  });
-  
-  // Fill data into template starting from hdrRow+1
-  let outRow = hdrRow + 1;
-  const fieldGetters = {
-    seq:   r => r._seq,
-    name:  r => r.name||'',
-    spec:  r => r.spec||'',
-    unit:  r => r.unit||'',
-    qty:   r => parseFloat(r.qty)||0,
-    lab:   r => rowUnitPrice(r)||0,
-    mat:   r => parseFloat(r.matPrice)||0,
-    aux:   r => parseFloat(r.auxCost)||0,
-    usp:   r => compUnitPrice(r)||0,
-    total: r => rowTotal(r)||0,
-    remark: r => r.remark||'',
-  };
-  
-  dataRows.forEach(r => {
-    Object.entries(tmplMapping).forEach(([col, fieldKey]) => {
-      const c = parseInt(col);
-      const ref = XLSX.utils.encode_cell({r: outRow, c});
-      const val = fieldGetters[fieldKey] ? fieldGetters[fieldKey](r) : '';
-      ws[ref] = { v: val, t: typeof val === 'number' ? 'n' : 's' };
-      if (typeof val === 'number') ws[ref].z = '#,##0.00';
-    });
-    outRow++;
-  });
-  
-  // Ensure all cells have wrapText
-  const newRange = XLSX.utils.decode_range(ws['!ref']||'A1');
-  for (let r = newRange.s.r; r <= newRange.e.r; r++) {
-    for (let c = newRange.s.c; c <= newRange.e.c; c++) {
-      const ref = XLSX.utils.encode_cell({r,c});
-      if (ws[ref]) {
-        if (!ws[ref].s) ws[ref].s = {};
-        if (!ws[ref].s.alignment) ws[ref].s.alignment = {};
-        ws[ref].s.alignment.wrapText = true;
-        ws[ref].s.alignment.vertical = 'center';
-      }
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error('后端导出失败: ' + (err || resp.status));
     }
+
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = payload.project_name + '_报价单.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+
+    closeExportModal();
+    toast('✓ 已按模板导出：' + payload.project_name + '_报价单.xlsx');
+  } catch (e) {
+    console.error('模板导出失败', e);
+    toast('❌ 导出失败: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '填入并导出';
   }
-  
-  // Output
-  const wb = XLSX.utils.book_new();
-  const outSheetName = tmplSheetName || 'Sheet1';
-  ws['!ref'] = XLSX.utils.encode_range(newRange);
-  XLSX.utils.book_append_sheet(wb, ws, outSheetName);
-  const proj = document.getElementById('projName').value || '套价表';
-  XLSX.writeFile(wb, proj+'_报价单.xlsx');
-  closeExportModal();
-  toast('✓ 已按模板导出：'+proj+'_报价单.xlsx');
 }
 
 function updateSum() {

@@ -221,6 +221,8 @@ class ExcelExporter:
             return row.qty or 0
         elif key == "lab":
             return labor
+        elif key == "mat_name":
+            return row.mat_name or ""
         elif key == "mat":
             return row.mat_price or 0
         elif key == "waste":

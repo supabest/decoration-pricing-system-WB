@@ -1,11 +1,13 @@
 """Excel 导出接口"""
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from urllib.parse import quote
 import logging
+import json
 
-from app.schemas.export import ExportRequest
+from app.schemas.export import ExportRequest, TemplateExportRequest
 from app.services.excel_export import ExcelExporter
+from app.services.template_export import TemplateExcelExporter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -38,6 +40,45 @@ async def export_excel(request: ExportRequest):
         )
     except Exception as e:
         logger.error(f"Excel export error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+@router.post("/template")
+async def export_template(
+    template: UploadFile = File(...),
+    data: str = Form(...),
+):
+    """
+    模板导出：在用户上传的 Excel 模板上填入 BOQ 数据
+
+    - template: 用户上传的 xlsx 模板文件
+    - data: JSON 字符串，包含 ExportRequest 全部字段 + header_row + column_mapping
+    - 支持子目行插入、保留原模板格式
+    - 返回 xlsx 文件流
+    """
+    try:
+        req = TemplateExportRequest(**json.loads(data))
+        template_bytes = await template.read()
+
+        exporter = TemplateExcelExporter(req, template_bytes)
+        buffer = exporter.generate()
+
+        filename = f"{req.project_name}_套价结果.xlsx"
+        encoded_name = quote(filename)
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+                "Cache-Control": "no-cache",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Template export error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"error": str(e)}

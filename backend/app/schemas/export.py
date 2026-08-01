@@ -65,3 +65,10 @@ class ExportRequest(BaseModel):
     class Config:
         # 允许额外字段（前端可能发送多余数据）
         extra = "ignore"
+
+
+class TemplateExportRequest(ExportRequest):
+    """模板导出请求 — 继承 ExportRequest，增加模板相关字段"""
+    header_row: int = 0             # 模板中表头行的 0-based 行索引
+    column_mapping: dict = {}       # {模板列索引(int或str): 数据字段key}
+
