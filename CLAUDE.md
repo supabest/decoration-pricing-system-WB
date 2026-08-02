@@ -19,6 +19,10 @@ cd docs && python3 -m http.server 8080
 # → http://localhost:8080/tool.html
 # → http://localhost:8080/admin.html
 
+# FastAPI 后端（Excel 导出服务）
+cd backend && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# → http://localhost:8000/docs
+
 # React 前端
 cd frontend && npm run dev
 # → http://localhost:5173
@@ -26,15 +30,21 @@ cd frontend && npm run dev
 
 localhost 环境自动免登录（tool.html 和 admin.html 均已适配）。
 
+**后端依赖**：`fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `openpyxl`, `sqlalchemy`, `psycopg2-binary`, `python-multipart`, `python-jose`, `passlib`, `bcrypt`, `httpx`
+
 ## 核心文件
 
 | 文件 | 说明 |
 |------|------|
 | `docs/tool.html` | **核心套价工具** — BOQ 导入、基准价侧栏、AI 套价、Excel 导出 |
-| `docs/admin.html` | 管理面板 — 用户管理 / 信息价录入 / 知识库 / 基准价浏览（含辅材完整性检查） |
-| `docs/index.html` | React 入口（生产构建） |
+| `docs/admin.html` | 管理面板 — 用户管理 / 信息价录入 / 知识库 / 基准价浏览 |
 | `docs/benchmark_data.json` | 497 条基准价完整备份（含辅材配方），localhost 离线备用 |
 | `frontend/src/` | React 页面（登录、工作台、基准价查询、辅材规则等） |
+| `frontend/public/tool.html` | `docs/tool.html` 的同步副本 |
+| `backend/app/services/excel_export.py` | **方式一导出引擎** — openpyxl 生成 Excel（公式、折叠、自动行高） |
+| `backend/app/services/template_export.py` | **方式二导出引擎** — 读入用户模板，填入数据+插入子目行 |
+| `backend/app/schemas/export.py` | 导出请求模型（ExportRequest, TemplateExportRequest） |
+| `backend/app/api/v1/endpoints/export.py` | 导出 API 端点（`/excel`, `/template`） |
 | `data/seeds/` | 种子 SQL/JSON — 数据库恢复用 |
 | `scripts/` | 数据生成脚本（Excel 解析、辅材匹配、SQL 生成） |
 
@@ -76,23 +86,39 @@ localhost 环境自动免登录（tool.html 和 admin.html 均已适配）。
 | `auxiliary_rules` | 0 | 旧版 keyword 规则（V2 系统不依赖） |
 | `ai_knowledge` | 0 | 已丢失 |
 
-## Excel 导出配置
+## Excel 导出（FastAPI 后端 + openpyxl）
 
-`doConfigExport()` (tool.html:1791)：用户勾选列 + 预设模板。
+两种导出方式均通过 FastAPI 后端（`localhost:8000`）生成 xlsx 文件，前端 `tool.html` 以 fetch 调用。
+
+### 方式一：配置导出 `POST /api/v1/export/excel`
+
+`collectExportData()` 收集 BOQ 数据 → `ExcelExporter` 生成新 sheet。
 
 关键格式设置：
 - **全部单元格**: `vertical: 'center'` + `wrapText: true`
-- **标题/表头**: 水平居中
-- **序号/单位列**: 水平居中
-- **数字列**: 右对齐
-- **行高**: 根据内容字数自动估算
-- **折叠**: `summaryBelow: false`（汇总行在明细数据的上方），层级：分部(1)→清单(2)→子目(3)
+- **行高**: 根据内容字数自动估算（`_set_row_heights`）
+- **折叠**: `summaryBelow: false`，层级：分部(1)→清单(2)→子目(3)
 - **公式**: 管理费=lab×rate, 利润=lab×rate, 综合单价=Σ各项, 合价=usp×qty
-- **合计行**: 末行 SUM 公式汇总
-- **编号列**: 仅子目行显示基准价编号，清单行留空
+- **合计行**: 仅合价列 SUM，通过 `main_row_indices`（仅父行）避免子目双倍计数
+- **编号列**: 仅子目行显示基准价编号（`code` 列），清单行留空
+- **子目 USP**: 保留值（不含管理费/利润加成），父行 USP 为公式
 - **子目初始折叠**: `hidden: true`
 
-`doTemplateExport()` (tool.html:2046)：上传 Excel 模板，匹配列名填入数据，保留原格式。
+### 方式二：模板导出 `POST /api/v1/export/template`
+
+前端 `handleTmplFile()` 解析模板识别表头 + `autoMatchTmplCols()` 自动映射列 → `doTemplateExport()` 以 FormData（template 文件 + JSON 数据）发送至后端 → `TemplateExcelExporter` 读入原模板，在表头下方填入数据。
+
+- `ws.insert_rows()` 在父行下方动态插入子目行
+- `_copy_row_style()` 将父行样式复制到插入行
+- `_apply_styles()` / `_set_row_heights()` 补齐格式（与方式一对齐）
+- `_set_outline()` 设置分组折叠（与方式一行为一致）
+- 支持 `📌 包含套价子目` 勾选框（`tmplShowSubs`）
+
+### 关键 schema 注意事项
+
+- **`ExportSubItem.bid`** 类型是 `str`（不是 `int`）——基准价编号如 `"NS-015"`、`"JD-145"` 是字符串编码
+- **`TemplateExportRequest.column_mapping`** 的键是模板列索引（0-based 字符串），值是数据字段 key
+- 模板导出 `mat`（主材费）= `mat_price × (1 + waste_rate/100)`（计算值），`mat_price` 是原始单价
 
 ## 数据库恢复
 
@@ -112,10 +138,10 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 
 ## 注意事项
 
-- `docs/tool.html` 和 `frontend/public/tool.html` 必须保持同步（`cp`）
+- `docs/tool.html` 和 `frontend/public/tool.html` 必须保持同步（修改时两处都要改）
 - 同理 `docs/admin.html` ↔ `frontend/public/admin.html`
-- JS 语法检查: `node -e "new Function(js)"`（注意 localStorage 在 Node.js 不可用）
-- `renderBoq()` 不递归调用自身；系数输入框 `onchange` 用 `updCoef()`/`updField()`
-- 新增 BOQ 行字段需同步改 `makeRow()`、`rowTotal()`、`renderBoq()`、`exportResult()`
-- DeepSeek 模型: `deepseek-v4-pro`
+- 新增 BOQ 行字段需同步改 `makeRow()`、`rowTotal()`、`renderBoq()`、`collectExportData()`
+- `collectExportData()` 负责收集导出数据（方式一和方式二共用）
+- `rowUnitPrice(r)` 依赖 `r.subs`，`r.subs` 可能为 undefined，调用方需判空
 - 敏感数据（材料价格）只存 Supabase，不入 git
+- 导出格式修改需同时验证 **方式一**（配置导出）和 **方式二**（模板导出）

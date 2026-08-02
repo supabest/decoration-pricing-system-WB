@@ -87,14 +87,26 @@ class TemplateExcelExporter:
         # 合计行
         self._write_summary_row(out_row)
 
+    def _col_ref(self, key: str, r: int) -> Optional[str]:
+        """返回 Excel 单元格引用如 'E5'，key 未映射返回 None"""
+        if key not in self.field_to_col:
+            return None
+        return f"{get_column_letter(self.field_to_col[key] + 1)}{r}"
+
     def _write_data_row(self, r: int, row: ExportRow, seq: int):
-        """写入父行数据到模板第 r 行"""
+        """写入父行数据到模板第 r 行，计算字段写入 Excel 公式"""
         mgmt_rate = self.req.mgmt_rate / 100
         profit_rate = self.req.profit_rate / 100
         labor = row.labor_price or 0
+        mp = row.mat_price or 0
+        wr = row.waste_rate or 0
+        ac = row.aux_cost or 0
+        qty = row.qty or 0
+        mat_cost = mp * (1 + wr / 100)
+        usp_val = labor + mat_cost + ac + labor * mgmt_rate + labor * profit_rate
 
         for field_key, col_idx in self.field_to_col.items():
-            c = col_idx + 1  # openpyxl 1-based column
+            c = col_idx + 1
             cell = self.ws.cell(row=r, column=c)
 
             if field_key == "seq":
@@ -108,41 +120,52 @@ class TemplateExcelExporter:
             elif field_key == "unit":
                 cell.value = row.unit or ""
             elif field_key == "qty":
-                cell.value = row.qty or 0
+                cell.value = qty
             elif field_key == "lab":
                 cell.value = labor
-            elif field_key == "mat_name":
-                cell.value = row.mat_name or ""
             elif field_key == "mat_price":
-                cell.value = row.mat_price or 0
+                cell.value = mp
             elif field_key == "mat":
-                # 主材费 = 主材单价 × (1 + 损耗率/100)
-                mp = row.mat_price or 0
-                wr = row.waste_rate or 0
-                cell.value = mp * (1 + wr / 100)
+                # 父行主材费用静态值（损耗率列已留空，无法写公式）
+                cell.value = mat_cost
             elif field_key == "waste":
-                cell.value = row.waste_rate or 0
+                cell.value = ""  # 清单行不显示损耗率
             elif field_key == "aux":
-                cell.value = row.aux_cost or 0
+                cell.value = ac
             elif field_key == "mgmt":
-                cell.value = labor * mgmt_rate
+                ref_lab = self._col_ref("lab", r)
+                if self.req.use_formula and ref_lab:
+                    cell.value = f"={ref_lab}*{mgmt_rate}"
+                else:
+                    cell.value = labor * mgmt_rate
             elif field_key == "profit":
-                cell.value = labor * profit_rate
+                ref_lab = self._col_ref("lab", r)
+                if self.req.use_formula and ref_lab:
+                    cell.value = f"={ref_lab}*{profit_rate}"
+                else:
+                    cell.value = labor * profit_rate
             elif field_key == "usp":
-                mat_cost = (row.mat_price or 0) * (1 + (row.waste_rate or 0) / 100)
-                cell.value = labor + mat_cost + (row.aux_cost or 0) + labor * mgmt_rate + labor * profit_rate
+                # 公式: =lab+mat+aux+mgmt+profit，关闭公式/缺任一列则用静态值
+                refs = {k: self._col_ref(k, r) for k in ("lab", "mat", "aux", "mgmt", "profit")}
+                if self.req.use_formula and all(refs.values()):
+                    cell.value = f"={'+'.join(refs.values())}"
+                else:
+                    cell.value = usp_val
             elif field_key == "total":
-                usp = labor + (row.mat_price or 0) * (1 + (row.waste_rate or 0) / 100) + (row.aux_cost or 0) + labor * mgmt_rate + labor * profit_rate
-                cell.value = usp * (row.qty or 0)
+                ref_usp = self._col_ref("usp", r)
+                ref_qty = self._col_ref("qty", r)
+                if self.req.use_formula and ref_usp and ref_qty:
+                    cell.value = f"={ref_usp}*{ref_qty}"
+                else:
+                    cell.value = usp_val * qty
             elif field_key == "remark":
                 cell.value = row.remark or ""
 
-            # 数字格式
             if isinstance(cell.value, float):
                 cell.number_format = NUM_FMT
 
     def _write_sub_row(self, r: int, sub: ExportSubItem, parent: ExportRow):
-        """写入子目行数据到模板第 r 行"""
+        """写入子目行数据到模板第 r 行，计算字段写入 Excel 公式"""
         ep = sub.unit_price or 0
         sub_qty = (parent.qty or 0) * (sub.conv or 1.0) * (sub.coef or 1.0)
         mgmt_rate = self.req.mgmt_rate / 100
@@ -166,20 +189,41 @@ class TemplateExcelExporter:
                 cell.value = sub_qty
             elif field_key == "lab":
                 cell.value = ep
+            elif field_key == "mat_price":
+                cell.value = sub.mat_price or 0
             elif field_key == "mat":
-                cell.value = 0
+                # 公式: =mat_price*(1+waste/100)，用子目级别的字段
+                ref_mp = self._col_ref("mat_price", r)
+                ref_wr = self._col_ref("waste", r)
+                if self.req.use_formula and ref_mp and ref_wr:
+                    cell.value = f"={ref_mp}*(1+{ref_wr}/100)"
+                else:
+                    cell.value = (sub.mat_price or 0) * (1 + (sub.waste_rate or 0) / 100)
             elif field_key == "waste":
-                cell.value = parent.waste_rate or 0
+                cell.value = sub.waste_rate or 0
             elif field_key == "aux":
                 cell.value = 0
             elif field_key == "mgmt":
-                cell.value = ep * mgmt_rate
+                ref_lab = self._col_ref("lab", r)
+                if self.req.use_formula and ref_lab:
+                    cell.value = f"={ref_lab}*{mgmt_rate}"
+                else:
+                    cell.value = ep * mgmt_rate
             elif field_key == "profit":
-                cell.value = ep * profit_rate
+                ref_lab = self._col_ref("lab", r)
+                if self.req.use_formula and ref_lab:
+                    cell.value = f"={ref_lab}*{profit_rate}"
+                else:
+                    cell.value = ep * profit_rate
             elif field_key == "usp":
-                cell.value = ep  # 子目 USP 不加管理费/利润
+                cell.value = ep  # 子目 USP 不加管理费/利润，保留静态值
             elif field_key == "total":
-                cell.value = ep * sub_qty
+                ref_lab = self._col_ref("lab", r)
+                ref_qty = self._col_ref("qty", r)
+                if self.req.use_formula and ref_lab and ref_qty:
+                    cell.value = f"={ref_lab}*{ref_qty}"
+                else:
+                    cell.value = ep * sub_qty
             elif field_key == "remark":
                 cell.value = ""
 

@@ -51,7 +51,8 @@ class ExcelExporter:
         self._write_header_row()
         self._write_data_rows()
         self._write_summary_row()
-        self._apply_formulas()
+        if self.req.use_formula:
+            self._apply_formulas()
         self._apply_styles()
         self._set_column_widths()
         self._set_row_heights()
@@ -223,10 +224,12 @@ class ExcelExporter:
             return labor
         elif key == "mat_name":
             return row.mat_name or ""
-        elif key == "mat":
+        elif key == "mat_price":
             return row.mat_price or 0
+        elif key == "mat":
+            return (row.mat_price or 0) * (1 + (row.waste_rate or 0) / 100)
         elif key == "waste":
-            return row.waste_rate or 0
+            return ""  # 清单行不显示损耗率（多条子目可能有不同主材）
         elif key == "aux":
             return row.aux_cost or 0
         elif key == "mgmt":
@@ -261,10 +264,12 @@ class ExcelExporter:
             return sub_qty
         elif key == "lab":
             return ep
+        elif key == "mat_price":
+            return sub.mat_price or 0
         elif key == "mat":
-            return 0
+            return (sub.mat_price or 0) * (1 + (sub.waste_rate or 0) / 100)
         elif key == "waste":
-            return parent.waste_rate or 0
+            return sub.waste_rate or 0
         elif key == "aux":
             return 0
         elif key == "mgmt":
@@ -285,6 +290,7 @@ class ExcelExporter:
         """将数据行的计算列替换为 Excel 公式"""
         lab_col = self._col_letter("lab")
         mat_col = self._col_letter("mat")
+        mat_price_col = self._col_letter("mat_price")
         waste_col = self._col_letter("waste")
         aux_col = self._col_letter("aux")
         mgmt_col = self._col_letter("mgmt")
@@ -311,16 +317,21 @@ class ExcelExporter:
                 cell = self.ws.cell(row=R, column=self.col_idx["profit"] + 1)
                 cell.value = f"={lab_col}{R}*{profit_rate}"
 
+            # 主材费：
+            # - 子目行：公式 = mat_price*(1+waste/100)
+            # - 父行：保持静态值（损耗率列已留空）
+            if is_sub and mat_col and mat_price_col and waste_col:
+                cell = self.ws.cell(row=R, column=self.col_idx["mat"] + 1)
+                cell.value = f"={mat_price_col}{R}*(1+{waste_col}{R}/100)"
+
             # 综合单价：
             # - 子目行：保留值 = unit_price（不含管理费/利润加成）
-            # - 父行：公式 = 人工 + 主材×(1+损耗率/100) + 辅材 + 管理费 + 利润
+            # - 父行：公式 = 人工 + 主材 + 辅材 + 管理费 + 利润
             if usp_col and not is_sub:
                 parts = []
                 if lab_col:
                     parts.append(f"{lab_col}{R}")
-                if mat_col and waste_col:
-                    parts.append(f"{mat_col}{R}*(1+{waste_col}{R}/100)")
-                elif mat_col:
+                if mat_col:
                     parts.append(f"{mat_col}{R}")
                 if aux_col:
                     parts.append(f"{aux_col}{R}")

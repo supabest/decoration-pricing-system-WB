@@ -22,6 +22,8 @@ class ExportSubItem(BaseModel):
     coef: float = 1.0             # 系数
     conv: float = 1.0             # 换算系数
     unit_price: float = 0.0       # effPrice 计算后的单价
+    mat_price: float = 0.0        # 子目专属主材单价
+    waste_rate: float = 0.0       # 子目专属主材损耗率 %
 
 
 class ExportRow(BaseModel):
@@ -32,7 +34,6 @@ class ExportRow(BaseModel):
     unit: str = ""
     qty: float = 0.0
     remark: str = ""
-    mat_name: str = ""            # 主材名称
     mat_price: float = 0.0        # 主材单价
     waste_rate: float = 5.0       # 损耗率 %
     aux_cost: float = 0.0         # 辅材费
@@ -61,6 +62,7 @@ class ExportRequest(BaseModel):
     profit_rate: float = 7.0      # 利润率 %
     group_folding: bool = True    # 是否分组折叠
     show_subs: bool = False       # 是否显示子目明细
+    use_formula: bool = True      # 是否写入 Excel 公式（否则静态数值）
 
     class Config:
         # 允许额外字段（前端可能发送多余数据）
