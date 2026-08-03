@@ -247,7 +247,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
     <button class="btn btn-sm" id="aiBtn" onclick="startAiPricing()" style="background:linear-gradient(135deg,#2b5ea7,#1d6fa5);color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:inherit">✨ AI 一键套价</button>
     <button class="btn btn-sm" onclick="showExportModal()" style="background:var(--grn-d);border-color:var(--grn);color:var(--grn);font-weight:600">⬇ 导出套价表</button>
 
-    <button class="btn btn-sm" onclick="openKnowledgeViewer()">🧠 知识库</button>
+    <button class="btn btn-sm hidden" id="kbBtn" onclick="openKnowledgeViewer()">🧠 知识库</button>
 
     <button class="btn btn-sm" onclick="openFeedback()" style="color:var(--acc);border-color:var(--acc)">💡 意见反馈</button>
     <button class="btn btn-sm" onclick="openUnmatchedModal()" style="color:var(--yel);border-color:var(--yel)">📋 补缺清单</button>
@@ -521,7 +521,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <span class="modal-ttl">🧠 系统知识库</span>
       <div style="display:flex;gap:6px;align-items:center">
         <span id="kbStats" style="font-size:11px;color:var(--tx3);margin-right:8px"></span>
-        <button class="btn btn-sm" onclick="document.getElementById('knowledgeFileIn').click()" style="margin-right:4px">📤 上传知识文件</button>
+        <button class="btn btn-sm hidden" id="kbUploadBtn" onclick="document.getElementById('knowledgeFileIn').click()" style="margin-right:4px">📤 上传知识文件</button>
         <button class="modal-x" onclick="closeKnowledgeViewer()">×</button>
       </div>
     </div>
@@ -1646,7 +1646,26 @@ function clearFeedback() {
 
 // ═══════════ 知识库查看器 ═══════════
 let kbCurTab = 'rules';
+let _isAdminUser = false;
+async function checkAdmin() {
+  const token = localStorage.getItem('sb-access-token');
+  if (!token || !CURRENT_USER) return;
+  try {
+    const r = await fetch(SUPABASE_URL+'/rest/v1/profiles?select=is_admin&id=eq.'+CURRENT_USER.id, {
+      headers: {'apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+token}
+    });
+    if (r.ok) {
+      const data = await r.json();
+      _isAdminUser = data[0]?.is_admin === true;
+      if (_isAdminUser) {
+        document.getElementById('kbBtn').classList.remove('hidden');
+        document.getElementById('kbUploadBtn').classList.remove('hidden');
+      }
+    }
+  } catch(e) {}
+}
 function openKnowledgeViewer() {
+  if (!_isAdminUser) { toast('仅管理员可访问知识库'); return; }
   document.getElementById('kbViewerMod').classList.remove('hidden');
   renderKbContent();
 }
@@ -2590,6 +2609,7 @@ function openUnmatchedModal() {
       loadMaterialPrices(),          // 新版信息价库
       loadMainMaterialCategories(),  // 主材选品库
       init(),                        // 基准价 + 渲染侧栏
+      checkAdmin(),                  // 检查管理员→显示知识库按钮
     ]);
   } catch(e) { alert('启动失败: '+e.message); }
 })();
