@@ -20,11 +20,20 @@ export default function LoginPage() {
       let loginEmail = identifier.trim()
       // 非邮箱格式 → 按昵称查找邮箱
       if (!loginEmail.includes('@')) {
-        const { data, error: lookupErr } = await (supabase as any)
+        // 优先查管理员，再查普通用户（大小写不敏感）
+        let { data, error: lookupErr } = await (supabase as any)
           .from('profiles')
           .select('email')
           .ilike('display_name', loginEmail)
-          .single()
+          .eq('is_admin', true)
+          .maybeSingle()
+        if (!data) {
+          ({ data, error: lookupErr } = await (supabase as any)
+            .from('profiles')
+            .select('email')
+            .ilike('display_name', loginEmail)
+            .maybeSingle())
+        }
         if (lookupErr || !data?.email) {
           throw { message: '未找到昵称"' + loginEmail + '"对应的账户，请确认昵称或使用邮箱登录' }
         }
