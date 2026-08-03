@@ -2378,6 +2378,16 @@ async function priceOne(r,key) {
   console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
   if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
 
+  // ⚡ 强制候选直通：工序匹配器找到的子目直接返回，跳过API（最可靠）
+  if (forced.length > 0) {
+    const matched = forced.map(f => ({
+      id: f.id, sheet: f.sheet, confidence: 90,
+      reason: f._reason || '工序精确匹配'
+    }));
+    console.log('✅ 精确匹配 ['+r.name+'] → '+matched.map(m=>m.id+'('+m.sheet+')').join(', '));
+    return {matched, overall_confidence: 90, note: '工序精确匹配'};
+  }
+
   // ⚡ 智能直通：单工序项目跳过API，复合工序必须调AI
   const specLower=(r.spec||'').toLowerCase();
   const multiProcess=/(?:找平|铺贴|刮腻子|扇灰|批灰|涂料|背胶|挂贴|龙骨|石膏板|夹板|硬包|软包|墙布|墙纸|防水|填缝|卡扣|踢脚线|抹灰|砌筑|干挂|湿挂)/g;
