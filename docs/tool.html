@@ -2376,7 +2376,7 @@ function forceCandidates(name, spec, unit) {
       match: () => [{id:'TG-017', sheet:'铁工班组', reason:'金属吊顶'}] },
     { test: s => /活动脚手架|脚手架/.test(s),
       match: () => [{id:'ZY-02', sheet:'其他班组', reason:'活动脚手架'}] },
-    { test: s => /假梁|天花侧板|阻燃夹板/.test(s),
+    { test: s => /假梁|天花侧板|阻燃夹板/.test(s) && !/门窗套|金属/.test(s),
       match: () => [{id:'YQ-027', sheet:'木工班组', reason:'天棚基层板无龙骨'}] },
   ];
 
