@@ -2349,17 +2349,19 @@ function forceCandidates(spec, unit) {
   ];
 
   const forced = [];
+  try {
   for (const rule of rules) {
     if (rule.test(specLower)) {
       const matches = rule.match();
       for (const m of matches) {
         const it = getBench(m.id, m.sheet);
         if (it && !forced.find(f => f.id === m.id && f.sheet === m.sheet)) {
-          forced.push({...it, _reason: m.reason});
+          forced.push({...it, sheet: m.sheet, _reason: m.reason});
         }
       }
     }
   }
+  } catch(e) { console.warn('forceCandidates error:', e.message); }
   return forced;
 }
 
