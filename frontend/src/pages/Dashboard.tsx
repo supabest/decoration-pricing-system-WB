@@ -67,7 +67,8 @@ export default function Dashboard() {
     { emoji: '💰', label: '材料信息价', desc: '维护辅材市场价格', path: '/admin.html#prices', color: '#0b7b50', external: true },
     ...(user?.is_admin ? [
       { emoji: '👥', label: '用户审批', desc: '管理用户注册与审批', path: '/approval', color: '#b07000' },
-      { emoji: '📋', label: '基准价管理', desc: '批量导入/更新基准价数据', path: '/admin.html', color: '#1d6fa5', external: true },
+      { emoji: '📋', label: '基准价管理', desc: '浏览/管理497条基准价', path: '/admin.html#benchmark', color: '#1d6fa5', external: true },
+      { emoji: '🧠', label: '知识库', desc: 'AI套价规则与同义词管理', path: '/admin.html#knowledge', color: '#7b4b9a', external: true },
     ] : []),
   ]
 
