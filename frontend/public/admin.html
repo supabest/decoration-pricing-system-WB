@@ -666,16 +666,33 @@ async function saveMonthPrices() {
 // ═══════════ 知识库 Tab ═══════════
 async function loadKnowledge() {
   const token = localStorage.getItem('sb-access-token');
-  const h = {'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+token};
-  const r = await fetch(SUPABASE_URL+'/rest/v1/ai_knowledge?select=*&order=category.asc,keyword.asc',{headers:h});
-  const data = await r.json();
+  let data = [];
+  if (token) {
+    try {
+      const h = {'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+token};
+      const r = await fetch(SUPABASE_URL+'/rest/v1/ai_knowledge?select=*&order=category.asc,keyword.asc',{headers:h});
+      if (r.ok) data = await r.json();
+    } catch(e) { console.warn('知识库加载失败', e); }
+  } else {
+    try {
+      const r = await fetch('ai_knowledge_base.json');
+      if (r.ok) {
+        const j = await r.json();
+        const cats = { tips: '技巧', synonyms: '同义词', rules: '规则' };
+        Object.entries(cats).forEach(([key, label]) => {
+          (j[key] || []).forEach(item => {
+            data.push({ id: Date.now()+Math.random(), category: label, keyword: item.keyword||'', content: item.content||'', team: item.team||'' });
+          });
+        });
+      }
+    } catch(e) { console.warn('本地知识库加载失败', e); }
+  }
   const el = document.getElementById('knowledgeItems');
   if (!Array.isArray(data) || !data.length) {
-    el.innerHTML = '<div style="color:#888;padding:8px">暂无知识，点击"新增"添加</div>';
+    el.innerHTML = '<div style="color:#888;padding:8px">暂无知识，登录后可连接 Supabase 获取知识库</div>';
     return;
   }
 
-  // 按分类分组显示
   const groups = { '技巧': { icon: '💡', rows: [] }, '同义词': { icon: '🔄', rows: [] }, '规则': { icon: '📐', rows: [] } };
   data.forEach(k => {
     const cat = k.category || '规则';
@@ -695,10 +712,7 @@ async function loadKnowledge() {
         '<span style="color:#888;font-size:11px">'+esc(k.team||'')+'</span>'+
         '</div>'+
         '<div style="font-size:12px;color:#555;margin:2px 0 4px">'+esc(k.content)+'</div>'+
-        '<div style="display:flex;gap:4px">'+
-        '<button class="btn btn-sm" onclick="editKnowledge('+k.id+')" style="color:var(--acc);padding:2px 8px;font-size:10px">✏️ 编辑</button>'+
-        '<button class="btn btn-sm" onclick="delKnowledge('+k.id+')" style="color:var(--red);padding:2px 8px;font-size:10px">🗑 删除</button>'+
-        '</div></div>';
+        '</div>';
     });
     html += '</div>';
   }
