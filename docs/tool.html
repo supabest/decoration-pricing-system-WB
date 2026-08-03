@@ -2301,8 +2301,78 @@ function parseAi(raw) {
   try{return JSON.parse(raw.replace(/```json|```/g,'').trim());}catch(e){return null;}
 }
 
+// 工序精确匹配器：扫描 spec 提取工序词，从全库精确匹配子目，确保必选子目进入候选
+function forceCandidates(spec, unit) {
+  const specLower = (spec||'').toLowerCase();
+  const rules = [
+    // [工序关键词, 匹配函数/子目ID, 备注]
+    { test: s => /找平|水泥砂浆|结合层/.test(s) && (/楼地面|地面/.test(s) || !/墙面/.test(s)),
+      match: () => [{id:'NS-01', sheet:'泥水班组', reason:'地面找平层'}] },
+    { test: s => /找平|水泥砂浆/.test(s) && /墙面/.test(s),
+      match: () => [{id:'NS-028', sheet:'泥水班组', reason:'墙面找平层'}] },
+    { test: s => /刮腻子|扇灰|批灰|腻子/.test(s),
+      match: () => [{id:'YQ-05', sheet:'油漆班组', reason:'刮腻子/扇灰工序'}] },
+    { test: s => /涂料|乳胶漆|无机涂料/.test(s) && /天棚|天花|吊顶/.test(s),
+      match: () => [{id:'YQ-07', sheet:'油漆班组', reason:'天棚涂料(YQ-07非YQ-02)'}] },
+    { test: s => /涂料|乳胶漆|无机涂料/.test(s) && !/天棚|天花|吊顶/.test(s),
+      match: () => [{id:'YQ-02', sheet:'油漆班组', reason:'墙面涂料'}] },
+    { test: s => /背胶|界面剂/.test(s),
+      match: () => [{id:'NS-029', sheet:'泥水班组', reason:'瓷砖背胶处理'}] },
+    { test: s => /龙骨|吊杆/.test(s) && /石膏板/.test(s),
+      match: () => [{id:'YQ-025', sheet:'木工班组', reason:'轻钢龙骨+石膏板吊顶'}] },
+    { test: s => /灯槽/.test(s) && /500/.test(s),
+      match: () => [{id:'YQ-030', sheet:'木工班组', reason:'灯槽(500mm内)'}] },
+    { test: s => /灯槽/.test(s) && !/500/.test(s),
+      match: () => [{id:'YQ-030', sheet:'木工班组', reason:'灯槽(默认500内)'}] },
+    { test: s => /窗帘盒/.test(s),
+      match: () => [{id:'YQ-032', sheet:'木工班组', reason:'窗帘盒'}] },
+    { test: s => /卡扣|扣式|插扣|成品.*踢脚线/.test(s),
+      match: () => [{id:'TG-08', sheet:'铁工班组', reason:'卡扣金属踢脚线(一道工序)'}] },
+    { test: s => /不锈钢.*踢脚线|金属踢脚线/.test(s) && !/卡扣|扣式|插扣/.test(s),
+      match: () => [{id:'YQ-06', sheet:'木工班组', reason:'踢脚线基层'}, {id:'TG-08', sheet:'铁工班组', reason:'金属面层'}] },
+    { test: s => /挂贴|干挂/.test(s) && /瓷砖|墙砖|大板/.test(s),
+      match: () => [{id:'NS-035', sheet:'泥水班组', reason:'墙柱面瓷砖挂贴(大板)'}] },
+    { test: s => /铺贴|粘贴/.test(s) && /楼地面|地面|门槛/.test(s) && /大板|900/.test(s),
+      match: () => [{id:'NS-09', sheet:'泥水班组', reason:'大板砖地面铺贴'}] },
+    { test: s => /铺贴|粘贴/.test(s) && /楼地面|地面|门槛/.test(s) && !/大板|900/.test(s),
+      match: () => [{id:'NS-08', sheet:'泥水班组', reason:'常规瓷砖地面铺贴'}] },
+    { test: s => /铺贴|粘贴/.test(s) && /石材.*门槛|门槛.*石材|波打线/.test(s),
+      match: () => [{id:'NS-017', sheet:'泥水班组', reason:'石材门槛/波打线'}] },
+    { test: s => /石材.*窗台|窗台.*石材/.test(s),
+      match: () => [{id:'NS-040', sheet:'泥水班组', reason:'石材窗台铺贴'}] },
+    { test: s => /蜂窝铝板|铝板.*天花/.test(s),
+      match: () => [{id:'TG-017', sheet:'铁工班组', reason:'金属吊顶'}] },
+    { test: s => /活动脚手架|脚手架/.test(s),
+      match: () => [{id:'ZY-02', sheet:'各专业班组', reason:'活动脚手架'}] },
+    { test: s => /假梁|天花侧板|阻燃夹板/.test(s),
+      match: () => [{id:'YQ-027', sheet:'木工班组', reason:'天棚基层板无龙骨'}] },
+  ];
+
+  const forced = [];
+  for (const rule of rules) {
+    if (rule.test(specLower)) {
+      const matches = rule.match();
+      for (const m of matches) {
+        const it = getBench(m.id, m.sheet);
+        if (it && !forced.find(f => f.id === m.id && f.sheet === m.sheet)) {
+          forced.push({...it, _reason: m.reason});
+        }
+      }
+    }
+  }
+  return forced;
+}
+
 async function priceOne(r,key) {
   const cands=buildCandidates(r.name,r.spec,r.unit);
+  // 工序精确匹配：将必选子目插入候选列表头部
+  const forced = forceCandidates(r.spec, r.unit);
+  if (forced.length > 0) {
+    for (const f of forced.reverse()) {
+      cands.unshift(f);  // 插入到最前面
+    }
+    console.log('🎯 强制候选 ['+r.name+']: '+forced.map(f=>f.id+'('+f._reason+')').join(', '));
+  }
   console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
   if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
 
