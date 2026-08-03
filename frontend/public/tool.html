@@ -2390,6 +2390,10 @@ function forceCandidates(name, spec, unit) {
     }
   }
   } catch(e) { console.warn('forceCandidates error:', e.message); }
+  // 去冲突：有YQ-025(龙骨板)就不要YQ-027(无龙骨板)，有YQ-07(天棚涂料)就不要YQ-02(墙面涂料)
+  const ids = forced.map(f => f.id);
+  if (ids.includes('YQ-025')) { for (let i=forced.length-1; i>=0; i--) { if (forced[i].id==='YQ-027') forced.splice(i,1); } }
+  if (ids.includes('YQ-07')) { for (let i=forced.length-1; i>=0; i--) { if (forced[i].id==='YQ-02' && forced[i].sheet==='油漆班组') forced.splice(i,1); } }
   return forced;
 }
 
