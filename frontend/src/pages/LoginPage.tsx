@@ -2,11 +2,12 @@ import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { getChineseErrorMessage } from '../lib/authErrors'
+import { supabase } from '../lib/supabaseClient'
 
 export default function LoginPage() {
   const { login } = useAuth()
   const navigate = useNavigate()
-  const [email, setEmail] = useState('')
+  const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -16,7 +17,20 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      await login(email, password)
+      let loginEmail = identifier.trim()
+      // 非邮箱格式 → 按昵称查找邮箱
+      if (!loginEmail.includes('@')) {
+        const { data, error: lookupErr } = await (supabase as any)
+          .from('profiles')
+          .select('email')
+          .eq('display_name', loginEmail)
+          .single()
+        if (lookupErr || !data?.email) {
+          throw { message: '未找到昵称"' + loginEmail + '"对应的账户，请确认昵称或使用邮箱登录' }
+        }
+        loginEmail = data.email
+      }
+      await login(loginEmail, password)
       navigate('/pricing')
     } catch (err: any) {
       setError(getChineseErrorMessage(err))
@@ -61,14 +75,15 @@ export default function LoginPage() {
 
           <div style={{ marginBottom: 16 }}>
             <label style={{ display: 'block', marginBottom: 6, color: '#333', fontWeight: 500, fontSize: 14 }}>
-              邮箱
+              邮箱或昵称
             </label>
             <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              placeholder="请输入注册邮箱"
+              type="text"
+              value={identifier}
+              onChange={e => setIdentifier(e.target.value)}
+              placeholder="请输入昵称或注册邮箱"
               required
+              autoComplete="username"
               style={{
                 width: '100%', padding: '10px 14px', borderRadius: 8,
                 border: '1px solid #d9d9d9', fontSize: 15, boxSizing: 'border-box',
