@@ -286,6 +286,14 @@ async function loadUsers() {
   const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   if (!token && !isLocal) { showMsg('请先登录', true); return; }
   document.getElementById('userLabel').textContent = user.display_name || user.email || user.id || '本地预览';
+  if (isLocal && !token) {
+    // localhost 无 token → 仅显示占位，不调用 Supabase
+    document.getElementById('pendingUsers').innerHTML = '<div class="empty">本地预览模式</div>';
+    document.getElementById('allUsers').innerHTML = '<div class="empty">登录后查看</div>';
+    document.getElementById('unmatchedItems').innerHTML = '<div class="empty">登录后查看</div>';
+    document.getElementById('feedbackItems').innerHTML = '<div class="empty">登录后查看</div>';
+    return;
+  }
   const h = authHeaders();
   const g = async (url) => { const r=await fetch(url,{headers:h}); if(!r.ok)throw new Error(await r.text()); return r.json(); };
   try {
