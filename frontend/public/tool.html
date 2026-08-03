@@ -2256,30 +2256,35 @@ function routeSheets(name,spec) {
 }
 
 function buildCandidates(name,spec,unit) {
-  const sheets=routeSheets(name,spec);
-  // 在候选 sheet 内再做关键词二次筛选，最多取60条
+  let sheets=routeSheets(name,spec);
+  // 路由结果≤2个班组时，自动补全所有班组避免遗漏跨工种工序
+  if (sheets.length <= 2) sheets = Object.keys(DB);
   const allCands=[];
   sheets.forEach(sh=>{
     (DB[sh]||[]).forEach(it=>{ allCands.push({...it,sheet:sh}); });
   });
-  // 中文分词：名称+特征合并，用2字滑动窗口切分，同时保留空格分隔的完整词
+  // 中文分词
   const fullText=(name+' '+spec).replace(/[（）()\-—\/\s]+/g,' ');
   const words=[];
   for(let i=0;i<fullText.length-1;i++){const bigram=fullText.substring(i,i+2);if(!/[，。、；：！？\s\d，　]/.test(bigram)) words.push(bigram);}
-  // 同时保留原按空格切分的完整词（用于匹配多字专业术语）
   fullText.split(/\s+/).filter(w=>w.length>=3).forEach(w=>words.push(w));
-  // 去重
   const uniqWords=[...new Set(words)];
+  // 从spec提取专业关键词（材料名、工艺名），用于深度匹配
+  const specLower=(spec||'').toLowerCase();
+  const craftWords=['找平','铺贴','刮腻子','扇灰','批灰','涂料','乳胶漆','背胶','挂贴','卡扣','硬包','软包','龙骨','石膏板','夹板','灯槽','墙布','墙纸','踢脚线','防水','填缝','勾缝','打磨','涂刷','喷涂','滚涂','裱糊','粘贴','干挂','湿挂','砌筑','回填','抹灰'];
+  const specKeywords=craftWords.filter(w=>specLower.includes(w));
+  // 评分
   const scored=allCands.map(it=>{
     let score=0;
     uniqWords.forEach(w=>{ if(it.name.includes(w)) score+=2; if(it.spec.includes(w)) score+=1; });
-    // 更短的关键词（2字精确匹配）加权
     if(uniqWords.some(w=>w.length===2&&it.name.includes(w))) score+=1;
     if(unit&&it.unit===unit) score+=3;
+    // spec关键词匹配加权：候选子目名含spec中的工艺词→大幅加分
+    specKeywords.forEach(w=>{ if(it.name.includes(w)) score+=4; });
     return {it,score};
   });
   scored.sort((a,b)=>b.score-a.score);
-  return scored.slice(0,60).map(x=>x.it);
+  return scored.slice(0,80).map(x=>x.it);  // 扩大到80条候选
 }
 
 async function callDs(key,sys,user) {
@@ -2322,10 +2327,26 @@ ${AI_KNOWLEDGE.tips.map(t=>`【技巧】${t.keyword}：${t.content}${t.team?"（
 ${AI_KNOWLEDGE.synonyms.map(s=>`【同义词】"${s.keyword}" → 标准名称为"${s.content}"${s.team?"（"+s.team+"）":""}`).join("\n")}
 ${AI_KNOWLEDGE.rules.map(r=>`【规则】含关键词"${r.keyword}"时：${r.content}${r.team?"（"+r.team+"）":""}`).join("\n")}
 
-## 关键原则：拆分工序
-清单项目经常描述多道完整工序（如"基层+面层+涂刷"），你必须：
-1. **仔细分析【项目名称】和【项目特征】，从特征描述的"工作内容"、"基层材料"、"面层材料"、"龙骨材料"、"涂料品种"等字段中，识别出所有独立工序**
-2. **每道工序匹配1个子目**，不要遗漏任何工序。项目特征中列出的每种材料/工艺，通常都对应一道工序
+## 关键原则：像造价工程师一样拆分工序
+清单特征(第4行)是完整的施工工艺描述，你必须逐行阅读，提取所有独立工序：
+1. **找平/找平层/水泥砂浆/结合层** → 需要找平子目（泥水NS-01/NS-028等）
+2. **龙骨/吊杆/主龙骨/轻钢龙骨** → 需要龙骨基层子目（木工YQ-025/YQ-014等）
+3. **石膏板/夹板/阻燃板/基层板** → 需要基层板子目（注意双层=可能已包含）
+4. **刮腻子/扇灰/批灰/找平腻子** → 需要扇灰子目（油漆YQ-05）
+5. **涂料/乳胶漆/无机涂料** → 需要涂刷子目（墙面YQ-02/天棚YQ-07，注意区分）
+6. **背胶/界面剂** → 需要背胶处理子目（泥水NS-029）
+7. **铺贴/粘贴/挂贴/干挂** → 需要面层铺贴子目
+8. **硬包/软包/墙布/墙纸** → 需要饰面子目
+9. **踢脚线/金属装饰线** → 铁工TG-08（卡扣款一道，非卡扣需基层）
+10. **每行特征描述中的材料/工艺对应一道独立工序，多道材料=多个子目**
+
+典型拆解示例：
+- 瓷砖楼地面+结合层+水泥砂浆 → NS-01找平 + NS-08/NS-09铺贴（2个子目）
+- 墙面+刮腻子+涂料 → YQ-05扇灰 + YQ-02涂刷（2个子目）
+- 天棚+龙骨+石膏板+刮腻子+涂料 → YQ-025龙骨板 + YQ-05扇灰 + YQ-07天棚涂料（3个子目，注意天棚涂料用YQ-07不是YQ-02）
+- 大板砖墙面+背胶+胶粘剂 → NS-028找平 + NS-029背胶 + NS-035挂贴（3个子目）
+- 卡扣款金属踢脚线 → TG-08一道工序即可（成品卡扣安装，不需基层）
+- 无机涂料=乳胶漆同类别，任何颜色涂料工艺相同
 3. 典型多工序案例：
    - "轻钢龙骨夹板基层天花硬包饰面" → 轻钢龙骨基层（木工）+ 夹板基层（木工）+ 硬包/饰面安装（木工）（3个子目）
    - "石膏板天花连扇灰油乳胶漆" → 石膏板基层 + 扇灰/刮腻子 + 乳胶漆涂刷（3个子目）
