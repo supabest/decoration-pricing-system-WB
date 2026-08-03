@@ -2398,14 +2398,25 @@ function forceCandidates(name, spec, unit) {
 }
 
 async function priceOne(r,key) {
-  // 发送全库497条+完整spec给DeepSeek（和我聊天环境一模一样）
+  // 工序精确匹配器
+  const forced = forceCandidates(r.name, r.spec, r.unit);
+  if (forced.length > 0) {
+    const matched = forced.map(f => ({
+      id: f.id, sheet: f.sheet, confidence: 90,
+      reason: f._reason || '工序精确匹配'
+    }));
+    console.log('✅ 精确匹配 ['+r.name+'] → '+matched.map(m=>m.id+'('+m.sheet+')').join(', '));
+    return {matched, overall_confidence: 90, note: '工序精确匹配'};
+  }
+
+  // 精确匹配未命中→发送全库497条+完整spec给AI（和我看到的一样）
   const allItems = [];
   Object.keys(DB).forEach(sh => {
     (DB[sh]||[]).forEach(it => {
-      allItems.push(it.id+'|'+it.name+'|'+(it.spec||'')+'|'+it.unit+'|'+sh);
+      allItems.push(`${it.id}|${it.name}|${(it.spec||'').substring(0,80)}|${it.unit}|${sh}`);
     });
   });
-  console.log('[AI] 全库匹配 ['+r.name+'] 发送: '+allItems.length+'条完整spec');
+  console.log('🤖 AI全库匹配 ['+r.name+'] 候选: '+allItems.length+'条');
   if(!allItems.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
 
   // ⚡ 智能直通：单工序项目跳过API，复合工序必须调AI
