@@ -2302,9 +2302,37 @@ function parseAi(raw) {
 }
 
 // 工序精确匹配器：扫描 spec 提取工序词，从全库精确匹配子目，确保必选子目进入候选
-function forceCandidates(spec, unit) {
+function forceCandidates(name, spec, unit) {
+  const nameLower = (name||'').toLowerCase();
   const specLower = (spec||'').toLowerCase();
+  const txt = nameLower + ' ' + specLower;
   const rules = [
+    // 项目名称精确映射（比 spec 关键词更可靠）
+    { test: n => /瓷砖楼地面|瓷砖地面|大板.*地面/.test(n) && /900|大板/.test(n),
+      match: () => [{id:'NS-09', sheet:'泥水班组', reason:'大板砖地面铺贴(900x1800)'}] },
+    { test: n => /瓷砖楼地面|瓷砖地面/.test(n) && !/900|大板/.test(n),
+      match: () => [{id:'NS-08', sheet:'泥水班组', reason:'常规瓷砖地面铺贴'}] },
+    { test: n => /瓷砖门槛|门槛.*瓷砖/.test(n) && /大板|900/.test(n),
+      match: () => [{id:'NS-09', sheet:'泥水班组', reason:'大板砖门槛石铺贴'}] },
+    { test: n => /瓷砖门槛/.test(n) && !/大板|900/.test(n),
+      match: () => [{id:'NS-08', sheet:'泥水班组', reason:'瓷砖门槛石铺贴'}] },
+    { test: n => /瓷砖墙面/.test(n) && /大板|900/.test(n),
+      match: () => [{id:'NS-035', sheet:'泥水班组', reason:'大板砖墙面挂贴'}] },
+    { test: n => /瓷砖墙面/.test(n) && !/大板|900/.test(n),
+      match: () => [{id:'NS-034', sheet:'泥水班组', reason:'常规瓷砖墙面粘贴'}] },
+    { test: n => /石材门槛/.test(n),
+      match: () => [{id:'NS-017', sheet:'泥水班组', reason:'石材门槛/波打线铺贴'}] },
+    { test: n => /石材窗台/.test(n),
+      match: () => [{id:'NS-040', sheet:'泥水班组', reason:'石材窗台铺贴'}] },
+    { test: n => /挡水条/.test(n),
+      match: () => [{id:'NS-020', sheet:'泥水班组', reason:'石材挡水石铺贴'}] },
+    { test: n => /踢脚线.*瓷砖|瓷砖.*踢脚线|块料踢脚/.test(n),
+      match: () => [{id:'NS-054', sheet:'泥水班组', reason:'踢脚线瓷砖粘贴'}] },
+    { test: n => /蜂窝铝板/.test(n),
+      match: () => [{id:'TG-017', sheet:'铁工班组', reason:'金属/玻璃吊顶'}] },
+    { test: n => /木地板|复合地板|实木地板/.test(n),
+      match: () => [{id:'YQ-02', sheet:'木工班组', reason:'室内木地板铺设'}] },
+    // spec 工艺关键词匹配
     // [工序关键词, 匹配函数/子目ID, 备注]
     { test: s => /找平|水泥砂浆|结合层/.test(s) && (/楼地面|地面/.test(s) || !/墙面/.test(s)),
       match: () => [{id:'NS-01', sheet:'泥水班组', reason:'地面找平层'}] },
@@ -2368,7 +2396,7 @@ function forceCandidates(spec, unit) {
 async function priceOne(r,key) {
   const cands=buildCandidates(r.name,r.spec,r.unit);
   // 工序精确匹配：将必选子目插入候选列表头部
-  const forced = forceCandidates(r.spec, r.unit);
+  const forced = forceCandidates(r.name, r.spec, r.unit);
   if (forced.length > 0) {
     for (const f of forced.reverse()) {
       cands.unshift(f);  // 插入到最前面
