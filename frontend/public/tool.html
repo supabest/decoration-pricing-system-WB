@@ -2398,19 +2398,8 @@ function forceCandidates(name, spec, unit) {
 }
 
 async function priceOne(r,key) {
-  const cands=buildCandidates(r.name,r.spec,r.unit);
-  // 工序精确匹配：将必选子目插入候选列表头部
+  // 工序精确匹配器
   const forced = forceCandidates(r.name, r.spec, r.unit);
-  if (forced.length > 0) {
-    for (const f of forced.reverse()) {
-      cands.unshift(f);  // 插入到最前面
-    }
-    console.log('🎯 强制候选 ['+r.name+']: '+forced.map(f=>f.id+'('+f._reason+')').join(', '));
-  }
-  console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
-  if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
-
-  // ⚡ 强制候选直通：工序匹配器找到的子目直接返回，跳过API（最可靠）
   if (forced.length > 0) {
     const matched = forced.map(f => ({
       id: f.id, sheet: f.sheet, confidence: 90,
@@ -2419,6 +2408,16 @@ async function priceOne(r,key) {
     console.log('✅ 精确匹配 ['+r.name+'] → '+matched.map(m=>m.id+'('+m.sheet+')').join(', '));
     return {matched, overall_confidence: 90, note: '工序精确匹配'};
   }
+
+  // 精确匹配未命中→发送全库497条+完整spec给AI（和我看到的一样）
+  const allItems = [];
+  Object.keys(DB).forEach(sh => {
+    (DB[sh]||[]).forEach(it => {
+      allItems.push(`${it.id}|${it.name}|${(it.spec||'').substring(0,80)}|${it.unit}|${sh}`);
+    });
+  });
+  console.log('🤖 AI全库匹配 ['+r.name+'] 候选: '+allItems.length+'条');
+  if(!allItems.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
 
   // ⚡ 智能直通：单工序项目跳过API，复合工序必须调AI
   const specLower=(r.spec||'').toLowerCase();
@@ -2440,7 +2439,7 @@ async function priceOne(r,key) {
     console.log('🔍 复合工序 ['+r.name+'] 工艺词数='+processCount+'，调用AI深度匹配');
   }
 
-  const candStr=cands.map(c=>c.id+'|'+c.name+'|'+(c.spec||'')+'|'+c.unit+'|'+c.sheet).join('\n');
+  const candStr=allItems.join('\n');
 
   const sys=`你是精装修工程造价专家，负责将清单项目与企业基准价定额子目精确匹配。
 
