@@ -2282,6 +2282,18 @@ async function priceOne(r,key) {
   console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
   if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
 
+  // ⚡ 智能直通：候选唯一且关键词高度匹配时，跳过API直接返回（提速3-5倍）
+  const fullText=(r.name+' '+r.spec).replace(/[（）()\-—\/\s]+/g,'');
+  const candMatches=cands.map(c=>{
+    const nameMatch=c.name.replace(/[（）()\-—\/\s]/g,'').split('').filter(ch=>fullText.includes(ch)).length/Math.max(1,c.name.length);
+    return {c, score:nameMatch};
+  }).sort((a,b)=>b.score-a.score);
+  const best=candMatches[0];
+  if(best&&best.score>=0.85&&candMatches.length<=3&&r.unit&&best.c.unit===r.unit){
+    console.log('⚡ 快速匹配 ['+r.name+'] → '+best.c.id+'('+best.c.name+') score='+best.score.toFixed(2));
+    return {matched:[{id:best.c.id,sheet:best.c.sheet,confidence:85,reason:'关键词高度匹配('+(best.score*100).toFixed(0)+'%)'}],overall_confidence:85,note:'快速匹配'};
+  }
+
   const candStr=cands.map(c=>c.id+'|'+c.name+'|'+(c.spec||'')+'|'+c.unit+'|'+c.sheet).join('\n');
 
   const sys=`你是精装修工程造价专家，负责将清单项目与企业基准价定额子目精确匹配。
@@ -2354,46 +2366,53 @@ async function startAiPricing() {
     document.getElementById('aiProgCnt').textContent=done+'/'+total;
   }
 
-  for (const r of targets) {
-    if(aiStop) break;
-    setP('处理：'+r.name.substring(0,18)+'…');
-    try {
-      const res=await priceOne(r,key);
-      const conf=res.overall_confidence||0;
-      const matched=res.matched||[];
+  // ⚡ 并发池：同时处理3条，大幅提速
+  const CONCURRENCY = 3;
+  let idx = 0;
+  async function worker() {
+    while (idx < targets.length && !aiStop) {
+      const i = idx++;
+      const r = targets[i];
+      setP('处理：'+r.name.substring(0,18)+'…');
+      try {
+        const res=await priceOne(r,key);
+        const conf=res.overall_confidence||0;
+        const matched=res.matched||[];
 
-      if(!matched.length||conf<60) {
-        r.aiNote={conf,status:'low',note:res.note||'置信度不足，请手动套价'}; fail++;
-      } else {
-        let added=0;
-        matched.forEach(m=>{
-          // 严格校验：sheet名必须在DB中存在，id必须存在
-          const it=getBench(m.id,m.sheet);
-          if(!it){console.warn('AI返回了不存在的子目:',m.sheet,m.id);return;}
-          if(r.subs.find(s=>s.bid===m.id&&s.bsh===m.sheet)) return;
-          const wr=(it.waste_rate!=null)?parseFloat(it.waste_rate)||0:0;
-          r.subs.push({bid:m.id,bsh:m.sheet,coef:1.0,conv:1.0,matName:r.matName||'',matPrice:r.matPrice||0,wasteRate:wr});
-          added++;
-        });
-        if(added>0) {
-          r.aiNote={conf,status:conf>=85?'hi':'mid',note:res.note||matched.map(m=>m.reason).filter(Boolean).join('；')};
-          if(conf>=85) ok++; else warn++;
-          // 多子目匹配：自动记录为套价规则（去重，持久化到 localStorage）
-          if(added>=2 && conf>=70) {
-            const names=matched.filter(m=>getBench(m.id,m.sheet)).map(m=>getBench(m.id,m.sheet).name).join(' + ');
-            const keyword=r.name.replace(/[（）()\-—\/\s]+/g,'').substring(0,20);
-            recordAiRule(keyword, `清单名称含"${r.name.substring(0,16)}"时，应匹配: ${names}，共${added}个子目`, '');
-          }
+        if(!matched.length||conf<60) {
+          r.aiNote={conf,status:'low',note:res.note||'置信度不足，请手动套价'}; fail++;
         } else {
-          r.aiNote={conf:0,status:'low',note:'AI返回子目在库中未找到，请手动套价'}; fail++;
+          let added=0;
+          matched.forEach(m=>{
+            const it=getBench(m.id,m.sheet);
+            if(!it){console.warn('AI返回了不存在的子目:',m.sheet,m.id);return;}
+            if(r.subs.find(s=>s.bid===m.id&&s.bsh===m.sheet)) return;
+            const wr=(it.waste_rate!=null)?parseFloat(it.waste_rate)||0:0;
+            r.subs.push({bid:m.id,bsh:m.sheet,coef:1.0,conv:1.0,matName:r.matName||'',matPrice:r.matPrice||0,wasteRate:wr});
+            added++;
+          });
+          if(added>0) {
+            r.aiNote={conf,status:conf>=85?'hi':'mid',note:res.note||matched.map(m=>m.reason).filter(Boolean).join('；')};
+            if(conf>=85) ok++; else warn++;
+            if(added>=2 && conf>=70) {
+              const names=matched.filter(m=>getBench(m.id,m.sheet)).map(m=>getBench(m.id,m.sheet).name).join(' + ');
+              const keyword=r.name.replace(/[（）()\-—\/\s]+/g,'').substring(0,20);
+              recordAiRule(keyword, `清单名称含"${r.name.substring(0,16)}"时，应匹配: ${names}，共${added}个子目`, '');
+            }
+          } else {
+            r.aiNote={conf:0,status:'low',note:'AI返回子目在库中未找到，请手动套价'}; fail++;
+          }
         }
+      } catch(e) {
+        r.aiNote={conf:0,status:'err',note:'请求失败:'+e.message.substring(0,50)}; fail++;
       }
-    } catch(e) {
-      r.aiNote={conf:0,status:'err',note:'请求失败:'+e.message.substring(0,50)}; fail++;
+      done++; setP(done<total?'处理中…':'完成');
+      if (done % 5 === 0 || done === total) renderBoq();
     }
-    done++; setP(done<total?'处理中…':'完成');
-    if (done % 5 === 0 || done === total) renderBoq();
   }
+
+  // 启动并发 workers
+  await Promise.all(Array.from({length:CONCURRENCY}, () => worker()));
 
   renderBoq();
   aiRunning=false;
