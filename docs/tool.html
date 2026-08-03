@@ -2332,6 +2332,9 @@ function forceCandidates(name, spec, unit) {
       match: () => [{id:'TG-017', sheet:'铁工班组', reason:'金属吊顶'}] },
     { test: t => /木地板|复合地板|实木地板/.test(t),
       match: () => [{id:'YQ-02', sheet:'木工班组', reason:'木地板铺设'}] },
+    { test: t => /金属.*门.*窗|门.*窗.*套|金属.*套/.test(t),
+      match: () => [{id:'YQ-014', sheet:'木工班组', reason:'轻钢龙骨/夹板基层'},
+                     {id:'TG-08', sheet:'铁工班组', reason:'金属装饰线/门窗套'}] },
     // spec 工艺关键词匹配
     // [工序关键词, 匹配函数/子目ID, 备注]
     { test: s => /找平|水泥砂浆|结合层/.test(s) && (/楼地面|地面/.test(s) || !/墙面/.test(s)),
