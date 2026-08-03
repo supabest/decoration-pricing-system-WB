@@ -2306,16 +2306,24 @@ async function priceOne(r,key) {
   console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
   if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
 
-  // ⚡ 智能直通：候选唯一且关键词高度匹配时，跳过API直接返回（提速3-5倍）
-  const fullText=(r.name+' '+r.spec).replace(/[（）()\-—\/\s]+/g,'');
-  const candMatches=cands.map(c=>{
-    const nameMatch=c.name.replace(/[（）()\-—\/\s]/g,'').split('').filter(ch=>fullText.includes(ch)).length/Math.max(1,c.name.length);
-    return {c, score:nameMatch};
-  }).sort((a,b)=>b.score-a.score);
-  const best=candMatches[0];
-  if(best&&best.score>=0.85&&candMatches.length<=3&&r.unit&&best.c.unit===r.unit){
-    console.log('⚡ 快速匹配 ['+r.name+'] → '+best.c.id+'('+best.c.name+') score='+best.score.toFixed(2));
-    return {matched:[{id:best.c.id,sheet:best.c.sheet,confidence:85,reason:'关键词高度匹配('+(best.score*100).toFixed(0)+'%)'}],overall_confidence:85,note:'快速匹配'};
+  // ⚡ 智能直通：单工序项目跳过API，复合工序必须调AI
+  const specLower=(r.spec||'').toLowerCase();
+  const multiProcess=/(?:找平|铺贴|刮腻子|扇灰|批灰|涂料|背胶|挂贴|龙骨|石膏板|夹板|硬包|软包|墙布|墙纸|防水|填缝|卡扣|踢脚线|抹灰|砌筑|干挂|湿挂)/g;
+  const processCount=(specLower.match(multiProcess)||[]).length;
+  const isMulti=processCount>=2;  // 含2个以上工艺词=复合工序，必须调AI
+  if(!isMulti){
+    const fullText=(r.name+' '+r.spec).replace(/[（）()\-—\/\s]+/g,'');
+    const candMatches=cands.map(c=>{
+      const nameMatch=c.name.replace(/[（）()\-—\/\s]/g,'').split('').filter(ch=>fullText.includes(ch)).length/Math.max(1,c.name.length);
+      return {c, score:nameMatch};
+    }).sort((a,b)=>b.score-a.score);
+    const best=candMatches[0];
+    if(best&&best.score>=0.85&&candMatches.length<=3&&r.unit&&best.c.unit===r.unit){
+      console.log('⚡ 快速匹配 ['+r.name+'] → '+best.c.id+'('+best.c.name+') score='+best.score.toFixed(2));
+      return {matched:[{id:best.c.id,sheet:best.c.sheet,confidence:85,reason:'关键词高度匹配('+(best.score*100).toFixed(0)+'%)'}],overall_confidence:85,note:'快速匹配'};
+    }
+  } else {
+    console.log('🔍 复合工序 ['+r.name+'] 工艺词数='+processCount+'，调用AI深度匹配');
   }
 
   const candStr=cands.map(c=>c.id+'|'+c.name+'|'+(c.spec||'')+'|'+c.unit+'|'+c.sheet).join('\n');
@@ -2424,7 +2432,8 @@ async function startAiPricing() {
         } else {
           let added=0;
           matched.forEach(m=>{
-            const it=getBench(m.id,m.sheet);
+            let it=getBench(m.id,m.sheet);
+            if(!it){for(const sh of Object.keys(DB)){const f=(DB[sh]||[]).find(i=>i.id===m.id);if(f){it=f;m.sheet=sh;break;}}}
             if(!it){console.warn('AI返回了不存在的子目:',m.sheet,m.id);return;}
             if(r.subs.find(s=>s.bid===m.id&&s.bsh===m.sheet)) return;
             const wr=(it.waste_rate!=null)?parseFloat(it.waste_rate)||0:0;
