@@ -2341,7 +2341,7 @@ function forceCandidates(name, spec, unit) {
       match: () => [{id:'NS-01', sheet:'泥水班组', reason:'地面找平层'}] },
     { test: s => /找平|水泥砂浆/.test(s) && /墙面/.test(s),
       match: () => [{id:'NS-028', sheet:'泥水班组', reason:'墙面找平层'}] },
-    { test: s => /刮腻子|扇灰|批灰|腻子/.test(s),
+    { test: s => /刮腻子|扇灰|批灰|腻子/.test(s) && !/灯槽|窗帘盒|假梁|侧板/.test(s),
       match: () => [{id:'YQ-05', sheet:'油漆班组', reason:'刮腻子/扇灰工序'}] },
     { test: s => /涂料|乳胶漆|无机涂料/.test(s) && /天棚|天花|吊顶/.test(s),
       match: () => [{id:'YQ-07', sheet:'油漆班组', reason:'天棚涂料(YQ-07非YQ-02)'}] },
