@@ -23,7 +23,7 @@ export default function LoginPage() {
         const { data, error: lookupErr } = await (supabase as any)
           .from('profiles')
           .select('email')
-          .eq('display_name', loginEmail)
+          .ilike('display_name', loginEmail)
           .single()
         if (lookupErr || !data?.email) {
           throw { message: '未找到昵称"' + loginEmail + '"对应的账户，请确认昵称或使用邮箱登录' }
