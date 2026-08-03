@@ -158,7 +158,8 @@ export default function Dashboard() {
             key={action.path}
             onClick={() => {
               if (action.external) {
-                window.location.href = import.meta.env.BASE_URL + action.path.replace(/^\//, '')
+                const base = window.location.hostname === 'localhost' ? 'http://localhost:8080/' : import.meta.env.BASE_URL;
+                window.location.href = base + action.path.replace(/^\//, '')
               } else {
                 navigate(action.path)
               }

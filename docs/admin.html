@@ -667,25 +667,42 @@ async function saveMonthPrices() {
 async function loadKnowledge() {
   const token = localStorage.getItem('sb-access-token');
   const h = {'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+token};
-  const r = await fetch(SUPABASE_URL+'/rest/v1/ai_knowledge?select=*&order=category.asc',{headers:h});
+  const r = await fetch(SUPABASE_URL+'/rest/v1/ai_knowledge?select=*&order=category.asc,keyword.asc',{headers:h});
   const data = await r.json();
+  const el = document.getElementById('knowledgeItems');
   if (!Array.isArray(data) || !data.length) {
-    document.getElementById('knowledgeItems').innerHTML = '<div style="color:#888;padding:8px">暂无知识，点击上方"新增"添加</div>';
+    el.innerHTML = '<div style="color:#888;padding:8px">暂无知识，点击"新增"添加</div>';
     return;
   }
-  document.getElementById('knowledgeItems').innerHTML = data.map(k =>
-    '<div class="card" id="k'+k.id+'">'+
-    '<div class="row" style="gap:4px">'+
-    '<span class="badge badge-ok" style="font-size:10px">'+esc(k.category)+'</span>'+
-    '<span style="font-weight:600;font-size:12px;flex:1">'+esc(k.keyword)+'</span>'+
-    '<span style="color:#888;font-size:11px">'+esc(k.team||'')+'</span>'+
-    '</div>'+
-    '<div style="font-size:12px;color:#555;margin:2px 0 4px">'+esc(k.content)+'</div>'+
-    '<div style="display:flex;gap:4px">'+
-    '<button class="btn btn-sm" onclick="editKnowledge('+k.id+')" style="color:var(--acc);padding:2px 8px;font-size:10px">✏️ 编辑</button>'+
-    '<button class="btn btn-sm" onclick="delKnowledge('+k.id+')" style="color:var(--red);padding:2px 8px;font-size:10px">🗑 删除</button>'+
-    '</div></div>'
-  ).join('');
+
+  // 按分类分组显示
+  const groups = { '技巧': { icon: '💡', rows: [] }, '同义词': { icon: '🔄', rows: [] }, '规则': { icon: '📐', rows: [] } };
+  data.forEach(k => {
+    const cat = k.category || '规则';
+    if (groups[cat]) groups[cat].rows.push(k);
+    else groups['规则'].rows.push(k);
+  });
+
+  let html = '';
+  for (const [cat, g] of Object.entries(groups)) {
+    if (!g.rows.length) continue;
+    html += '<div style="margin-bottom:16px">';
+    html += '<h4 style="margin:0 0 6px;font-size:13px;color:#1a1a2e">'+g.icon+' '+cat+' <span style="font-weight:400;color:#888;font-size:11px">('+g.rows.length+'条)</span></h4>';
+    g.rows.forEach(k => {
+      html += '<div class="card" id="k'+k.id+'" style="margin-bottom:4px">'+
+        '<div class="row" style="gap:4px">'+
+        '<span style="font-weight:600;font-size:12px;flex:1">'+esc(k.keyword)+'</span>'+
+        '<span style="color:#888;font-size:11px">'+esc(k.team||'')+'</span>'+
+        '</div>'+
+        '<div style="font-size:12px;color:#555;margin:2px 0 4px">'+esc(k.content)+'</div>'+
+        '<div style="display:flex;gap:4px">'+
+        '<button class="btn btn-sm" onclick="editKnowledge('+k.id+')" style="color:var(--acc);padding:2px 8px;font-size:10px">✏️ 编辑</button>'+
+        '<button class="btn btn-sm" onclick="delKnowledge('+k.id+')" style="color:var(--red);padding:2px 8px;font-size:10px">🗑 删除</button>'+
+        '</div></div>';
+    });
+    html += '</div>';
+  }
+  el.innerHTML = html;
 }
 
 async function addKnowledge() {
