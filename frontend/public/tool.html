@@ -2405,11 +2405,32 @@ async function priceOne(r,key) {
   // 工序精确匹配器
   const forced = forceCandidates(r.name, r.spec, r.unit);
   if (forced.length > 0) {
+    // 自动换算：子目与清单单位不一致时，从特征提取尺寸
+    const pUnit = (r.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3');
+    forced.forEach(f => {
+      const sUnit = (f.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3');
+      if (pUnit !== sUnit) {
+        const stext = (r.spec||'') + ' ' + (f.spec||'');
+        let mm = null;
+        // 灯槽展开: 200mm+100mm → 300mm
+        const zm = stext.match(/展开[尺寸]*[：:]*\s*(\d+)\s*mm?\s*\+\s*(\d+)\s*mm?/i) || stext.match(/(\d+)\s*\+\s*(\d+)\s*mm/i);
+        if (zm) mm = parseInt(zm[1]) + parseInt(zm[2]);
+        // 高度/宽度: H67mm, 30mm高
+        if (!mm) { const hm = stext.match(/(?:[Hh高宽]|高度|宽度|规格)[：:\s]*(\d+)\s*mm/i) || stext.match(/(\d+)\s*mm\s*(?:高|宽)/i); if (hm) mm = parseInt(hm[1]); }
+        // 规格: 67*25mm → 展开
+        if (!mm) { const sm = stext.match(/(\d+)\s*\*\s*(\d+)\s*mm/i); if (sm) mm = parseInt(sm[1]) + parseInt(sm[2]) * 2; }
+        if (mm && mm > 0) {
+          f._conv = (pUnit==='m'&&sUnit==='m2') ? mm/1000 : (pUnit==='m2'&&sUnit==='m') ? 1000/mm : 1;
+          f._convNote = '宽'+mm+'mm→系数'+f._conv.toFixed(3);
+        }
+      }
+    });
     const matched = forced.map(f => ({
       id: f.id, sheet: f.sheet, confidence: 90,
-      reason: f._reason || '工序精确匹配'
+      reason: (f._reason||'工序精确匹配') + (f._convNote ? '；'+f._convNote : ''),
+      conv: f._conv || 1.0
     }));
-    console.log('✅ 精确匹配 ['+r.name+'] → '+matched.map(m=>m.id+'('+m.sheet+')').join(', '));
+    console.log('✅ 精确匹配 ['+r.name+'] → '+matched.map(m=>m.id+'('+m.sheet+(m.conv!==1?' ×'+m.conv.toFixed(3):'')+')').join(', '));
     return {matched, overall_confidence: 90, note: '工序精确匹配'};
   }
 
@@ -2580,7 +2601,7 @@ async function startAiPricing() {
             if(!it){console.warn('AI返回了不存在的子目:',m.sheet,m.id);return;}
             if(r.subs.find(s=>s.bid===m.id&&s.bsh===m.sheet)) return;
             const wr=(it.waste_rate!=null)?parseFloat(it.waste_rate)||0:0;
-            r.subs.push({bid:m.id,bsh:m.sheet,coef:1.0,conv:1.0,matName:r.matName||'',matPrice:r.matPrice||0,wasteRate:wr});
+            r.subs.push({bid:m.id,bsh:m.sheet,coef:1.0,conv:m.conv||1.0,matName:r.matName||'',matPrice:r.matPrice||0,wasteRate:wr});
             added++;
           });
           if(added>0) {
