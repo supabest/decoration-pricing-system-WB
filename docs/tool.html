@@ -747,7 +747,7 @@ function init() {
       new Promise(r => setTimeout(() => r(false), 3000))
     ]);
     diag('token=' + (hasToken ? '有' : '无') + '，Supabase返回=' + (hasSb ? '有数据' : '空') + '，当前ALL=' + ALL.length + '条');
-    if (!hasSb) {
+    if (!hasSb || (Array.isArray(hasSb) && hasSb.length === 0)) {
       document.getElementById('libCnt').textContent = '⚠️ 数据库不可用，加载本地备份...';
       try {
         const r = await fetch('benchmark_data.json');
