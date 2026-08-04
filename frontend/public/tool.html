@@ -244,7 +244,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
   <div style="display:flex;align-items:center;gap:5px;flex-wrap:nowrap">
     <button class="btn btn-sm" onclick="importBoq()">📂 导入清单</button>
     <button class="btn btn-sm" onclick="addBoqRow()">＋ 新增清单行</button>
-    <button class="btn btn-sm" id="aiBtn" onclick="startAiPricing()" style="background:linear-gradient(135deg,#2b5ea7,#1d6fa5);color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:inherit">✨ AI 一键套价</button>
+    <button class="btn btn-sm" id="aiBtn" onclick="startAiPricing()" style="background:linear-gradient(135deg,#2b5ea7,#1d6fa5);color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:inherit">✨ AI 一键套价</button> <span id="aiEngineBadge" style="font-size:10px;padding:2px 6px;border-radius:3px;background:#f0f0f0;color:#888">⏳</span>
     <button class="btn btn-sm" onclick="showExportModal()" style="background:var(--grn-d);border-color:var(--grn);color:var(--grn);font-weight:600">⬇ 导出套价表</button>
 
     <button class="btn btn-sm hidden" id="kbBtn" onclick="openKnowledgeViewer()">🧠 知识库</button>
@@ -2301,15 +2301,17 @@ function parseAi(raw) {
   try{return JSON.parse(raw.replace(/```json|```/g,'').trim());}catch(e){return null;}
 }
 
-// 后端可用标记（启动时自动检测）
-let _backendOk = false;
-(async function checkBackend() {
-  try { const r = await fetch(BACKEND_URL + '/health'); if (r.ok) _backendOk = true; } catch(e) {}
+// 后端状态灯
+let _backendMode = 'checking';  // checking | on | off
+(async function checkBackend(){
+  try{const r=await fetch(BACKEND_URL+'/health');_backendMode=r.ok?'on':'off'}catch(e){_backendMode='off'}
+  const el=document.getElementById('aiEngineBadge');
+  if(el){el.textContent=_backendMode==='on'?'🖥️ AI引擎':'📱 客户端';el.style.background=_backendMode==='on'?'#e6f7ff':'#fff7e6'}
 })();
 
 async function priceOne(r,key) {
-  // 后端优先：FastAPI AI 推理引擎
-  if (_backendOk) {
+  // 后端优先
+  if (_backendMode !== 'off') {
     try {
       const resp = await fetch(BACKEND_URL + '/api/v1/pricing/single', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2320,7 +2322,8 @@ async function priceOne(r,key) {
         console.log('🖥️ 后端套价 ['+r.name+'] → '+(data.matched||[]).map(m=>m.id).join(', '));
         return data;
       }
-    } catch(e) { console.warn('后端不可用，回退客户端套价'); _backendOk = false; }
+      if (_backendMode==='checking') _backendMode='off'; // 首次失败标记离线
+    } catch(e) { _backendMode='off'; }
   }
 
   // 客户端回退：原始 JS 逻辑
