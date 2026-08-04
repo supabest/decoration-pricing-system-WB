@@ -219,6 +219,14 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px
   border-radius:8px;padding:10px 18px;font-size:12px;color:#fff;z-index:400;
   box-shadow:0 4px 20px rgba(20,50,80,.18);animation:tin .2s ease;pointer-events:none}
 @keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.consistency-warn{background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:10px 14px;margin:8px 0;font-size:12px;animation:tin .2s ease}
+.consistency-warn.high{border-color:#ffa39e;background:#fff2f0}
+.consistency-warn .cw-title{font-weight:600;color:#d48806;margin-bottom:4px}
+.consistency-warn.high .cw-title{color:#cf1322}
+.consistency-warn .cw-item{color:#555;margin:3px 0;padding-left:4px;line-height:1.5}
+.consistency-warn .cw-item .idx{display:inline-block;background:#ffe58f;color:#8c6900;padding:0 5px;border-radius:3px;margin:0 2px;font-family:var(--mono);font-size:10px}
+.consistency-warn.high .cw-item .idx{background:#ffa39e;color:#a8071a}
+.consistency-warn .cw-sug{color:#8c6900;margin-top:6px;font-weight:500}
 .hist-item{padding:10px 14px;border-radius:7px;border:1.5px solid var(--border);
   margin-bottom:6px;background:var(--bg2);transition:all .12s}
 .hist-item:hover{border-color:var(--bdr2);background:var(--bg4)}
@@ -276,9 +284,8 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <span style="font-size:11px;color:var(--tx3);white-space:nowrap">🔑 DeepSeek Key</span>
       <div class="ai-key-wrap">
         <input class="ai-key-input" id="aiKey" type="password" placeholder="sk-xxxxxxxx（仅本次使用，不保存）">
-        <button class="btn btn-sm" onclick="toggleKeyVis()" id="keyVisBtn">👁</button>
+        <button class="btn btn-sm" onclick="var e=document.getElementById('aiKey');e.type=e.type==='password'?'text':'password';this.textContent=e.type==='password'?'👁':'🙈'">👁</button>
       </div>
-      <button class="btn btn-sm" onclick="testApi()" style="color:var(--acc2);border-color:var(--acc)">🔌 测试</button>
       <div class="ai-prog-wrap hidden" id="aiProgWrap">
         <div class="ai-prog-txt"><span id="aiProgLbl">准备中…</span><span id="aiProgCnt"></span></div>
         <div class="ai-prog-bar"><div class="ai-prog-fill" id="aiProgFill"></div></div>
@@ -566,6 +573,12 @@ window.addEventListener('error', function(e) {
 const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
 const BACKEND_URL = 'http://localhost:8000';  // FastAPI 后端
+let _backendOk = false;
+(async function checkBackend() {
+  try { const r = await fetch(BACKEND_URL + '/health'); _backendOk = r.ok; } catch(e) { _backendOk = false; }
+  const el = document.getElementById('aiEngineBadge');
+  if (el) { el.textContent = _backendOk ? '🖥️ 就绪' : '⚠️ 离线'; el.style.background = _backendOk ? '#e6f7ff' : '#fff2f0'; el.style.color = _backendOk ? '#1890ff' : '#cf1322'; }
+})();
 const _h = ()=>{const h={'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY};const t=localStorage.getItem('sb-access-token');if(t)h['Authorization']='Bearer '+t;return h};
 const _get=async(t,p)=>{let c,tm;try{const q=new URLSearchParams();q.set('select',p?.select||'*');if(p?.eq)q.set(p.eq.col,'eq.'+encodeURIComponent(p.eq.val));if(p?.order)q.set('order',p.order.col+(p.order.asc?'.asc':'.desc'));if(p?.limit)q.set('limit',''+p.limit);c=new AbortController();tm=setTimeout(()=>c.abort(),10000);const r=await fetch(SUPABASE_URL+'/rest/v1/'+t+'?'+q,{headers:_h(),signal:c.signal});clearTimeout(tm);if(!r.ok){const t=await r.text();if(t.includes('JWT expired')){localStorage.removeItem('sb-access-token');localStorage.removeItem('sb-refresh-token');const h=location.hostname;if(h!=='localhost'&&h!=='127.0.0.1')window.location.href='index.html';return[]}return[]}return await r.json()}catch(e){clearTimeout(tm);return[]}};
 const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};
@@ -575,82 +588,28 @@ const _del=async(t,id)=>{const h=_h();h['Prefer']='return=minimal';await fetch(S
 let _debT={};function _deb(n,fn,ms){clearTimeout(_debT[n]);_debT[n]=setTimeout(fn,ms);}
 const CURRENT_USER = JSON.parse(localStorage.getItem('sb-user')||'null');
 document.addEventListener('DOMContentLoaded', function() { var el = document.getElementById('userNameDisplay'); if(el && CURRENT_USER) el.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || ''; });
-let AI_KNOWLEDGE = {tips:[],synonyms:[],rules:[]};
-const AIK_KEY = 'ai_knowledge_v1';
+let _kbCache = null;
 
 // 从 Supabase + 本地 JSON + localStorage 三层加载知识库，按 keyword 去重合并
-async function loadAiKnowledge() {
-  const merged = {tips:[],synonyms:[],rules:[]};
-  const seen = {tips:new Set(), synonyms:new Set(), rules:new Set()};
-
-  function add(cat, entry) {
-    const key = (entry.keyword||'').trim(); if (!key) return;
-    if (seen[cat].has(key)) return;
-    seen[cat].add(key);
-    merged[cat].push(entry);
-  }
-
-  // 第1层（最低优先级）：localStorage 缓存 / AI 自动记录
-  try {
-    const saved = localStorage.getItem(AIK_KEY);
-    if (saved) {
-      const d = JSON.parse(saved);
-      (d.tips||[]).forEach(e => add('tips', e));
-      (d.synonyms||[]).forEach(e => add('synonyms', e));
-      (d.rules||[]).forEach(e => add('rules', e));
-    }
-  } catch(e) {}
-
-  // 第2层：Supabase ai_knowledge 表（用户上传的 Excel 知识）
-  if (CURRENT_USER) {
-    try {
-      const rows = await _get('ai_knowledge', {select:'category,keyword,content,team', limit:2000}).catch(()=>[]);
-      if (rows && rows.length) {
-        rows.forEach(r => {
-          const cat = (r.category||'').includes('技巧') ? 'tips'
-            : (r.category||'').includes('同义词') ? 'synonyms' : 'rules';
-          add(cat, {keyword: r.keyword||'', content: r.content||'', team: r.team||''});
-        });
-      }
-      console.log('📚 知识库 Supabase: '+rows.length+' 条');
-    } catch(e) { console.warn('📚 知识库 Supabase 加载失败: '+e.message); }
-  }
-
-  // 第3层（最高优先级）：本地 ai_knowledge_base.json（Claude 维护的精选规则）
-  try {
-    const r = await fetch('ai_knowledge_base.json');
-    if (r.ok) {
-      const d = await r.json();
-      (d.tips||[]).forEach(e => add('tips', e));
-      (d.synonyms||[]).forEach(e => add('synonyms', e));
-      (d.rules||[]).forEach(e => add('rules', e));
-      console.log('📚 知识库 JSON: '+(d.tips||[]).length+' tips, '+(d.synonyms||[]).length+' synonyms, '+(d.rules||[]).length+' rules');
-    }
-  } catch(e) {}
-
-  // 限制总数，回写 localStorage 作为离线缓存
-  merged.tips = merged.tips.slice(-100);
-  merged.synonyms = merged.synonyms.slice(-100);
-  merged.rules = merged.rules.slice(-200);
-  AI_KNOWLEDGE = merged;
-  try { localStorage.setItem(AIK_KEY, JSON.stringify(merged)); } catch(e) {}
-  console.log('📚 知识库已加载: '+merged.tips.length+' tips, '+merged.synonyms.length+' synonyms, '+merged.rules.length+' rules');
-}
-
-function saveAiKnowledge() {
-  try { localStorage.setItem(AIK_KEY, JSON.stringify({ tips: AI_KNOWLEDGE.tips.slice(-100), synonyms: AI_KNOWLEDGE.synonyms.slice(-100), rules: AI_KNOWLEDGE.rules.slice(-200) })); } catch(e) {}
-}
-function recordAiRule(keyword, content, team) {
-  // 去重：同关键词只保留一条
-  const exist = AI_KNOWLEDGE.rules.find(r => r.keyword === keyword);
-  if (exist) { exist.content = content; exist.team = team || ''; }
-  else AI_KNOWLEDGE.rules.push({ keyword, content, team: team || '' });
-  // 限制总数防止 localStorage 溢出
-  if (AI_KNOWLEDGE.rules.length > 200) AI_KNOWLEDGE.rules = AI_KNOWLEDGE.rules.slice(-200);
-  saveAiKnowledge();
-  console.log('知识库规则已记录: '+keyword);
-}
-let benchMap = {};
+	// 从 FastAPI 后端加载知识库
+	async function getKnowledge() {
+	  if (_kbCache) return _kbCache;
+	  try {
+	    const r = await fetch(BACKEND_URL + '/api/v1/knowledge');
+	    _kbCache = r.ok ? await r.json() : {tips:[], synonyms:[], rules:[]};
+	  } catch(e) { _kbCache = {tips:[], synonyms:[], rules:[]}; }
+	  return _kbCache;
+	}
+	async function recordAiRule(keyword, content, team) {
+	  try {
+	    await fetch(BACKEND_URL + '/api/v1/knowledge', {
+	      method: 'POST', headers: {'Content-Type':'application/json'},
+	      body: JSON.stringify({category:'规则', keyword, content, team:team||''})
+	    });
+	    _kbCache = null;
+	    console.log('知识库规则已记录: '+keyword);
+	  } catch(e) { console.warn('知识库记录失败', e); }
+	}
 // ═══════════ BENCHMARK DATA ═══════════
 let DB_EMBEDDED = {"泥水班组":[{"id":"NS-01","name":"地面-水泥砂浆找平","unit":"m2","price":20.0},{"id":"NS-08","name":"地面铺设-瓷砖地面铺贴","unit":"m2","price":50.0}],"木工班组":[{"id":"YQ-01","name":"地面基层-木地板龙骨及基层","unit":"m2","price":21.5}],"油漆班组":[{"id":"YQ-01","name":"墙面-艺术漆墙面","unit":"m2","price":43.7}]};
 
@@ -1679,9 +1638,9 @@ function switchKbTab(tab, btn) {
   else document.querySelector('.kb-tab[data-tab="'+tab+'"]')?.classList.add('on');
   renderKbContent();
 }
-function renderKbContent() {
+async function renderKbContent() {
   const cnt = document.getElementById('kbContent');
-  const data = AI_KNOWLEDGE;
+  const kb = await getKnowledge(); const data = kb;
   document.getElementById('kbStats').textContent = data.tips.length+' 技巧 / '+data.synonyms.length+' 同义词 / '+data.rules.length+' 规则';
   document.getElementById('kbCntRules').textContent = '('+data.rules.length+')';
   document.getElementById('kbCntSynonyms').textContent = '('+data.synonyms.length+')';
@@ -1782,27 +1741,26 @@ function handleKnowledgeFile(e) {
         }
       }
 
-      // 合并到内存 AI_KNOWLEDGE（无需刷新页面）
+      // 合并到内存缓存 + 清除后端知识库缓存
       const seen = {tips:new Set(), synonyms:new Set(), rules:new Set()};
       // 先标记已有条目
-      AI_KNOWLEDGE.tips.forEach(e => seen.tips.add(e.keyword));
-      AI_KNOWLEDGE.synonyms.forEach(e => seen.synonyms.add(e.keyword));
-      AI_KNOWLEDGE.rules.forEach(e => seen.rules.add(e.keyword));
+      if (_kbCache) {
+        _kbCache.tips.forEach(e => seen.tips.add(e.keyword));
+        _kbCache.synonyms.forEach(e => seen.synonyms.add(e.keyword));
+        _kbCache.rules.forEach(e => seen.rules.add(e.keyword));
+      }
       // 合并新条目（覆盖同名关键词）
       rows.forEach(r => {
         const cat = (r.category||'').includes('技巧') ? 'tips'
           : (r.category||'').includes('同义词') ? 'synonyms' : 'rules';
         const kw = r.keyword.trim(); if (!kw) return;
         const entry = {keyword: kw, content: r.content, team: r.team||''};
-        const arr = AI_KNOWLEDGE[cat];
+        const arr = _kbCache ? (_kbCache[cat] || []) : [];
         const idx = arr.findIndex(e => e.keyword === kw);
         if (idx >= 0) arr[idx] = entry; else arr.push(entry);
       });
       // 限制总数并保存
-      AI_KNOWLEDGE.tips = AI_KNOWLEDGE.tips.slice(-100);
-      AI_KNOWLEDGE.synonyms = AI_KNOWLEDGE.synonyms.slice(-100);
-      AI_KNOWLEDGE.rules = AI_KNOWLEDGE.rules.slice(-200);
-      saveAiKnowledge();
+      _kbCache = null; // 清除缓存，下次从后端重新加载
       // 若查看器打开则刷新显示
       if (!document.getElementById('kbViewerMod').classList.contains('hidden')) renderKbContent();
       toast('✅ 知识库已更新（'+rows.length+'条），立即生效');
@@ -2218,195 +2176,41 @@ function applyCoef() {
 }
 
 // ═══════════ AI PRICING ═══════════
-function toggleKeyVis() {
-  const inp=document.getElementById('aiKey'),btn=document.getElementById('keyVisBtn');
-  if(inp.type==='password'){inp.type='text';btn.textContent='🙈';}
-  else{inp.type='password';btn.textContent='👁';}
-}
-async function testApi() {
-  const k=document.getElementById('aiKey').value.trim();
-  if(!k){toast('请先输入 API Key');return;}
-  toast('正在测试连接…');
-  try {
-    const r=await fetch('https://api.deepseek.com/chat/completions',{
-      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+k},
-      body:JSON.stringify({model:'deepseek-v4-pro',max_tokens:10,temperature:0,messages:[{role:'user',content:'reply ok'}]})
-    });
-    if(r.ok) toast('✅ 连接成功');
-    else { const t=await r.text(); toast('❌ 失败 '+r.status+': '+t.substring(0,60)); }
-  } catch(e) { toast('❌ 错误：'+e.message+' (请在本地浏览器打开)'); }
-}
-
-// 关键词路由 → 缩小候选范围
-function routeSheets(name,spec) {
-  const txt=(name+' '+spec).toLowerCase();
-  const rules=[
-    {k:['泥水','瓷砖','石材','地面','墙面','铺贴','找平','砂浆','陶粒','回填','自流平','勾缝','门槛','波打线','拼花','踢脚','防水','堵漏','止水','防潮','卷材','涂膜'],s:['泥水班组']},
-    {k:['木工','木饰面','柜','门套','窗套','龙骨','石膏板','硅钙板','天花','吊顶','间墙','隔墙','夹板','灯槽','木线','踢脚线','轻钢','硬包','软包','饰面板','挂板'],s:['木工班组']},
-    {k:['油漆','涂料','乳胶漆','批灰','扇灰','刮腻子','腻子','刷漆','喷漆','木器漆','防锈','墙纸','壁纸','墙布','无机涂料','满刮'],s:['油漆班组']},
-    {k:['铁','钢','焊接','铁件','预埋','钢架','钢板','角铁','槽钢','金属压条','金属装饰线','不锈钢'],s:['铁工班组']},
-    {k:['玻璃','镜','夹胶','钢化','玻璃砖','镜面'],s:['玻璃班组']},
-    {k:['拆除','拆卸','凿除','打拆','移除','脚手架','开荒','保洁','成品保护'],s:['其他班组']},
-    {k:['幕墙','铝板','铝单板','铝格栅','蜂窝','干挂','石材幕墙','玻璃幕墙','外墙'],s:['幕墙班组']},
-    {k:['水管','电线','电缆','桥架','线槽','开关','插座','灯具','消防','喷淋','空调','风管','排水','给水','强电','弱电','机电','水电'],s:['机电班组']},
-  ];
-  const matched=new Set();
-  rules.forEach(r=>{if(r.k.some(k=>txt.includes(k))) r.s.forEach(s=>matched.add(s));});
-  return matched.size>0?[...matched]:Object.keys(DB);
-}
-
-function buildCandidates(name,spec,unit) {
-  let sheets=routeSheets(name,spec);
-  // 路由结果≤2个班组时，自动补全所有班组避免遗漏跨工种工序
-  if (sheets.length <= 2) sheets = Object.keys(DB);
-  const allCands=[];
-  sheets.forEach(sh=>{
-    (DB[sh]||[]).forEach(it=>{ allCands.push({...it,sheet:sh}); });
+async function priceOne(r, key) {
+  const resp = await fetch(BACKEND_URL + '/api/v1/pricing/single', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({item:{name:r.name, spec:r.spec||'', unit:r.unit||''}, api_key: key})
   });
-  // 中文分词
-  const fullText=(name+' '+spec).replace(/[（）()\-—\/\s]+/g,' ');
-  const words=[];
-  for(let i=0;i<fullText.length-1;i++){const bigram=fullText.substring(i,i+2);if(!/[，。、；：！？\s\d，　]/.test(bigram)) words.push(bigram);}
-  fullText.split(/\s+/).filter(w=>w.length>=3).forEach(w=>words.push(w));
-  const uniqWords=[...new Set(words)];
-  // 从spec提取专业关键词（材料名、工艺名），用于深度匹配
-  const specLower=(spec||'').toLowerCase();
-  const craftWords=['找平','铺贴','刮腻子','扇灰','批灰','涂料','乳胶漆','背胶','挂贴','卡扣','硬包','软包','龙骨','石膏板','夹板','灯槽','墙布','墙纸','踢脚线','防水','填缝','勾缝','打磨','涂刷','喷涂','滚涂','裱糊','粘贴','干挂','湿挂','砌筑','回填','抹灰'];
-  const specKeywords=craftWords.filter(w=>specLower.includes(w));
-  // 评分
-  const scored=allCands.map(it=>{
-    let score=0;
-    uniqWords.forEach(w=>{ if(it.name.includes(w)) score+=2; if(it.spec.includes(w)) score+=1; });
-    if(uniqWords.some(w=>w.length===2&&it.name.includes(w))) score+=1;
-    if(unit&&it.unit===unit) score+=3;
-    // spec关键词匹配加权：候选子目名含spec中的工艺词→大幅加分
-    specKeywords.forEach(w=>{ if(it.name.includes(w)) score+=4; });
-    return {it,score};
-  });
-  scored.sort((a,b)=>b.score-a.score);
-  return scored.slice(0,80).map(x=>x.it);  // 扩大到80条候选
+  if (!resp.ok) throw new Error('套价失败 (' + resp.status + '): 请确认 FastAPI 服务已启动');
+  const data = await resp.json();
+  console.log('🖥️ 后端套价 ['+r.name+'] → '+(data.matched||[]).map(m=>m.id).join(', ')+' conf='+data.overall_confidence);
+  return data;
 }
 
-async function callDs(key,sys,user) {
-  const r=await fetch('https://api.deepseek.com/chat/completions',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
-    body:JSON.stringify({model:'deepseek-v4-pro',max_tokens:800,temperature:0,
-      messages:[{role:'system',content:sys},{role:'user',content:user}]})
-  });
-  if(!r.ok){const t=await r.text();throw new Error(r.status+': '+t.substring(0,100));}
-  return (await r.json()).choices[0].message.content.trim();
-}
-function parseAi(raw) {
-  try{return JSON.parse(raw.replace(/```json|```/g,'').trim());}catch(e){return null;}
+
+function clearConsistencyWarnings() {
+  document.querySelectorAll('.consistency-warn').forEach(el => el.remove());
 }
 
-// 后端状态灯
-let _backendMode = 'checking';  // checking | on | off
-(async function checkBackend(){
-  try{const r=await fetch(BACKEND_URL+'/health');_backendMode=r.ok?'on':'off'}catch(e){_backendMode='off'}
-  const el=document.getElementById('aiEngineBadge');
-  if(el){el.textContent=_backendMode==='on'?'🖥️ AI引擎':'📱 客户端';el.style.background=_backendMode==='on'?'#e6f7ff':'#fff7e6'}
-})();
+function showConsistencyWarnings(warnings) {
+  clearConsistencyWarnings();
+  const boqMain = document.getElementById('boqMain');
+  if (!boqMain || !warnings.length) return;
 
-async function priceOne(r,key) {
-  // 后端优先
-  if (_backendMode !== 'off') {
-    try {
-      const resp = await fetch(BACKEND_URL + '/api/v1/pricing/single', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({item:{name:r.name,spec:r.spec||'',unit:r.unit||''}, api_key: key})
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        console.log('🖥️ 后端套价 ['+r.name+'] → '+(data.matched||[]).map(m=>m.id).join(', '));
-        return data;
-      }
-      if (_backendMode==='checking') _backendMode='off'; // 首次失败标记离线
-    } catch(e) { _backendMode='off'; }
-  }
-
-  // 客户端回退：原始 JS 逻辑
-  const cands=buildCandidates(r.name,r.spec,r.unit);
-  console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
-  if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};
-
-  // ⚡ 智能直通：候选唯一且关键词高度匹配时，跳过API直接返回（提速3-5倍）
-  const fullText=(r.name+' '+r.spec).replace(/[（）()\-—\/\s]+/g,'');
-  const candMatches=cands.map(c=>{
-    const nameMatch=c.name.replace(/[（）()\-—\/\s]/g,'').split('').filter(ch=>fullText.includes(ch)).length/Math.max(1,c.name.length);
-    return {c, score:nameMatch};
-  }).sort((a,b)=>b.score-a.score);
-  const best=candMatches[0];
-  if(best&&best.score>=0.85&&candMatches.length<=3&&r.unit&&best.c.unit===r.unit){
-    console.log('⚡ 快速匹配 ['+r.name+'] → '+best.c.id+'('+best.c.name+') score='+best.score.toFixed(2));
-    return {matched:[{id:best.c.id,sheet:best.c.sheet,confidence:85,reason:'关键词高度匹配('+(best.score*100).toFixed(0)+'%)'}],overall_confidence:85,note:'快速匹配'};
-  }
-
-  const candStr=cands.map(c=>c.id+'|'+c.name+'|'+(c.spec||'')+'|'+c.unit+'|'+c.sheet).join('\n');
-
-  const sys=`你是精装修工程造价专家，负责将清单项目与企业基准价定额子目精确匹配。
-
-## 当前知识库（必须遵守）
-${AI_KNOWLEDGE.tips.map(t=>`【技巧】${t.keyword}：${t.content}${t.team?"（"+t.team+"）":""}`).join("\n")}
-${AI_KNOWLEDGE.synonyms.map(s=>`【同义词】"${s.keyword}" → 标准名称为"${s.content}"${s.team?"（"+s.team+"）":""}`).join("\n")}
-${AI_KNOWLEDGE.rules.map(r=>`【规则】含关键词"${r.keyword}"时：${r.content}${r.team?"（"+r.team+"）":""}`).join("\n")}
-
-## 关键原则：像造价工程师一样拆分工序
-清单特征(第4行)是完整的施工工艺描述，你必须逐行阅读，提取所有独立工序：
-1. **找平/找平层/水泥砂浆/结合层** → 需要找平子目（泥水NS-01/NS-028等）
-2. **龙骨/吊杆/主龙骨/轻钢龙骨** → 需要龙骨基层子目（木工YQ-025/YQ-014等）
-3. **石膏板/夹板/阻燃板/基层板** → 需要基层板子目（注意双层=可能已包含）
-4. **刮腻子/扇灰/批灰/找平腻子** → 找涂料/乳胶漆子目即可（YQ-02墙面/YQ-07天棚已含刮腻子+底漆+面漆，不单独套YQ-05）
-5. **涂料/乳胶漆/无机涂料** → 需要涂刷子目（墙面YQ-02/天棚YQ-07，注意区分）
-6. **背胶/界面剂** → 需要背胶处理子目（泥水NS-029）
-7. **铺贴/粘贴/挂贴/干挂** → 需要面层铺贴子目
-8. **硬包/软包/墙布/墙纸** → 需要饰面子目
-9. **踢脚线/金属装饰线** → 铁工TG-08（卡扣款一道，非卡扣需基层）
-10. **每行特征描述中的材料/工艺对应一道独立工序，多道材料=多个子目**
-
-典型拆解示例：
-- 瓷砖楼地面+结合层+水泥砂浆 → NS-01找平 + NS-08/NS-09铺贴（2个子目）
-- 墙面+刮腻子+涂料 → YQ-02涂刷（1个子目，YQ-02已含刮腻子）
-- 天棚+龙骨+石膏板+刮腻子+涂料 → YQ-025龙骨板 + YQ-07天棚涂料（2个子目，YQ-07已含刮腻子）
-- 大板砖墙面+背胶+胶粘剂 → NS-028找平 + NS-029背胶 + NS-035挂贴（3个子目）
-- 卡扣款金属踢脚线 → TG-08一道工序即可（成品卡扣安装，不需基层）
-- 无机涂料=乳胶漆同类别，任何颜色涂料工艺相同
-3. 典型多工序案例：
-   - "轻钢龙骨夹板基层天花硬包饰面" → 轻钢龙骨基层（木工）+ 夹板基层（木工）+ 硬包/饰面安装（木工）（3个子目）
-   - "石膏板天花连扇灰油乳胶漆" → 石膏板基层 + 扇灰/刮腻子 + 乳胶漆涂刷（3个子目）
-   - "墙面抹灰贴瓷砖" → 抹灰找平 + 瓷砖铺贴（2个子目）
-   - "防水找平层" → 找平层 + 防水层（2个子目）
-   - "天花吊顶批灰油白色乳胶漆" → 吊顶基层 + 批灰 + 乳胶漆（3个子目）
-4. 项目特征中如提到"轻钢龙骨"→找轻钢龙骨基层子目；"夹板基层"→找夹板/基层板子目；"硬包饰面"→找硬包/软包/饰面板子目；"墙布"→找墙纸/墙布子目；"刮腻子"→找涂料/乳胶漆子目（涂料子目已含刮腻子+底漆+面漆，不单独套水泥膏YQ-05）；"乳胶漆"→找乳胶漆涂刷子目
-
-严格规则：
-1. 不限制子目数量，按实际工序匹配。名称中有"及"、"连"、"并"字样，或多道材料描述的，必须拆分为多个子目
-2. 禁止将同类型的多个规格子目同时选入（例如不能同时选YQ-025和YQ-026，只选最匹配的1个）
-3. 置信度：名称+单位完全吻合≥85，基本对应60~84，模糊匹配40~59。只要工序能对应上就应该匹配，即使名称不完全一致
-4. 单位不一致时置信度不超过70，并在reason中说明
-5. 若找不到合适子目，返回空matched和overall_confidence:0（可能需按时工日工资计算）
-6. 班组归属规则：轻钢龙骨/石膏板/夹板/硬包/软包/饰面板/基层板→木工班组；硬包/软包（结构性饰面安装，含基层制作+面层张拉）→木工班组；墙纸/墙布普通裱贴（仅面层粘贴，无基层）→油漆班组；注意：清单含"硬包""软包"字样时必须找木工班组的饰面/硬包子目，不能单独当墙布裱贴处理；找平/铺贴/瓷砖/防水→泥水班组；钢架/铁件→铁工班组
-7. 装修术语同义词："扇灰"="批灰"="刮腻子"="刮塑"="膏灰找平"="腻子找平"；"油乳胶漆"="刷乳胶漆"="涂刷乳胶漆"；"天花"="天棚"="吊顶"；"硬包"="软包"="饰面板"="布艺硬包"="皮革硬包"；"墙布"="墙纸"="壁布"
-8. 只返回JSON，不含任何其他文字`;
-
-  const user=`清单项目：
-【名称】${r.name}
-【特征】${r.spec||'（无）'}
-【单位】${r.unit||'（未知）'}
-
-候选子目（格式：编号|名称|特征|单位|班组）：
-${candStr}
-
-返回JSON格式（按工序匹配，数量不限）：
-{"matched":[{"id":"子目编号","sheet":"班组名称（必须与候选列表完全一致）","confidence":85,"reason":"匹配理由"}],"overall_confidence":85,"note":"备注"}`;
-
-  const raw=await callDs(key,sys,user);
-  console.log('🤖 AI原始返回 ['+r.name+']: '+raw.substring(0,200));
-  const res=parseAi(raw);
-  if(!res) { console.warn('🤖 AI JSON解析失败 ['+r.name+']: '+raw.substring(0,120)); return {matched:[],overall_confidence:0,note:'格式异常:'+raw.substring(0,60)}; }
-  console.log('🤖 AI匹配结果 ['+r.name+']: '+JSON.stringify(res.matched.map(m=>m.id+'('+m.confidence+')')).substring(0,120)+' conf='+res.overall_confidence);
-  return res;
+  const banner = document.createElement('div');
+  banner.className = 'consistency-warn high';
+  banner.innerHTML = '<div class="cw-title">⚠️ 相似清单一致性警告（' + warnings.length + '处）</div>'
+    + warnings.map(w => {
+      const sevEmoji = w.severity === 'high' ? '🔴' : w.severity === 'medium' ? '🟡' : '🟢';
+      const unpricedTags = (w.unpriced_items || []).map(i => '<span class="idx">#' + i + '</span>').join('');
+      const refTags = (w.reference_items || []).map(i => '<span class="idx">#' + i + '</span>').join('');
+      return '<div class="cw-item">' + sevEmoji + ' ' + w.message
+        + (unpricedTags ? ' (未套价: ' + unpricedTags + ')' : '')
+        + (refTags ? ' → 参考: ' + refTags : '')
+        + (w.suggestion ? '<br><span class="cw-sug">💡 ' + w.suggestion + '</span>' : '')
+        + '</div>';
+    }).join('');
+  boqMain.insertBefore(banner, boqMain.firstChild);
 }
 
 async function startAiPricing() {
@@ -2459,11 +2263,6 @@ async function startAiPricing() {
           if(added>0) {
             r.aiNote={conf,status:conf>=85?'hi':'mid',note:res.note||matched.map(m=>m.reason).filter(Boolean).join('；')};
             if(conf>=85) ok++; else warn++;
-            if(added>=2 && conf>=70) {
-              const names=matched.filter(m=>getBench(m.id,m.sheet)).map(m=>getBench(m.id,m.sheet).name).join(' + ');
-              const keyword=r.name.replace(/[（）()\-—\/\s]+/g,'').substring(0,20);
-              recordAiRule(keyword, `清单名称含"${r.name.substring(0,16)}"时，应匹配: ${names}，共${added}个子目`, '');
-            }
           } else {
             r.aiNote={conf:0,status:'low',note:'AI返回子目在库中未找到，请手动套价'}; fail++;
           }
@@ -2483,6 +2282,49 @@ async function startAiPricing() {
   aiRunning=false;
   document.getElementById('aiBtn').disabled=false;
   document.getElementById('aiStopBtn').classList.add('hidden');
+
+  // 相似清单一致性校验 + 自动补全
+  try {
+    const checkItems = allRows.map((r, i) => ({
+      index: (i + 1),
+      name: r.name || '',
+      spec: r.spec || '',
+      unit: r.unit || '',
+      matched_ids: (r.subs || []).map(s => s.bid),
+      overall_confidence: r.aiNote?.conf || 0
+    }));
+    const resp = await fetch(BACKEND_URL + '/api/v1/pricing/check-consistency', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: checkItems })
+    });
+    if (resp.ok) {
+      const cr = await resp.json();
+      let autoFixed = 0;
+      (cr.warnings || []).forEach(w => {
+        if (w.auto_fix && w.unpriced_items?.length) {
+          const refRow = allRows[w.auto_fix.from_index - 1];
+          if (refRow?.subs?.length) {
+            w.unpriced_items.forEach(idx => {
+              const targetRow = allRows[idx - 1];
+              if (targetRow && (!targetRow.subs || !targetRow.subs.length)) {
+                targetRow.subs = refRow.subs.map(s => ({...s}));
+                targetRow.aiNote = {conf: 85, status: 'auto', note: '相似清单自动补全（参考序号'+w.auto_fix.from_index+'）'};
+                autoFixed++;
+              }
+            });
+          }
+        }
+      });
+      if (autoFixed > 0) {
+        renderBoq();
+        toast('🔧 相似清单自动补全 '+autoFixed+' 条' + (cr.warnings_count > autoFixed ? '，另有 '+(cr.warnings_count-autoFixed)+' 条需人工确认' : ''));
+      } else if (cr.warnings_count > 0) {
+        showConsistencyWarnings(cr.warnings);
+      }
+    }
+  } catch(e) { console.warn('一致性校验跳过', e); }
+
   toast('✨ AI套价完成'+(aiStop?'（已停止）':'')+
     '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条');
 }
@@ -2651,7 +2493,7 @@ function openUnmatchedModal() {
     // ⚡ 所有数据请求并行加载，大幅缩短启动时间
     await Promise.all([
       loadAuxRules(),                // 旧版 keyword 规则
-      loadAiKnowledge(),            // 从 Supabase + JSON + localStorage 加载知识库
+      getKnowledge(),               // 从 FastAPI 后端加载知识库
       loadMaterialPrices(),          // 新版信息价库
       loadMainMaterialCategories(),  // 主材选品库
       init(),                        // 基准价 + 渲染侧栏

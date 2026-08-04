@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     ai_pricing as ai_pricing_endpoint,
     project,
     export,
+    knowledge,
 )
 
 api_router = APIRouter()
@@ -25,3 +26,4 @@ api_router.include_router(auto_pricing.router, prefix="/ai/pricing", tags=["AI�
 api_router.include_router(ai_pricing_endpoint.router, prefix="/pricing", tags=["AI套价V1"])
 api_router.include_router(project.router, prefix="/projects", tags=["项目管理"])
 api_router.include_router(export.router, prefix="/export", tags=["导出"])
+api_router.include_router(knowledge.router, prefix="/knowledge", tags=["知识库"])

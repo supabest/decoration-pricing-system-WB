@@ -4,7 +4,11 @@ from app.schemas.ai_pricing import (
     PriceSingleRequest, PriceBatchRequest,
     PriceResponse, PriceBatchResponse,
 )
+from app.schemas.similarity import (
+    ConsistencyCheckRequest, ConsistencyCheckResponse,
+)
 from app.services.ai_pricing_service import price_single as svc_price_single
+from app.services.similarity_checker import check_consistency
 
 router = APIRouter(tags=["AI套价"])
 
@@ -43,3 +47,14 @@ async def price_batch_items(req: PriceBatchRequest):
             results.append({"name": item.name, "matched": [], "overall_confidence": 0, "note": str(e)[:100]})
             failed += 1
     return PriceBatchResponse(results=results, total=len(req.items), success=success, failed=failed)
+
+
+@router.post("/check-consistency", response_model=ConsistencyCheckResponse)
+async def check_pricing_consistency(req: ConsistencyCheckRequest):
+    """相似清单一致性校验：检测套价结果中高度相似但结果不同的清单"""
+    try:
+        items_dicts = [item.model_dump() for item in req.items]
+        result = check_consistency(items_dicts)
+        return ConsistencyCheckResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -17,6 +17,44 @@ TEAM_KEYWORDS = [
 
 CRAFT_KEYWORDS = ['找平','铺贴','刮腻子','扇灰','批灰','涂料','背胶','挂贴','龙骨','石膏板','夹板','硬包','软包','墙布','墙纸','踢脚线','防水','填缝','卡扣','抹灰','砌筑','干挂','湿挂']
 
+# ── 材料类型关键词 ──
+MATERIAL_KEYWORDS = {
+    '瓷砖': ['瓷砖', '大板砖', '防滑砖', '木纹砖', '瓷片', '玻化砖', '釉面砖', '通体砖'],
+    '石材': ['石材', '大理石', '花岗岩', '人造石', '门槛石', '窗台石', '挡水条', '波打线'],
+    '涂料': ['涂料', '乳胶漆', '无机涂料', '防潮涂料', '油漆', '真石漆'],
+    '木地板': ['木地板', '复合地板', '实木地板', '竹地板', '强化地板'],
+    '墙纸墙布': ['墙纸', '墙布', '壁纸', '壁布', '裱贴'],
+    '吊顶': ['吊顶', '天棚', '天花', '石膏板', '蜂窝铝板', '铝扣板', '矿棉板'],
+    '金属': ['不锈钢', '铝合金', '金属踢脚线', '金属装饰线', '金属门窗套'],
+    '木制品': ['木饰面', '硬包', '软包', '窗帘盒', '木线', '踢脚线'],
+    '防水': ['防水', '堵漏', '止水', 'JS防水', '聚氨酯'],
+    '脚手架': ['脚手架', '活动脚手架'],
+    '玻璃': ['玻璃', '镜面', '钢化玻璃', '夹胶玻璃'],
+    '其他': [],
+}
+
+def engineering_parse(name: str, spec: str) -> dict:
+    """提取工程语义：班组归属 + 工艺关键词 + 材料类型"""
+    # 班组
+    teams = route_teams(name, spec)
+
+    # 工艺关键词
+    spec_lower = spec.lower()
+    crafts = [w for w in CRAFT_KEYWORDS if w in spec_lower]
+
+    # 材料类型
+    full_text = (name + ' ' + spec).lower()
+    materials = []
+    for mat_type, keywords in MATERIAL_KEYWORDS.items():
+        if any(k in full_text for k in keywords):
+            materials.append(mat_type)
+
+    return {
+        'teams': teams,
+        'crafts': crafts,
+        'materials': materials,
+    }
+
 # ── 加载基准价数据 ──
 _benchmark_cache = None
 _knowledge_cache = None
