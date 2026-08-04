@@ -16,8 +16,11 @@ class Settings(BaseSettings):
 
     # AI / LLM
     LLM_API_KEY: str = ""
-    LLM_MODEL: str = "gpt-4o"
-    LLM_BASE_URL: str = "https://api.openai.com/v1"
+    LLM_MODEL: str = "deepseek-v4-pro"
+    LLM_BASE_URL: str = "https://api.deepseek.com/v1"
+    # Supabase
+    SUPABASE_URL: str = "https://lnvtykghcpsjpwczbqsm.supabase.co"
+    SUPABASE_ANON_KEY: str = "sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q"
     EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
     VECTOR_DIM: int = 768
 

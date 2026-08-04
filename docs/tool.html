@@ -2301,7 +2301,29 @@ function parseAi(raw) {
   try{return JSON.parse(raw.replace(/```json|```/g,'').trim());}catch(e){return null;}
 }
 
+// 后端可用标记（启动时自动检测）
+let _backendOk = false;
+(async function checkBackend() {
+  try { const r = await fetch(BACKEND_URL + '/health'); if (r.ok) _backendOk = true; } catch(e) {}
+})();
+
 async function priceOne(r,key) {
+  // 后端优先：FastAPI AI 推理引擎
+  if (_backendOk) {
+    try {
+      const resp = await fetch(BACKEND_URL + '/api/v1/pricing/single', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({item:{name:r.name,spec:r.spec||'',unit:r.unit||''}, api_key: key})
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        console.log('🖥️ 后端套价 ['+r.name+'] → '+(data.matched||[]).map(m=>m.id).join(', '));
+        return data;
+      }
+    } catch(e) { console.warn('后端不可用，回退客户端套价'); _backendOk = false; }
+  }
+
+  // 客户端回退：原始 JS 逻辑
   const cands=buildCandidates(r.name,r.spec,r.unit);
   console.log('🤖 AI套价 ['+r.name+'] 候选子目数: '+cands.length+' (来自 '+routeSheets(r.name,r.spec).join(',')+')');
   if(!cands.length) return {matched:[],overall_confidence:0,note:'无候选子目'};

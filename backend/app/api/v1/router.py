@@ -8,6 +8,7 @@ from app.api.v1.endpoints import (
     ai_recommend,
     auto_match,
     auto_pricing,
+    ai_pricing as ai_pricing_endpoint,
     project,
     export,
 )
@@ -21,5 +22,6 @@ api_router.include_router(bill_of_quantities.router, prefix="/bill-items", tags=
 api_router.include_router(ai_recommend.router, prefix="/ai/recommend", tags=["AI定额推荐"])
 api_router.include_router(auto_match.router, prefix="/ai/match", tags=["AI清单匹配"])
 api_router.include_router(auto_pricing.router, prefix="/ai/pricing", tags=["AI自动计价"])
+api_router.include_router(ai_pricing_endpoint.router, prefix="/pricing", tags=["AI套价V1"])
 api_router.include_router(project.router, prefix="/projects", tags=["项目管理"])
 api_router.include_router(export.router, prefix="/export", tags=["导出"])
