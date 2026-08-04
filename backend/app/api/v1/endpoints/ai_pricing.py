@@ -6,7 +6,7 @@ from app.schemas.ai_pricing import (
 )
 from app.services.ai_pricing_service import price_single as svc_price_single
 
-router = APIRouter(prefix="/pricing", tags=["AI套价"])
+router = APIRouter(tags=["AI套价"])
 
 
 @router.post("/single", response_model=PriceResponse)
