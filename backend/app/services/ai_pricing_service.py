@@ -23,10 +23,12 @@ _knowledge_cache = None
 
 
 async def load_benchmark_data() -> list[dict]:
-    """从 Supabase 加载全量基准价，缓存 10 分钟"""
+    """加载全量基准价：先 Supabase，RLS 拦截时从本地 JSON 备用"""
     global _benchmark_cache
     if _benchmark_cache:
         return _benchmark_cache
+    items = []
+    # 尝试 Supabase
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
@@ -34,17 +36,35 @@ async def load_benchmark_data() -> list[dict]:
                 headers={"apikey": settings.SUPABASE_ANON_KEY, "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}"}
             )
             items = r.json() if r.status_code == 200 else []
-        _benchmark_cache = items
-        return items
     except Exception:
-        return []
+        pass
+    # Supabase 返回空（RLS）→ 加载本地 JSON
+    if not items:
+        import json, os
+        json_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'docs', 'benchmark_data.json')
+        try:
+            with open(json_path) as f:
+                raw = json.load(f)
+            items = [{
+                'trade_team': d['trade_team'], 'internal_code': d['internal_code'],
+                'work_type': d.get('work_type', ''), 'item_name': d['item_name'],
+                'spec': d.get('spec', ''), 'unit': d['unit'],
+                'unit_price': d['unit_price'], 'remark': d.get('remark', ''),
+                'aux_rule_type': d.get('aux_rule_type', ''), 'aux_fixed_k': d.get('aux_fixed_k', 0),
+                'aux_rate_detail': d.get('aux_rate_detail'),
+            } for d in raw]
+        except Exception:
+            pass
+    _benchmark_cache = items
+    return items
 
 
 async def load_knowledge() -> dict:
-    """加载 AI 知识库"""
+    """加载 AI 知识库：先 Supabase，RLS 时本地 JSON 备用"""
     global _knowledge_cache
     if _knowledge_cache:
         return _knowledge_cache
+    rows = []
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
@@ -52,13 +72,25 @@ async def load_knowledge() -> dict:
                 headers={"apikey": settings.SUPABASE_ANON_KEY, "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}"}
             )
             rows = r.json() if r.status_code == 200 else []
-        tips = [r for r in rows if '技巧' in (r.get('category') or '')]
-        synonyms = [r for r in rows if '同义词' in (r.get('category') or '')]
-        rules = [r for r in rows if '规则' in (r.get('category') or '')]
-        _knowledge_cache = {"tips": tips, "synonyms": synonyms, "rules": rules}
-        return _knowledge_cache
     except Exception:
-        return {"tips": [], "synonyms": [], "rules": []}
+        pass
+    if not rows:
+        import json, os
+        json_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'docs', 'ai_knowledge_base.json')
+        try:
+            with open(json_path) as f:
+                kb = json.load(f)
+            cats = {'tips': '技巧', 'synonyms': '同义词', 'rules': '规则'}
+            for key, label in cats.items():
+                for item in kb.get(key, []):
+                    rows.append({'category': label, 'keyword': item.get('keyword', ''), 'content': item.get('content', ''), 'team': item.get('team', '')})
+        except Exception:
+            pass
+    tips = [r for r in rows if '技巧' in (r.get('category') or '')]
+    synonyms = [r for r in rows if '同义词' in (r.get('category') or '')]
+    rules = [r for r in rows if '规则' in (r.get('category') or '')]
+    _knowledge_cache = {"tips": tips, "synonyms": synonyms, "rules": rules}
+    return _knowledge_cache
 
 
 # ── 班组路由 ──
