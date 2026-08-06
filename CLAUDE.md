@@ -2,12 +2,22 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 分支策略（永久规则）
+
+> **默认在 `dev` 分支进行所有开发工作，禁止直接在 `main` 分支修改代码。**
+
+- **`main`** — 稳定版 v1.2.0，生产环境，Render + Cloudflare Pages 自动部署。**只接受 merge，禁止直接提交。**
+- **`dev`** — 日常开发分支。**所有代码修改、新功能、bug 修复都在此分支进行。** 稳定后 merge 到 main 上线。
+- 每次开始工作前执行 `git branch` 确认当前在 `dev` 分支，如果在 `main` 则执行 `git checkout dev`。
+
 ## 项目概述
 
 装修成本分析系统 — 装修工程人工费+材料费智能套价工具。
 
-- **后端**: Supabase PostgreSQL + Auth + REST API
+- **后端**: Supabase PostgreSQL + Auth + REST API + FastAPI (Render 部署)
 - **前端**: React + TypeScript + Vite（Cloudflare Pages 部署）
+- **生产**: https://decoration-pricing-system.pages.dev（Pages）+ https://decoration-pricing-system.onrender.com（Render）
+- **版本**: V1.2.0
 - **套价工具**: `docs/tool.html`（~2600行纯 HTML/CSS/JS 单页）
 - **仓库**: 私有（GitHub）
 
