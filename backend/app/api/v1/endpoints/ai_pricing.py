@@ -13,6 +13,7 @@ from app.schemas.ai_pricing import (
 from app.schemas.similarity import (
     ConsistencyCheckRequest, ConsistencyCheckResponse,
 )
+from app.core.config import settings
 from app.services.ai_pricing_service import price_single as svc_price_single
 from app.services.similarity_checker import check_consistency
 

@@ -2492,14 +2492,51 @@ function doLogoutTool() {
 
 
 // ═══════════ 补缺清单 ═══════════
-function openUnmatchedModal() {
-  // 弹出简单提示，列出当前项目中未挂子目的清单行
+async function openUnmatchedModal() {
   const allRows = getAllRows();
   const unmatched = allRows.filter(r => !r.subs || !r.subs.length);
-  if (!unmatched.length) { toast('🎉 所有清单项都已挂子目'); return; }
-  const msg = '以下 ' + unmatched.length + ' 条清单项未挂子目：\n' +
-    unmatched.slice(0,20).map((r,i) => (i+1)+'. '+esc(r.name)+' ('+esc(r.unit)+')').join('\n');
-  alert(msg);
+
+  let statsHtml = '';
+  try {
+    const r = await fetch(BACKEND_URL + '/api/v1/pricing/failure-stats?limit=30');
+    if (r.ok) {
+      const d = await r.json();
+      if (d.items && d.items.length) {
+        statsHtml = '<h4 style="margin:16px 0 8px">📊 全局失败排行 (Top ' + d.items.length + ')</h4>'
+          + '<div style="max-height:200px;overflow-y:auto;font-size:11px">'
+          + d.items.map((it,i) => '<div style="padding:3px 0;border-bottom:1px solid #eee">'
+            + '<span style="color:#888">#'+(i+1)+'</span> '
+            + '<b>'+esc(it.item_name)+'</b> '
+            + '<span style="color:#999">('+esc(it.item_unit)+')</span> '
+            + '<span style="color:#cf1322;float:right">×'+it.fail_count+'</span>'
+            + '<div style="color:#888;font-size:10px">'+esc((it.item_spec||'').substring(0,80))+'</div>'
+            + '</div>').join('')
+          + '</div>';
+      }
+    }
+  } catch(e) {}
+
+  const currentHtml = unmatched.length
+    ? '<h4 style="margin:12px 0 8px">📋 本次未套价 (' + unmatched.length + ' 条)</h4>'
+      + unmatched.slice(0,10).map((r,i) => '<div style="padding:2px 0;font-size:12px">'
+        + (i+1)+'. '+esc(r.name)+' <span style="color:#888">('+esc(r.unit)+')</span></div>').join('')
+    : '<p style="color:#389e0d">🎉 本次所有清单均已套价</p>';
+
+  const html = '<div style="padding:16px;max-width:600px">'
+    + '<h3 style="margin:0 0 8px">📋 补缺清单</h3>'
+    + currentHtml
+    + statsHtml
+    + '<p style="margin-top:12px;font-size:11px;color:#888">失败项自动累计，用于后续增补基准价</p>'
+    + '</div>';
+
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:500;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:620px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)">'
+    + html
+    + '<div style="padding:8px 16px 16px;text-align:right"><button class="btn btn-sm" onclick="this.closest(\'[style*=fixed]\').remove()">关闭</button></div>'
+    + '</div>';
+  modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+  document.body.appendChild(modal);
 }
 
 // ═══════════ BOOT ═══════════
