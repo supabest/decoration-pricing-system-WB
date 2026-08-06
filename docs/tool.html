@@ -605,6 +605,8 @@ const _del=async(t,id)=>{const h=_h();h['Prefer']='return=minimal';await fetch(S
 // 防抖工具：延迟执行以避免高频触发
 let _debT={};function _deb(n,fn,ms){clearTimeout(_debT[n]);_debT[n]=setTimeout(fn,ms);}
 const CURRENT_USER = JSON.parse(localStorage.getItem('sb-user')||'null');
+// 强制登录：非 localhost 且未登录 → 跳转登录页
+(function(){var h=location.hostname;if(h!=='localhost'&&h!=='127.0.0.1'&&!CURRENT_USER){location.href='index.html';return;}})();
 document.addEventListener('DOMContentLoaded', function() { var el = document.getElementById('userNameDisplay'); if(el && CURRENT_USER) el.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || ''; });
 let _kbCache = null;
 
@@ -620,8 +622,11 @@ let _kbCache = null;
 	}
 	async function recordAiRule(keyword, content, team) {
 	  try {
+	    const h = {'Content-Type':'application/json'};
+	    const t = localStorage.getItem('sb-access-token');
+	    if (t) h['Authorization'] = 'Bearer ' + t;
 	    await fetch(BACKEND_URL + '/api/v1/knowledge', {
-	      method: 'POST', headers: {'Content-Type':'application/json'},
+	      method: 'POST', headers: h,
 	      body: JSON.stringify({category:'规则', keyword, content, team:team||''})
 	    });
 	    _kbCache = null;
