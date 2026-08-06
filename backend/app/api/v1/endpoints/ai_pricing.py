@@ -67,6 +67,55 @@ async def check_pricing_consistency(req: ConsistencyCheckRequest):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/report-failure")
+async def report_pricing_failure(item: dict):
+    """上报套价失败条目 → Supabase pricing_failures 表 (累加计数)"""
+    import httpx
+    try:
+        name = (item.get("name") or "")[:200]
+        spec = (item.get("spec") or "")[:2000]
+        unit = (item.get("unit") or "")[:20]
+        if not name:
+            return {"ok": False, "reason": "empty name"}
+
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/rpc/report_pricing_failure",
+                headers={
+                    "apikey": settings.SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"p_name": name, "p_spec": spec, "p_unit": unit},
+            )
+            return {"ok": r.status_code in (200, 201, 204)}
+    except Exception as e:
+        logger.error(f"report_failure error: {e}")
+        return {"ok": False}
+
+
+@router.get("/failure-stats")
+async def get_failure_stats(limit: int = 50):
+    """查询套价失败统计排行"""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/pricing_failures"
+                f"?select=*&order=fail_count.desc&limit={limit}",
+                headers={
+                    "apikey": settings.SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+                },
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return {"items": data, "total": len(data)}
+    except Exception as e:
+        logger.error(f"failure_stats error: {e}")
+    return {"items": [], "total": 0}
+
+
 @router.get("/debug-logs")
 async def get_debug_logs(limit: int = 20, format: str = "json",
                           user: dict = Depends(require_auth)):

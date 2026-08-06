@@ -2348,6 +2348,21 @@ async function startAiPricing() {
     }
   } catch(e) { console.warn('一致性校验跳过', e); }
 
+  // 上报失败项到后端
+  try {
+    const failures = allRows.filter(r => (!r.subs || !r.subs.length) && r.name);
+    if (failures.length) {
+      for (const r of failures) {
+        fetch(BACKEND_URL + '/api/v1/pricing/report-failure', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({name: r.name, spec: r.spec||'', unit: r.unit||''})
+        }).catch(()=>{});
+      }
+      console.log('📋 上报 ' + failures.length + ' 条失败项');
+    }
+  } catch(e) { console.warn('失败上报跳过', e); }
+
   toast('✨ AI套价完成'+(aiStop?'（已停止）':'')+
     '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条');
 }
