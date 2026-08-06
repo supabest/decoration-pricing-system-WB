@@ -1,9 +1,11 @@
 """AI 套价 API 端点"""
 import logging
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 
 logger = logging.getLogger(__name__)
+from app.core.auth import require_auth, optional_auth
 from app.schemas.ai_pricing import (
     PriceSingleRequest, PriceBatchRequest,
     PriceResponse, PriceBatchResponse,
@@ -66,8 +68,9 @@ async def check_pricing_consistency(req: ConsistencyCheckRequest):
 
 
 @router.get("/debug-logs")
-async def get_debug_logs(limit: int = 20, format: str = "json"):
-    """查询最近的 AI 套价调试日志。format=html 返回可视化页面"""
+async def get_debug_logs(limit: int = 20, format: str = "json",
+                          user: dict = Depends(require_auth)):
+    """查询最近的 AI 套价调试日志 (需登录)"""
     from app.services.pricing_debug_logger import get_recent_logs
     try:
         logs = await get_recent_logs(limit)

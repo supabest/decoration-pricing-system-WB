@@ -1,11 +1,14 @@
 """知识库 API 端点"""
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Depends
 from pydantic import BaseModel, Field
 from typing import Optional
 from app.services.ai_pricing_service import load_knowledge, _knowledge_cache
 from app.core.config import settings
+from app.core.auth import require_auth, optional_auth
 import httpx
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["知识库"])
 
 
@@ -25,7 +28,7 @@ class KnowledgeResponse(BaseModel):
 
 
 @router.get("", response_model=KnowledgeResponse)
-async def get_knowledge():
+async def get_knowledge(user: Optional[dict] = Depends(optional_auth)):
     """获取全部知识库（tips + synonyms + rules）"""
     try:
         kb = await load_knowledge()
@@ -35,23 +38,22 @@ async def get_knowledge():
             rules=kb.get('rules', []),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"get_knowledge error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("")
-async def add_knowledge(entry: KnowledgeEntry, authorization: Optional[str] = Header(None)):
-    """新增一条知识库条目 → 写入 Supabase"""
+async def add_knowledge(entry: KnowledgeEntry,
+                        user: dict = Depends(require_auth),
+                        authorization: Optional[str] = Header(None)):
+    """新增一条知识库条目 → 写入 Supabase (需登录)"""
     try:
         headers = {
             "apikey": settings.SUPABASE_ANON_KEY,
             "Content-Type": "application/json",
             "Prefer": "return=minimal",
         }
-        # 优先使用前端传来的 JWT token
-        if authorization and authorization.startswith("Bearer "):
-            headers["Authorization"] = authorization
-        else:
-            headers["Authorization"] = f"Bearer {settings.SUPABASE_ANON_KEY}"
+        headers["Authorization"] = authorization
 
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
@@ -75,4 +77,5 @@ async def add_knowledge(entry: KnowledgeEntry, authorization: Optional[str] = He
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"add_knowledge error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
