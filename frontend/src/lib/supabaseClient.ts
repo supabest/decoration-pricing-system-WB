@@ -1,17 +1,8 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://lnvtykghcpsjpwczbqsm.supabase.co'
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q'
 
-/** @description 是否有完整的 Supabase 配置 */
-export const hasSupabaseConfig = Boolean(supabaseUrl && supabaseAnonKey)
+export const hasSupabaseConfig = true
 
-/** @description Supabase 客户端（配置缺失时返回占位对象，运行时在 UI 层报错） */
-let client: ReturnType<typeof createClient>
-try {
-  client = createClient(supabaseUrl || 'https://placeholder.supabase.co', supabaseAnonKey || 'placeholder')
-} catch {
-  client = createClient('https://placeholder.supabase.co', 'placeholder')
-}
-
-export const supabase = client
+export const supabase = createClient(supabaseUrl, supabaseAnonKey)
