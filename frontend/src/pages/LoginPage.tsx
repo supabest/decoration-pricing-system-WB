@@ -1,24 +1,16 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { getChineseErrorMessage } from '../lib/authErrors'
 import { supabase } from '../lib/supabaseClient'
 
 export default function LoginPage() {
-  const { login, user } = useAuth()
+  const { login } = useAuth()
   const navigate = useNavigate()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [loggedIn, setLoggedIn] = useState(false)
-
-  // 登录成功后等 user 状态更新再跳转
-  useEffect(() => {
-    if (loggedIn && user) {
-      navigate('/pricing')
-    }
-  }, [loggedIn, user, navigate])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -26,9 +18,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       let loginEmail = identifier.trim()
-      // 非邮箱格式 → 按昵称查找邮箱
       if (!loginEmail.includes('@')) {
-        // 优先查管理员，再查普通用户（大小写不敏感）
         let { data, error: lookupErr } = await (supabase as any)
           .from('profiles')
           .select('email')
@@ -48,7 +38,8 @@ export default function LoginPage() {
         loginEmail = data.email
       }
       await login(loginEmail, password)
-      setLoggedIn(true)
+      // 登录成功后直接跳转 tool.html（绕过 React 路由的 user 状态延迟问题）
+      window.location.href = '/tool.html'
     } catch (err: any) {
       setError(getChineseErrorMessage(err))
     } finally {
