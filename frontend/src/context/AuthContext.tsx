@@ -55,9 +55,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           syncTokenForTool()
           try {
             const profile = await auth.getCurrentProfile()
-            setUser(profile)
+            if (profile) setUser(profile)
           } catch {
-            setUser(null)
+            // 保持当前 user，不重置为 null
           }
         } else if (event === 'SIGNED_OUT') {
           clearTokenForTool()
