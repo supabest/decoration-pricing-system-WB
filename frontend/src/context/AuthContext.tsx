@@ -72,10 +72,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (session) {
         syncTokenForTool()
         auth.getCurrentProfile().then(profile => {
-          setUser(profile)
+          setUser(profile || null)
           setLoading(false)
         }).catch(() => {
-          setUser(null)
           setLoading(false)
         })
       } else {
