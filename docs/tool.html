@@ -286,6 +286,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
         <input class="ai-key-input" id="aiKey" type="password" placeholder="sk-xxxxxxxx（仅本次使用，不保存）">
         <button class="btn btn-sm" onclick="var e=document.getElementById('aiKey');e.type=e.type==='password'?'text':'password';this.textContent=e.type==='password'?'👁':'🙈'">👁</button>
       </div>
+      <button class="btn btn-sm" onclick="testBackend()" style="color:var(--acc2);border-color:var(--acc);margin-left:4px">🔌 测试</button>
       <div class="ai-prog-wrap hidden" id="aiProgWrap">
         <div class="ai-prog-txt"><span id="aiProgLbl">准备中…</span><span id="aiProgCnt"></span></div>
         <div class="ai-prog-bar"><div class="ai-prog-fill" id="aiProgFill"></div></div>
@@ -579,6 +580,23 @@ let _backendOk = false;
   const el = document.getElementById('aiEngineBadge');
   if (el) { el.textContent = _backendOk ? '🖥️ 就绪' : '⚠️ 离线'; el.style.background = _backendOk ? '#e6f7ff' : '#fff2f0'; el.style.color = _backendOk ? '#1890ff' : '#cf1322'; }
 })();
+async function testBackend() {
+  const el = document.getElementById('aiEngineBadge');
+  try {
+    const r = await fetch(BACKEND_URL + '/health');
+    if (r.ok) {
+      _backendOk = true;
+      if (el) { el.textContent = '🖥️ 就绪'; el.style.background = '#e6f7ff'; el.style.color = '#1890ff'; }
+      toast('✅ 后端连接正常');
+    } else {
+      throw new Error('status '+r.status);
+    }
+  } catch(e) {
+    _backendOk = false;
+    if (el) { el.textContent = '⚠️ 离线'; el.style.background = '#fff2f0'; el.style.color = '#cf1322'; }
+    toast('❌ 后端不可用，请确认 FastAPI 已启动');
+  }
+}
 const _h = ()=>{const h={'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY};const t=localStorage.getItem('sb-access-token');if(t)h['Authorization']='Bearer '+t;return h};
 const _get=async(t,p)=>{let c,tm;try{const q=new URLSearchParams();q.set('select',p?.select||'*');if(p?.eq)q.set(p.eq.col,'eq.'+encodeURIComponent(p.eq.val));if(p?.order)q.set('order',p.order.col+(p.order.asc?'.asc':'.desc'));if(p?.limit)q.set('limit',''+p.limit);c=new AbortController();tm=setTimeout(()=>c.abort(),10000);const r=await fetch(SUPABASE_URL+'/rest/v1/'+t+'?'+q,{headers:_h(),signal:c.signal});clearTimeout(tm);if(!r.ok){const t=await r.text();if(t.includes('JWT expired')){localStorage.removeItem('sb-access-token');localStorage.removeItem('sb-refresh-token');const h=location.hostname;if(h!=='localhost'&&h!=='127.0.0.1')window.location.href='index.html';return[]}return[]}return await r.json()}catch(e){clearTimeout(tm);return[]}};
 const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};

@@ -1,5 +1,6 @@
 """AI 套价 API 端点"""
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
 from app.schemas.ai_pricing import (
     PriceSingleRequest, PriceBatchRequest,
     PriceResponse, PriceBatchResponse,
@@ -58,3 +59,89 @@ async def check_pricing_consistency(req: ConsistencyCheckRequest):
         return ConsistencyCheckResponse(**result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/debug-logs")
+async def get_debug_logs(limit: int = 20, format: str = "json"):
+    """查询最近的 AI 套价调试日志。format=html 返回可视化页面"""
+    from app.services.pricing_debug_logger import get_recent_logs
+    try:
+        logs = await get_recent_logs(limit)
+        if format == "html":
+            return _render_logs_html(logs)
+        return {"logs": logs, "count": len(logs)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _render_logs_html(logs: list[dict]) -> HTMLResponse:
+    import json as _json
+
+    def _dv(val):
+        """安全取值，兼容 dict 和 str"""
+        if isinstance(val, dict):
+            return val
+        if isinstance(val, str):
+            try:
+                return _json.loads(val)
+            except Exception:
+                return val
+        return val or {}
+
+    def _ds(val):
+        """安全显示"""
+        if isinstance(val, (dict, list)):
+            return _json.dumps(val, ensure_ascii=False, indent=2)
+        return str(val)
+
+    items_html = ""
+    for log in logs:
+        fn = _dv(log.get("final_result"))
+        matched = fn.get("matched", []) if isinstance(fn, dict) else []
+        conf = fn.get("overall_confidence", 0) if isinstance(fn, dict) else 0
+        status = "✅" if matched else "❌"
+        cands = _dv(log.get("candidate_json"))
+        resp = _dv(log.get("response_json"))
+        eng = _dv(log.get("engineering_json"))
+        prompt = _dv(log.get("prompt_text"))
+        route = _dv(log.get("route_json"))
+
+        # 候选 top5
+        top5 = (cands.get("top10", []) if isinstance(cands, dict) else [])[:5]
+        cand_rows = "".join(
+            f'<li>{c.get("code","")} {c.get("name","")} ({c.get("team","")})</li>'
+            for c in top5 if isinstance(c, dict)
+        )
+
+        # AI parsed
+        parsed = resp.get("parsed", {}) if isinstance(resp, dict) else {}
+
+        # Prompt preview
+        sys_preview = ""
+        if isinstance(prompt, dict):
+            s = prompt.get("system", {})
+            if isinstance(s, dict):
+                sys_preview = f"system: {s.get('system_length',0)} chars, user: {s.get('user_length',0)} chars<br>"
+                sys_preview += f"<pre>{s.get('system_preview','')[:800]}</pre>"
+
+        items_html += f"""
+        <details style="margin:8px 0;border:1px solid #ddd;border-radius:8px;padding:12px;background:#fff">
+          <summary style="cursor:pointer;font-size:14px;font-weight:600">
+            {status} [{conf}%] {log.get("item_name","?")} ({log.get("item_unit","")})
+            <span style="color:#888;font-size:11px;margin-left:8px">{str(log.get("created_at",""))[:19]}</span>
+          </summary>
+          <div style="margin-top:10px;font-size:12px">
+            <p><b>特征:</b> {str(log.get("item_spec",""))[:200]}</p>
+            <p><b>班组路由:</b> <code>{_ds(route)}</code></p>
+            <p><b>候选 (top5):</b></p><ul>{cand_rows}</ul>
+            <p><b>工程理解:</b> <code>{_ds(eng)}</code></p>
+            <p><b>AI 返回:</b></p>
+            <pre style="background:#f5f5f5;padding:8px;border-radius:4px;overflow-x:auto;max-height:200px">{_ds(parsed)}</pre>
+            <p><b>最终结果:</b> <code>{_ds(fn)}</code></p>
+            <details><summary>📝 Prompt 摘要</summary>{sys_preview}</details>
+          </div>
+        </details>"""
+    html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>AI套价调试日志</title>
+<style>body{{font-family:-apple-system,sans-serif;max-width:1000px;margin:20px auto;padding:0 20px;background:#f8f9fa}}h1{{font-size:20px}}code{{background:#eee;padding:1px 4px;border-radius:3px;font-size:11px}}</style></head>
+<body><h1>🔍 AI 套价调试日志 ({len(logs)} 条)</h1>{items_html}</body></html>"""
+    return HTMLResponse(content=html)

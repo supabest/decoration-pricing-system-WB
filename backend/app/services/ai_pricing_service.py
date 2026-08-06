@@ -2,6 +2,7 @@
 import re, json, httpx
 from typing import Optional
 from app.core.config import settings
+from app.services.pricing_debug_logger import PricingDebugLog, save_debug_log
 
 # ── 班组路由关键词 ──
 TEAM_KEYWORDS = [
@@ -250,7 +251,7 @@ async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str) -> s
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             json={
                 "model": settings.LLM_MODEL,
-                "max_tokens": 800,
+                "max_tokens": 2000,
                 "temperature": 0,
                 "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
             }
@@ -268,24 +269,54 @@ def parse_ai_response(raw: str) -> Optional[dict]:
 
 
 # ── 单行套价 ──
-async def price_single(name: str, spec: str, unit: str, api_key: str) -> dict:
+async def price_single(name: str, spec: str, unit: str, api_key: str,
+                       debug_log=None) -> dict:
     benchmark = await load_benchmark_data()
     knowledge = await load_knowledge()
 
+    # 🔍 调试日志
+    if debug_log is None:
+        from app.services.pricing_debug_logger import PricingDebugLog
+        debug_log = PricingDebugLog(name, spec, unit, api_key)
+
+    # 1. 班组路由
+    teams = route_teams(name, spec)
+    debug_log.log_route(teams)
+
+    # 2. 候选筛选
     candidates = build_candidates(name, spec, unit, benchmark)
+    debug_log.log_candidates(candidates, len(candidates))
     if not candidates:
+        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": "无候选子目"})
+        await save_debug_log(debug_log)
         return {"matched": [], "overall_confidence": 0, "note": "无候选子目"}
 
+    # 3. 工程理解
+    eng = engineering_parse(name, spec)
+    debug_log.log_engineering(eng)
+
+    # 4. Prompt 构建
     sys_prompt = build_system_prompt(knowledge)
     user_prompt = build_user_prompt(name, spec, unit, candidates)
+    debug_log.log_prompt(sys_prompt, user_prompt)
 
-    raw = await call_deepseek(sys_prompt, user_prompt, api_key)
-    result = parse_ai_response(raw)
+    # 5. DeepSeek 调用
+    try:
+        raw = await call_deepseek(sys_prompt, user_prompt, api_key)
+        result = parse_ai_response(raw)
+        debug_log.log_response(raw, result)
+    except Exception as e:
+        debug_log.log_error(str(e))
+        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": str(e)[:100]})
+        await save_debug_log(debug_log)
+        raise
 
     if not result:
+        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": f"AI返回解析失败: {raw[:100]}"})
+        await save_debug_log(debug_log)
         return {"matched": [], "overall_confidence": 0, "note": f"AI返回解析失败: {raw[:100]}"}
 
-    # 校验返回的子目真实存在
+    # 6. 校验返回的子目真实存在
     valid = []
     for m in result.get('matched', []):
         bid, bsh = m.get('id', ''), m.get('sheet', '')
@@ -299,6 +330,10 @@ async def price_single(name: str, spec: str, unit: str, api_key: str) -> dict:
     result['matched'] = valid
     if not valid:
         result['overall_confidence'] = 0
+
+    # 7. 最终结果
+    debug_log.log_final(result)
+    await save_debug_log(debug_log)
     return result
 
 

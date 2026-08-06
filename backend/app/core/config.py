@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     DEFAULT_MANAGEMENT_RATE: float = 5.0
     DEFAULT_TAX_RATE: float = 9.0
 
+    # Debug
+    DEBUG_PRICING: bool = False
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
