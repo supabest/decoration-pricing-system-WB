@@ -259,7 +259,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 
     <button class="btn btn-sm" onclick="openFeedback()" style="color:var(--acc);border-color:var(--acc)">💡 意见反馈</button>
     <button class="btn btn-sm" onclick="openUnmatchedModal()" style="color:var(--yel);border-color:var(--yel)">📋 补缺清单</button>
-    <a href="admin.html" class="btn btn-sm" style="color:var(--tx2);border-color:var(--border);text-decoration:none">← 管理面板</a>
+    <a href="admin.html" id="adminPanelBtn" class="btn btn-sm" style="color:var(--tx2);border-color:var(--border);text-decoration:none;display:none">← 管理面板</a>
     <span id="userNameDisplay" class="" style="font-size:11px;color:var(--tx2);margin-left:4px"></span>
     <button class="btn btn-sm" onclick="doLogoutTool()" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px">退出</button>
   </div>
@@ -605,7 +605,26 @@ const _del=async(t,id)=>{const h=_h();h['Prefer']='return=minimal';await fetch(S
 // 防抖工具：延迟执行以避免高频触发
 let _debT={};function _deb(n,fn,ms){clearTimeout(_debT[n]);_debT[n]=setTimeout(fn,ms);}
 const CURRENT_USER = JSON.parse(localStorage.getItem('sb-user')||'null');
-document.addEventListener('DOMContentLoaded', function() { var el = document.getElementById('userNameDisplay'); if(el && CURRENT_USER) el.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || ''; });
+// 管理员检查：从 sb-user 的 is_admin 字段或查询 profiles 表
+(async function checkAdmin(){
+  let isAdmin = CURRENT_USER && CURRENT_USER.is_admin;
+  if (!isAdmin && CURRENT_USER) {
+    try {
+      const t = localStorage.getItem('sb-access-token');
+      if (t) {
+        const r = await fetch(SUPABASE_URL+'/rest/v1/profiles?select=is_admin&id=eq.'+CURRENT_USER.id+'&is_admin=eq.true&limit=1', {
+          headers: {'apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+t}
+        });
+        const d = await r.json();
+        isAdmin = d && d.length > 0;
+      }
+    } catch(e) {}
+  }
+  var el = document.getElementById('adminPanelBtn');
+  if (el && isAdmin) el.style.display = '';
+  var nameEl = document.getElementById('userNameDisplay');
+  if (nameEl && CURRENT_USER) nameEl.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || '';
+})();
 let _kbCache = null;
 
 // 从 Supabase + 本地 JSON + localStorage 三层加载知识库，按 keyword 去重合并
