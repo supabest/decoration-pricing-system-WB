@@ -1,16 +1,24 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { getChineseErrorMessage } from '../lib/authErrors'
 import { supabase } from '../lib/supabaseClient'
 
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { login, user } = useAuth()
   const navigate = useNavigate()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [loggedIn, setLoggedIn] = useState(false)
+
+  // 登录成功后等 user 状态更新再跳转
+  useEffect(() => {
+    if (loggedIn && user) {
+      navigate('/pricing')
+    }
+  }, [loggedIn, user, navigate])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -40,7 +48,7 @@ export default function LoginPage() {
         loginEmail = data.email
       }
       await login(loginEmail, password)
-      navigate('/pricing')
+      setLoggedIn(true)
     } catch (err: any) {
       setError(getChineseErrorMessage(err))
     } finally {
