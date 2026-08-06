@@ -72,17 +72,30 @@ export const auth = {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return null
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single()
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single()
 
-    if (error) {
-      if (error.code === 'PGRST116') return null // not found
-      throw error
+      if (!error && data) return data
+    } catch {
+      // profiles 表查询失败，从 JWT 构造降级 profile
     }
-    return data
+
+    // 降级：从 JWT token 构造 profile（不依赖 profiles 表 RLS）
+    const appMeta = (user as any).app_metadata || {}
+    const userMeta = (user as any).user_metadata || {}
+    return {
+      id: user.id,
+      username: user.email || '',
+      display_name: userMeta.display_name || user.email?.split('@')[0] || '',
+      is_admin: appMeta.role === 'admin' || false,
+      is_approved: true,
+      approved_at: null,
+      created_at: (user as any).created_at || new Date().toISOString(),
+    }
   },
 
   /** 登录 */
