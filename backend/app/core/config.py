@@ -6,7 +6,7 @@ from typing import List
 class Settings(BaseSettings):
     # ── 应用基础 ──
     APP_NAME: str = "装修工程AI套价系统"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = "1.2.0"
     APP_ENV: str = "production"
     LOG_LEVEL: str = "INFO"
 
