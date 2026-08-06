@@ -622,8 +622,21 @@ const CURRENT_USER = JSON.parse(localStorage.getItem('sb-user')||'null');
   }
   var el = document.getElementById('adminPanelBtn');
   if (el && isAdmin) el.style.display = '';
+  // 显示昵称：优先查 profiles 表（可能被管理员修改过）
   var nameEl = document.getElementById('userNameDisplay');
-  if (nameEl && CURRENT_USER) nameEl.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || '';
+  if (nameEl && CURRENT_USER) {
+    try {
+      const t = localStorage.getItem('sb-access-token');
+      if (t) {
+        const r = await fetch(SUPABASE_URL+'/rest/v1/profiles?select=display_name&id=eq.'+CURRENT_USER.id+'&limit=1', {
+          headers: {'apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+t}
+        });
+        const d = await r.json();
+        if (d && d.length && d[0].display_name) { nameEl.textContent = d[0].display_name; return; }
+      }
+    } catch(e) {}
+    nameEl.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || '';
+  }
 })();
 let _kbCache = null;
 
