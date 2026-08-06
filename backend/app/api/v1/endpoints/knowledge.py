@@ -65,7 +65,7 @@ async def add_knowledge(entry: KnowledgeEntry, authorization: Optional[str] = He
                 }]
             )
             if r.status_code not in (200, 201, 204):
-                raise HTTPException(status_code=502, detail=f"Supabase 写入失败: {r.status_code}")
+                raise HTTPException(status_code=502, detail="Storage service unavailable")
 
         # 清除缓存，下次查询时重新加载
         global _knowledge_cache

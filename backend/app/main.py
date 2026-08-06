@@ -55,4 +55,24 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": settings.APP_VERSION}
+    """生产健康检查 — 验证 Supabase 连接"""
+    db_status = "disconnected"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/benchmark_items?select=id&limit=1",
+                headers={
+                    "apikey": settings.SUPABASE_ANON_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+                },
+            )
+            db_status = "connected" if r.status_code == 200 else "error"
+    except Exception:
+        db_status = "error"
+
+    return {
+        "status": "ok",
+        "database": db_status,
+        "version": settings.APP_VERSION,
+    }

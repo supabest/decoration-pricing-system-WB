@@ -1,46 +1,43 @@
-"""应用配置管理"""
+"""应用配置管理 — 生产环境通过环境变量注入"""
 from pydantic_settings import BaseSettings
 from typing import List
 
 
 class Settings(BaseSettings):
+    # ── 应用基础 ──
     APP_NAME: str = "装修工程AI套价系统"
     APP_VERSION: str = "0.1.0"
-    APP_ENV: str = "development"
+    APP_ENV: str = "production"
     LOG_LEVEL: str = "INFO"
-    SECRET_KEY: str = "change-me"
 
-    # Database
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/pricing"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    # 🔒 生产环境必须设置 (openssl rand -hex 32)
+    SECRET_KEY: str = ""
 
-    # AI / LLM
+    # ── AI / LLM ──
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-v4-pro"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
-    # Supabase
+
+    # ── Supabase ──
     SUPABASE_URL: str = "https://lnvtykghcpsjpwczbqsm.supabase.co"
     SUPABASE_ANON_KEY: str = "sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q"
-    EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
-    VECTOR_DIM: int = 768
 
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"]
+    # ── CORS (逗号分隔，如: https://xxx.pages.dev,https://admin.xxx.com) ──
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://localhost:8080",
+    ]
 
-    # Task Queue
-    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    # ── 文件上传 ──
+    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10 MB
 
-    # File Upload
-    MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024
-    UPLOAD_DIR: str = "./uploads"
-
-    # Price Defaults
+    # ── 计价默认费率 ──
     DEFAULT_PROFIT_RATE: float = 7.0
     DEFAULT_MANAGEMENT_RATE: float = 5.0
     DEFAULT_TAX_RATE: float = 9.0
 
-    # Debug
+    # ── 调试 ──
     DEBUG_PRICING: bool = False
 
     class Config:

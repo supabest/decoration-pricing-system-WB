@@ -1,6 +1,9 @@
 """AI 套价 API 端点"""
+import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
+
+logger = logging.getLogger(__name__)
 from app.schemas.ai_pricing import (
     PriceSingleRequest, PriceBatchRequest,
     PriceResponse, PriceBatchResponse,
@@ -26,7 +29,8 @@ async def price_single_item(req: PriceSingleRequest):
         )
         return PriceResponse(**result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"price_single error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/batch", response_model=PriceBatchResponse)
@@ -58,7 +62,7 @@ async def check_pricing_consistency(req: ConsistencyCheckRequest):
         result = check_consistency(items_dicts)
         return ConsistencyCheckResponse(**result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/debug-logs")
@@ -71,7 +75,7 @@ async def get_debug_logs(limit: int = 20, format: str = "json"):
             return _render_logs_html(logs)
         return {"logs": logs, "count": len(logs)}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _render_logs_html(logs: list[dict]) -> HTMLResponse:
