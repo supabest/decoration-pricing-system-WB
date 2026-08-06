@@ -31,6 +31,7 @@ function syncTokenForTool() {
         id: session.user.id,
         email: session.user.email,
         display_name: session.user.user_metadata?.display_name || '',
+        is_admin: (session.user.app_metadata as any)?.role === 'admin' || false,
       }))
     }
   } catch { /* silently ignore */ }
