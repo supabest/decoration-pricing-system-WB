@@ -587,7 +587,8 @@ async function testBackend() {
     if (r.ok) {
       _backendOk = true;
       if (el) { el.textContent = '🖥️ 后端在线'; el.style.background = '#e6f7ff'; el.style.color = '#1890ff'; }
-      toast('✅ 后端连接正常，请填入 DeepSeek Key 后开始套价');
+      var hasKey = document.getElementById('aiKey').value.trim();
+      toast(hasKey ? '✅ 连接正常，可以开始套价' : '✅ 后端连接正常，请填入 DeepSeek Key');
     } else {
       throw new Error('status '+r.status);
     }
