@@ -259,7 +259,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 
     <button class="btn btn-sm" onclick="openFeedback()" style="color:var(--acc);border-color:var(--acc)">💡 意见反馈</button>
     <button class="btn btn-sm" onclick="openUnmatchedModal()" style="color:var(--yel);border-color:var(--yel)">📋 补缺清单</button>
-    <a href="javascript:void(0)" id="backToDashboardBtn" onclick="if(window!==window.top){window.parent.location.replace('/index.html#/dashboard')}else{location.href='/index.html#/dashboard'}" class="btn btn-sm" style="color:var(--tx2);border-color:var(--border);text-decoration:none;display:none">← 返回工作台</a>
+    <a href="javascript:void(0)" onclick="if(window!==window.top){window.parent.location.replace('/index.html#/dashboard')}else{location.href='/index.html#/dashboard'}" class="btn btn-sm" style="color:var(--tx2);border-color:var(--border);text-decoration:none">← 返回工作台</a>
     <span id="userNameDisplay" class="" style="font-size:11px;color:var(--tx2);margin-left:4px"></span>
     <button class="btn btn-sm" onclick="doLogoutTool()" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px">退出</button>
   </div>
@@ -605,8 +605,6 @@ const _del=async(t,id)=>{const h=_h();h['Prefer']='return=minimal';await fetch(S
 // 防抖工具：延迟执行以避免高频触发
 let _debT={};function _deb(n,fn,ms){clearTimeout(_debT[n]);_debT[n]=setTimeout(fn,ms);}
 const CURRENT_USER = JSON.parse(localStorage.getItem('sb-user')||'null');
-// 管理员显示返回工作台按钮
-(function(){if(CURRENT_USER&&CURRENT_USER.is_admin){var el=document.getElementById('backToDashboardBtn');if(el)el.style.display='';}})();
 document.addEventListener('DOMContentLoaded', function() { var el = document.getElementById('userNameDisplay'); if(el && CURRENT_USER) el.textContent = CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id || ''; });
 let _kbCache = null;
 
