@@ -3,6 +3,7 @@
 调用部署在 Cloudflare Worker 上的邮件服务，透传幂等键。
 Worker 负责验证 EMAIL_SERVICE_TOKEN → 调用 Resend → 返回结果。
 """
+import html
 import httpx
 import logging
 from app.core.config import settings
@@ -28,6 +29,10 @@ async def send_email_via_worker(
     if not settings.EMAIL_WORKER_URL or not settings.EMAIL_SERVICE_TOKEN:
         return {"ok": False, "message_id": None, "error": "EMAIL_WORKER_URL or EMAIL_SERVICE_TOKEN not configured"}
 
+    # 清理换行符，防止 SMTP header injection
+    safe_to = to.replace("\r", "").replace("\n", "")
+    safe_subject = subject.replace("\r", "").replace("\n", "")
+
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
@@ -37,8 +42,8 @@ async def send_email_via_worker(
                     "Content-Type": "application/json",
                 },
                 json={
-                    "to": to,
-                    "subject": subject,
+                    "to": safe_to,
+                    "subject": safe_subject,
                     "html": html,
                     "idempotency_key": idempotency_key,
                 },
@@ -69,14 +74,16 @@ async def send_test_email(to: str) -> dict:
 
 def build_release_email_html(version: str, title: str, content: str) -> str:
     """构建版本发布通知邮件 HTML。"""
-    content_html = content.replace("\n", "<br>")
+    # 先转义 HTML 特殊字符，再将换行转为 <br>
+    safe_content = html.escape(content)
+    content_html = safe_content.replace("\n", "<br>")
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f6fa;padding:30px">
 <div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;padding:32px;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
   <div style="font-size:14px;color:#6e8fa8;margin-bottom:8px">装修成本AI系统</div>
-  <h1 style="font-size:22px;color:#1a2d3d;margin:0 0 8px">{version} 版本更新</h1>
-  <h2 style="font-size:16px;color:#1d6fa5;margin:0 0 20px;font-weight:500">{title}</h2>
+  <h1 style="font-size:22px;color:#1a2d3d;margin:0 0 8px">{html.escape(version)} 版本更新</h1>
+  <h2 style="font-size:16px;color:#1d6fa5;margin:0 0 20px;font-weight:500">{html.escape(title)}</h2>
   <div style="font-size:14px;color:#3a5470;line-height:1.8;margin-bottom:28px;white-space:pre-wrap">{content_html}</div>
   <a href="{settings.FRONTEND_URL}/tool.html" style="display:inline-block;background:#1d6fa5;color:#fff;text-decoration:none;padding:12px 32px;border-radius:8px;font-size:14px;font-weight:600">进入系统</a>
   <div style="margin-top:24px;padding-top:16px;border-top:1px solid #e8e8e8;font-size:12px;color:#a0bcce">此邮件由系统自动发送，请勿回复</div>

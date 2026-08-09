@@ -510,42 +510,59 @@ async def _send_emails_background(release_id: int, release: dict):
     成功 → sent + provider_message_id
     失败 → failed + error_message
     最后更新 release email_status。
+
+    异常处理：如果整个任务因意外崩溃，标记 partial_failed 以便管理员恢复。
     """
     h = _service_role_headers()
     pending = await _get_email_logs(release_id, h, status="pending")
     failed_count = 0
 
-    for log in pending:
-        html_body = build_release_email_html(
-            version=release["version"],
-            title=release["title"],
-            content=release["content"],
-        )
-        subject = f"【装修成本AI系统】{release['version']} 版本更新通知"
+    try:
+        for log in pending:
+            html_body = build_release_email_html(
+                version=release["version"],
+                title=release["title"],
+                content=release["content"],
+            )
+            # 去除 version 中的换行符，防止邮件头注入
+            subject = f"【装修成本AI系统】{release['version'].replace(chr(10), '').replace(chr(13), '')} 版本更新通知"
 
-        result = await send_email_via_worker(
-            to=log["email"],
-            subject=subject,
-            html=html_body,
-            idempotency_key=log["idempotency_key"],
-        )
+            result = await send_email_via_worker(
+                to=log["email"],
+                subject=subject,
+                html=html_body,
+                idempotency_key=log["idempotency_key"],
+            )
 
-        if result.get("ok"):
-            await _update_email_log(log["id"], {
-                "status": "sent",
-                "sent_at": _now_iso(),
-                "provider_message_id": result.get("message_id") or "",
-            }, h)
-        else:
+            if result.get("ok"):
+                await _update_email_log(log["id"], {
+                    "status": "sent",
+                    "sent_at": _now_iso(),
+                    "provider_message_id": result.get("message_id") or "",
+                }, h)
+            else:
+                await _update_email_log(log["id"], {
+                    "status": "failed",
+                    "error_message": (result.get("error") or "Unknown error")[:500],
+                }, h)
+                failed_count += 1
+
+        # 更新 release 状态
+        new_status = "completed" if failed_count == 0 else "partial_failed"
+        await _patch_release(release_id, {
+            "email_status": new_status,
+            "email_sent_at": _now_iso(),
+        }, h)
+    except Exception as e:
+        logger.error(f"Background email task crashed for release {release_id}: {e}", exc_info=True)
+        # 将未处理的 pending 标记为 failed，方便管理员恢复
+        remaining_pending = await _get_email_logs(release_id, h, status="pending")
+        for log in remaining_pending:
             await _update_email_log(log["id"], {
                 "status": "failed",
-                "error_message": (result.get("error") or "Unknown error")[:500],
+                "error_message": f"Background task crashed: {str(e)[:200]}",
             }, h)
-            failed_count += 1
-
-    # 更新 release 状态
-    new_status = "completed" if failed_count == 0 else "partial_failed"
-    await _patch_release(release_id, {
-        "email_status": new_status,
-        "email_sent_at": _now_iso(),
-    }, h)
+        await _patch_release(release_id, {
+            "email_status": "partial_failed",
+            "email_sent_at": _now_iso(),
+        }, h)
