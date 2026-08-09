@@ -1,0 +1,10 @@
+{
+  "name": "decoration-email-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "装修成本AI系统 — 邮件发送 Cloudflare Worker",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  }
+}

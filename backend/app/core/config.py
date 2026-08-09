@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     # ── Supabase ──
     SUPABASE_URL: str = "https://lnvtykghcpsjpwczbqsm.supabase.co"
     SUPABASE_ANON_KEY: str = "sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q"
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+
+    # ── 邮件 (Cloudflare Worker) ──
+    EMAIL_WORKER_URL: str = ""
+    EMAIL_SERVICE_TOKEN: str = ""
+
+    # ── 前端地址 ──
+    FRONTEND_URL: str = "https://decoration-pricing-system.pages.dev"
 
     # ── CORS (逗号分隔，如: https://xxx.pages.dev,https://admin.xxx.com) ──
     CORS_ORIGINS: List[str] = [

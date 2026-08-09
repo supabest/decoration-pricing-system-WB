@@ -1,0 +1,11 @@
+name = "decoration-email-service"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+# 不定义 [vars] — 敏感值通过 secrets 注入:
+#   npx wrangler secret put RESEND_API_KEY
+#   npx wrangler secret put EMAIL_FROM
+#   npx wrangler secret put EMAIL_FROM_NAME
+#   npx wrangler secret put EMAIL_SERVICE_TOKEN
+#
+# 不定义 [[kv_namespaces]] — Worker 纯无状态
