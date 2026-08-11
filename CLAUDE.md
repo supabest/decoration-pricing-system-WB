@@ -137,17 +137,16 @@ localhost 环境自动免登录（tool.html 和 admin.html 均已适配）。
 |------|------|
 | `backend/app/api/v1/endpoints/releases.py` | 版本管理 + 邮件编排（10 个端点） |
 | `backend/app/schemas/release.py` | Pydantic 模型 |
-| `backend/app/services/mail_client.py` | Worker 调用封装 + idempotency key 透传 |
+| `backend/app/services/mail_client.py` | QQ SMTP 邮件发送（smtplib + EmailMessage） |
 | `backend/app/services/user_lookup.py` | Auth Admin API 分页获取用户邮箱 |
-| `workers/email-service/` | Cloudflare Worker — Render → Resend 邮件出口 |
-| `data/seeds/supabase_releases_migration.sql` | system_releases + email_logs + email_test_logs 建表 + RLS |
+| `data/migrations/supabase_releases_migration.sql` | system_releases + email_logs + email_test_logs 建表 + RLS |
 
-**架构**：Render（版本管理+邮件编排） → Cloudflare Worker（验证 EMAIL_SERVICE_TOKEN → Resend API）
-**密钥**：Resend API Key 仅存 Worker Secrets；service_role key 仅存 Render 环境变量
+**架构**：Render（版本管理+邮件编排） → QQ SMTP（smtp.qq.com:465 SSL）
+**密钥**：SMTP 授权码仅存 Render 环境变量；service_role key 仅存 Render 环境变量
 **API**：
 - 公开：`GET /api/v1/releases?limit=20`、`GET /api/v1/releases/{id}`
 - 管理员：`/api/v1/admin/releases/*`（全部使用 `Depends(require_admin)`）
-- 发布后不可修改/删除；幂等发送基于 Resend `Idempotency-Key` + `email_logs(release_id,user_id)` UNIQUE
+- 发布后不可修改/删除；数据库幂等基于 `email_logs(release_id,user_id)` UNIQUE
 
 ## 数据库恢复
 

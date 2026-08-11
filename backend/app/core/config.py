@@ -23,9 +23,14 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = "sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q"
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
-    # ── 邮件 (Cloudflare Worker) ──
-    EMAIL_WORKER_URL: str = ""
-    EMAIL_SERVICE_TOKEN: str = ""
+    # ── QQ SMTP 邮件 ──
+    SMTP_HOST: str = "smtp.qq.com"
+    SMTP_PORT: int = 465
+    SMTP_USE_SSL: bool = True
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    EMAIL_FROM: str = ""
+    EMAIL_FROM_NAME: str = "装修成本分析系统"
 
     # ── 前端地址 ──
     FRONTEND_URL: str = "https://decoration-pricing-system.pages.dev"

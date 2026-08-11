@@ -1,80 +1,111 @@
-"""Cloudflare Worker 邮件发送客户端
+"""QQ SMTP 邮件发送客户端
 
-调用部署在 Cloudflare Worker 上的邮件服务，透传幂等键。
-Worker 负责验证 EMAIL_SERVICE_TOKEN → 调用 Resend → 返回结果。
+使用 Python 标准库 smtplib + email.message 通过 QQ 邮箱 SMTP 发送邮件。
+保留所有 XSS 防护、Header Injection 防护和数据库幂等机制。
 """
 import html
-import httpx
 import logging
+import smtplib
+import uuid
+from datetime import datetime
+from email.message import EmailMessage
+
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
+def _smtp_config_ok() -> bool:
+    return bool(settings.SMTP_HOST and settings.SMTP_USERNAME and settings.SMTP_PASSWORD)
+
+
+def _clean_header(value: str) -> str:
+    """清理 CRLF，防止 SMTP header injection。"""
+    return value.replace("\r", "").replace("\n", "")
+
+
+def _make_message_id() -> str:
+    """生成唯一 Message-ID 用于追踪。"""
+    return f"<{uuid.uuid4()}@decoration-pricing>"
+
+
 async def send_email_via_worker(
     to: str,
     subject: str,
-    html: str,
+    html_body: str,
     idempotency_key: str,
 ) -> dict:
-    """通过 Cloudflare Worker 发送邮件。
+    """通过 QQ SMTP 发送邮件。
 
     Args:
-        idempotency_key: Resend 幂等键，如 "release-{id}-user-{uuid}"
-                         重试同一邮件必须使用相同的 key。
+        idempotency_key: 数据库幂等键，保留用于日志追踪（QQ SMTP 不支持 API 级幂等）
 
     Returns:
         {"ok": bool, "message_id": str|None, "error": str|None}
     """
-    if not settings.EMAIL_WORKER_URL or not settings.EMAIL_SERVICE_TOKEN:
-        return {"ok": False, "message_id": None, "error": "EMAIL_WORKER_URL or EMAIL_SERVICE_TOKEN not configured"}
+    if not _smtp_config_ok():
+        return {"ok": False, "message_id": None, "error": "SMTP not configured (SMTP_HOST/USERNAME/PASSWORD missing)"}
 
-    # 清理换行符，防止 SMTP header injection
-    safe_to = to.replace("\r", "").replace("\n", "")
-    safe_subject = subject.replace("\r", "").replace("\n", "")
+    # Header injection 防护
+    safe_to = _clean_header(to)
+    safe_subject = _clean_header(subject)
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                f"{settings.EMAIL_WORKER_URL}/",
-                headers={
-                    "Authorization": f"Bearer {settings.EMAIL_SERVICE_TOKEN}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "to": safe_to,
-                    "subject": safe_subject,
-                    "html": html,
-                    "idempotency_key": idempotency_key,
-                },
-            )
-            if r.status_code == 200:
-                return r.json()
-            return {
-                "ok": False,
-                "message_id": None,
-                "error": f"Worker returned {r.status_code}: {r.text[:300]}",
-            }
-    except httpx.TimeoutException:
-        return {"ok": False, "message_id": None, "error": "Worker request timed out"}
+        msg = EmailMessage()
+        msg["From"] = f"{settings.EMAIL_FROM_NAME} <{settings.EMAIL_FROM}>"
+        msg["To"] = safe_to
+        msg["Subject"] = safe_subject
+        msg["Message-ID"] = _make_message_id()
+        msg.set_content("请使用支持 HTML 的邮件客户端查看此邮件。")
+        msg.add_alternative(html_body, subtype="html")
+
+        with smtplib.SMTP_SSL(
+            settings.SMTP_HOST,
+            settings.SMTP_PORT,
+            timeout=30,
+        ) as server:
+            server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+            server.send_message(msg)
+
+        message_id = msg["Message-ID"]
+        logger.info(f"Email sent to {safe_to} (idempotency_key={idempotency_key}, message_id={message_id})")
+        return {"ok": True, "message_id": message_id, "error": None}
+
+    except smtplib.SMTPAuthenticationError as e:
+        err = f"SMTP authentication failed: {e}"
+        logger.error(err)
+        return {"ok": False, "message_id": None, "error": err[:500]}
+    except smtplib.SMTPConnectError as e:
+        err = f"SMTP connection failed: {e}"
+        logger.error(err)
+        return {"ok": False, "message_id": None, "error": err[:500]}
+    except smtplib.SMTPException as e:
+        err = f"SMTP error: {e}"
+        logger.error(err)
+        return {"ok": False, "message_id": None, "error": err[:500]}
+    except TimeoutError as e:
+        err = f"SMTP timeout: {e}"
+        logger.error(err)
+        return {"ok": False, "message_id": None, "error": err[:500]}
+    except OSError as e:
+        err = f"SMTP network error: {e}"
+        logger.error(err)
+        return {"ok": False, "message_id": None, "error": err[:500]}
     except Exception as e:
-        logger.error(f"send_email_via_worker error: {e}")
+        logger.error(f"send_email_via_worker unexpected error: {e}", exc_info=True)
         return {"ok": False, "message_id": None, "error": str(e)[:500]}
 
 
 async def send_test_email(to: str) -> dict:
-    """发送测试邮件，验证 Worker → Resend 配置。"""
+    """发送测试邮件，验证 SMTP 配置。"""
     subject = "【装修成本AI系统】测试邮件"
-    html = _build_test_email_html()
-    # 测试邮件使用时间戳幂等键（每次发送都是新的）
-    from datetime import datetime
+    html_body = _build_test_email_html()
     test_key = f"test-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{to.replace('@', '-')}"
-    return await send_email_via_worker(to, subject, html, test_key)
+    return await send_email_via_worker(to, subject, html_body, test_key)
 
 
 def build_release_email_html(version: str, title: str, content: str) -> str:
     """构建版本发布通知邮件 HTML。"""
-    # 先转义 HTML 特殊字符，再将换行转为 <br>
     safe_content = html.escape(content)
     content_html = safe_content.replace("\n", "<br>")
     return f"""<!DOCTYPE html>
