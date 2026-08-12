@@ -37,17 +37,52 @@ class ExcelExporter:
         self.col_keys = [c.key for c in self.cols]
         self.col_idx = {k: i for i, k in enumerate(self.col_keys)}  # key → 0-based index
         self.wb = Workbook()
-        self.ws = self.wb.active
-        self.ws.title = "套价清单"
+        # 移除默认 active sheet，按需创建
+        self.wb.remove(self.wb.active)
+        self.ws = None
+        self._reset_sheet_state()
 
-        # 行追踪
+    def _reset_sheet_state(self):
+        """重置当前 sheet 的行追踪状态（每次新建 sheet 时调用）"""
         self.current_row = 0  # 0-based
         self.data_row_indices: List[int] = []  # 0-based 所有数据行索引（含子目行，用于公式）
         self.main_row_indices: List[int] = []  # 0-based 仅父行索引（不含子目，用于合计行 SUM）
         self.row_meta: List[dict] = []  # 每行元信息 {level, is_data, is_hidden, cells}
 
+    def _start_sheet(self, title: str):
+        """新建一个 sheet 并重置行追踪状态"""
+        self.ws = self.wb.create_sheet(title=title)
+        self._reset_sheet_state()
+
+    def _group_has_rows(self, group) -> bool:
+        """判断分组是否有数据行（跳过空工种）"""
+        return any(section.rows for section in group.sections)
+
+    def _group_total(self, group) -> float:
+        """计算一个分组的总价（各清单项 total 之和）"""
+        total = 0.0
+        for section in group.sections:
+            for row in section.rows:
+                total += self._get_cell_value("total", row, 0) or 0
+        return total
+
     def generate(self) -> BytesIO:
         """生成 Excel 并返回 BytesIO 缓冲区"""
+        if self.req.split_by_group:
+            self._generate_split()
+        else:
+            self._generate_single()
+        self._generate_summary_sheet_if_needed()
+
+        buf = BytesIO()
+        self.wb.save(buf)
+        buf.seek(0)
+        return buf
+
+    def _generate_single(self):
+        """单 Sheet 模式（默认）：所有工种堆叠在一个 sheet"""
+        self._start_sheet("套价清单")
+        self._write_title_row()
         self._write_header_row()
         self._write_data_rows()
         self._write_summary_row()
@@ -58,10 +93,51 @@ class ExcelExporter:
         self._set_row_heights()
         self._set_outline()
 
-        buf = BytesIO()
-        self.wb.save(buf)
-        buf.seek(0)
-        return buf
+    def _generate_split(self):
+        """拆分模式：每个工种一个 sheet，标题为「XX班组劳务价格清单」"""
+        for group in self.req.groups:
+            if not self._group_has_rows(group):
+                continue  # 跳过空工种
+            self._start_sheet(group.sheet_name)
+            self._write_title_row(f"{group.sheet_name}劳务价格清单")
+            self._write_header_row()
+            self._write_group_data(group)
+            self._write_summary_row()
+            if self.req.use_formula:
+                self._apply_formulas()
+            self._apply_styles()
+            self._set_column_widths()
+            self._set_row_heights()
+            self._set_outline()
+
+    def _generate_summary_sheet_if_needed(self):
+        """按需生成汇总 sheet（列出各工种总价 + 总计）"""
+        if not self.req.include_summary_sheet:
+            return
+        ws = self.wb.create_sheet(title="汇总")
+        ws.cell(row=1, column=1, value="班组")
+        ws.cell(row=1, column=2, value="总价")
+        r = 2
+        grand_total = 0.0
+        for group in self.req.groups:
+            if not self._group_has_rows(group):
+                continue
+            total = self._group_total(group)
+            ws.cell(row=r, column=1, value=group.sheet_name)
+            c = ws.cell(row=r, column=2, value=total)
+            c.number_format = NUM_FMT
+            grand_total += total
+            r += 1
+        ws.cell(row=r, column=1, value="总计")
+        c = ws.cell(row=r, column=2, value=grand_total)
+        c.number_format = NUM_FMT
+        # 样式
+        for row in ws.iter_rows(min_row=1, max_row=r, min_col=1, max_col=2):
+            for cell in row:
+                cell.font = Font(name=FONT_NAME, bold=(cell.row == 1 or cell.row == r))
+                cell.border = THIN_BORDER
+        ws.column_dimensions["A"].width = 20
+        ws.column_dimensions["B"].width = 16
 
     # ── 行写入 ────────────────────────────────────────────
 
@@ -70,9 +146,10 @@ class ExcelExporter:
         self.current_row += 1
         return self.current_row
 
-    def _write_title_row(self):
+    def _write_title_row(self, title: str = None):
         r = self._next_row()  # row 1
-        title = f"{self.req.project_name}  套价表"
+        if title is None:
+            title = f"{self.req.project_name}  套价表"
         self.ws.cell(row=r, column=1, value=title)
         # 合并单元格
         if len(self.cols) > 1:
@@ -107,6 +184,23 @@ class ExcelExporter:
                     if self.req.show_subs and row.subs:
                         for sub in row.subs:
                             self._write_sub_item_row(sub, row)
+
+    def _write_group_data(self, group):
+        """拆分模式：写单个工种的数据（含子目，不写分组标题行）"""
+        seq = 0
+        for section in group.sections:
+            # 分部标题行
+            self._write_section_header(section.name)
+
+            for row in section.rows:
+                seq += 1
+                # 清单项数据行
+                self._write_data_row(row, seq)
+
+                # 子目明细行
+                if self.req.show_subs and row.subs:
+                    for sub in row.subs:
+                        self._write_sub_item_row(sub, row)
 
     def _write_group_header(self, sheet_name: str):
         r = self._next_row()

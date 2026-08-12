@@ -399,6 +399,12 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
               <input type="checkbox" id="expUseFormula" checked> 🧮 带计算公式
             </label>
             <span style="font-size:10px;color:var(--tx3)">子目将折叠在所属清单项下方</span>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="expSplitByTrade" onchange="toggleSummaryCheckbox()"> 📑 按工种拆分 Sheet
+            </label>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+              <input type="checkbox" id="expIncludeSummary" disabled> 🧾 生成汇总 Sheet
+            </label>
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button class="btn btn-sm" onclick="closeExportModal()">取消</button>
@@ -738,6 +744,8 @@ function onGlobalRateChange() {
 let hourlyRate = 350;  // 时工单价（元/工日），可调整
 let drag = null;
 let pickerRowId = null;
+let pendingBatch = null;  // 批量套用的清单项 ID 列表
+let batchMode = false;    // 批量套用时抑制单条 toast/render
 let aiRunning = false, aiStop = false;
 
 function updateHourlyRate(val) {
@@ -913,17 +921,20 @@ function delRow(rid) {
 }
 function updField(rid,fld,val) { const r=findRow(rid); if(r){r[fld]=val;updateSum();} }
 function addSub(rid,bid,bsh) {
-  const r=findRow(rid); if(!r) return;
-  if(r.subs.find(s=>s.bid===bid&&s.bsh===bsh)){toast('该子目已添加');return;}
+  const r=findRow(rid); if(!r) return false;
+  if(r.subs.find(s=>s.bid===bid&&s.bsh===bsh)){ if(!batchMode) toast('该子目已添加'); return false; }
   const it=getBench(bid,bsh);
   const wr=(it&&it.waste_rate!=null)?parseFloat(it.waste_rate)||0:0;
   r.subs.push({bid,bsh,coef:1.0,conv:1.0,matName:r.matName||'',matPrice:r.matPrice||0,wasteRate:wr});
   r.open=true;
-  renderBoq();
-  const ru=(r.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3').toLowerCase().trim();
-  const bu=it?(it.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3').toLowerCase().trim():'';
-  if(it&&ru&&bu&&ru!==bu) toast('⚠️ 单位不一致：清单'+r.unit+' / 定额'+it.unit+'，请设置换算系数');
-  else toast('✓ 子目已挂载');
+  if(!batchMode) {
+    renderBoq();
+    const ru=(r.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3').toLowerCase().trim();
+    const bu=it?(it.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3').toLowerCase().trim():'';
+    if(it&&ru&&bu&&ru!==bu) toast('⚠️ 单位不一致：清单'+r.unit+' / 定额'+it.unit+'，请设置换算系数');
+    else toast('✓ 子目已挂载');
+  }
+  return true;
 }
 function delSub(rid,bid,bsh) { const r=findRow(rid); if(r){r.subs=r.subs.filter(s=>!(s.bid===bid&&s.bsh===bsh));renderBoq();} }
 function updCoef(rid,bid,bsh,val) { const r=findRow(rid); const s=r&&r.subs.find(s=>s.bid===bid&&s.bsh===bsh); if(s){s.coef=parseFloat(val)||1.0;updateSum();} }
@@ -980,28 +991,31 @@ function getMaterialPrice(name) {
   return 0;
 }
 
-function computeAuxForRow(r) {
-  if (!r || !r.subs || !r.subs.length) return {total:0, fixedK:0, rates:[], detail:null};
-  const sub = r.subs[0];
+function computeAuxForSub(sub) {
+  // 计算单个子目的辅材费（fixedK + RATE/GROUP 配方材料费）
+  if (!sub) return 0;
   const bench = getBench(sub.bid, sub.bsh);
-  if (!bench || !bench.auxType) return {total:0, fixedK:0, rates:[], detail:null};
+  if (!bench || !bench.auxType) return 0;
   const fixedK = bench.auxFixedK || 0;
-  let rates = [], rateSum = 0;
+  let rateSum = 0;
   const rd = bench.auxRateDetail;
   if (rd && rd.type === 'RATE') {
     const p = getMaterialPrice(rd.materialName);
-    const cost = p * (rd.consume||0);
-    rates.push({name: rd.materialName, unit: rd.unit||'', price: p, consume: rd.consume, cost});
-    rateSum += cost;
+    rateSum += p * (rd.consume || 0);
   } else if (rd && rd.type === 'GROUP') {
-    (rd.items||[]).forEach(it => {
+    (rd.items || []).forEach(it => {
       const p = getMaterialPrice(it.name);
-      const cost = p * (it.consume||0);
-      rates.push({name: it.name, unit: it.unit||'', price: p, consume: it.consume, cost});
-      rateSum += cost;
+      rateSum += p * (it.consume || 0);
     });
   }
-  return {total: fixedK + rateSum, fixedK, rates, detail: rd};
+  return fixedK + rateSum;
+}
+
+function computeAuxForRow(r) {
+  if (!r || !r.subs || !r.subs.length) return {total:0, fixedK:0, rates:[], detail:null};
+  // 所有子目辅材之和（修复旧版只取第一个子目的 bug）
+  const total = r.subs.reduce((s, sub) => s + computeAuxForSub(sub), 0);
+  return {total, fixedK:0, rates:[], detail:null};
 }
 
 function recomputeAllAux() {
@@ -1459,7 +1473,16 @@ function renderBoq() {
           let auxInfo = computeAuxForRow(r); r.auxCost = auxInfo.total;
           // 子目行：与清单行列对齐，直接在主表格中渲染
           r.subs.forEach(sub => {
-            const it = getBench(sub.bid, sub.bsh); if (!it) return;
+            const it = getBench(sub.bid, sub.bsh);
+            if (!it) {
+              // 基准价缺失：红色占位行（不再静默跳过）
+              html += '<tr class="sub-r" style="background:var(--red-d)">' +
+                '<td class="rno c" style="font-size:10px;color:var(--tx3)"></td>' +
+                '<td colspan="15" style="padding-left:12px"><span style="color:var(--red);font-size:11px;font-weight:600">⚠️ 子目数据缺失（编号：'+esc(sub.bid||'?')+'）</span></td>' +
+                '</tr>';
+              return;
+            }
+            const noTrade = !sub.bsh || !it.sheet;
             const ep = effPrice(sub), conv = sub.conv||1.0;
             const subQty = (parseFloat(r.qty)||0) * conv * (sub.coef||1.0);
             const smp = parseFloat(sub.matPrice) || 0;
@@ -1472,6 +1495,7 @@ function renderBoq() {
               '<td class="rno c" style="font-size:10px;color:var(--tx3)"></td>' +
               '<td><div style="padding-left:12px">' +
                 '<span class="sid" style="font-size:10px;color:var(--accent);font-weight:600">'+esc(it.id)+'</span> ' +
+                (noTrade?'<span style="color:var(--red);font-size:9px;font-weight:600;border:1px solid var(--red);padding:0 4px;border-radius:3px">⚠️无工种</span> ':'') +
                 '<span style="font-size:12px;font-weight:500">'+esc(it.name)+'</span>' +
                 '<div style="font-size:10px;color:var(--tx3);margin-top:1px">' +
                   esc(it.sheet)+' · 子目系数: <input class="cof-i" type="number" step="0.01" min="0.01" value="'+sub.coef.toFixed(2)+'" style="width:48px;font-size:10px" onchange="updCoef('+r.id+',\''+esc(sub.bid)+'\',\''+esc(sub.bsh)+'\',this.value)">' +
@@ -1924,11 +1948,95 @@ function getExpLabel(key) {
   return col ? col.label : key;
 }
 
+function toggleSummaryCheckbox() {
+  const split = document.getElementById('expSplitByTrade')?.checked || false;
+  const summary = document.getElementById('expIncludeSummary');
+  if (summary) { summary.disabled = !split; if (!split) summary.checked = false; }
+}
+
+function mapSubForExport(sub) {
+  const it = getBench(sub.bid, sub.bsh);
+  return {
+    bid: sub.bid || '',
+    name: it ? (it.name || '') : '',
+    spec: it ? (it.spec || '') : '',
+    unit: it ? (it.unit || '') : '',
+    coef: sub.coef || 1.0,
+    conv: sub.conv || 1.0,
+    unit_price: effPrice(sub),
+    mat_price: parseFloat(sub.matPrice) || 0,
+    waste_rate: parseFloat(sub.wasteRate) || 0,
+  };
+}
+
+// 按子目 bsh（工种）重新分组，跨工种清单项拆分为多个部分
+function buildSplitExport() {
+  const unclassified = [];  // {name, unit, reason}
+  const tradeMap = {};      // {trade: [partialRows]}
+
+  getAllRows().forEach(r => {
+    const subs = r.subs || [];
+    if (!subs.length) {
+      unclassified.push({name: r.name || '', unit: r.unit || '', reason: '未套价'});
+      return;
+    }
+    const byTrade = {};
+    subs.forEach(sub => {
+      const it = getBench(sub.bid, sub.bsh);
+      if (!it) { unclassified.push({name: r.name || '', unit: r.unit || '', reason: '子目缺失'}); return; }
+      const trade = (sub.bsh || it.sheet || '').trim();
+      if (!trade) { unclassified.push({name: r.name || '', unit: r.unit || '', reason: '无工种'}); return; }
+      if (!byTrade[trade]) byTrade[trade] = [];
+      byTrade[trade].push(sub);
+    });
+
+    const trades = Object.keys(byTrade);
+    if (!trades.length) return;
+    const isMulti = trades.length > 1;
+
+    trades.forEach(trade => {
+      const partialSubs = byTrade[trade];
+      const labor = partialSubs.reduce((s, sub) => s + effPrice(sub), 0);
+      const auxCost = partialSubs.reduce((s, sub) => s + computeAuxForSub(sub), 0);
+      // 主材费（含损耗），waste_rate 置 0 避免重复计算
+      const matCost = partialSubs.reduce((sum, sub) => {
+        const smp = parseFloat(sub.matPrice) || 0;
+        const swr = parseFloat(sub.wasteRate) || 0;
+        return sum + smp * (1 + swr / 100);
+      }, 0);
+      const tradeShort = trade.replace(/班组$/, '');
+      if (!tradeMap[trade]) tradeMap[trade] = [];
+      tradeMap[trade].push({
+        seq: 0,
+        name: isMulti ? (r.name || '') + '（' + tradeShort + '部分）' : (r.name || ''),
+        spec: r.spec || '',
+        unit: r.unit || '',
+        qty: parseFloat(r.qty) || 0,
+        remark: r.remark || '',
+        mat_price: matCost,
+        waste_rate: 0,
+        aux_cost: auxCost,
+        labor_price: labor,
+        subs: partialSubs.map(mapSubForExport).filter(s => s.name),
+      });
+    });
+  });
+
+  const groups = Object.entries(tradeMap).map(([trade, rows]) => ({
+    sheet_name: trade,
+    sections: [{ name: '清单', rows }],
+  }));
+
+  return { groups, unclassified };
+}
+
 function collectExportData() {
   const selected = EXP_COLS.filter(c => document.getElementById('expchk_'+c.key)?.checked);
   const groupRows = document.getElementById('expGroupFolding')?.checked !== false;
   const showSubs = document.getElementById('expShowSubs')?.checked || false;
   const proj = document.getElementById('projName').value || '套价表';
+  const splitByTrade = document.getElementById('expSplitByTrade')?.checked || false;
+  const includeSummary = document.getElementById('expIncludeSummary')?.checked || false;
 
   const columns = selected.map(c => ({
     key: c.key,
@@ -1937,41 +2045,48 @@ function collectExportData() {
     width: c.wide,
   }));
 
-  const exportGroups = groups.map(g => ({
-    sheet_name: g.sheetName,
-    sections: g.sections.map(sec => ({
-      name: sec.name,
-      rows: sec.rows.map(r => {
-        const labor = rowUnitPrice(r) || 0;
-        return {
+  let exportGroups;
+  let unclassified = [];
+  if (splitByTrade) {
+    const r = buildSplitExport();
+    exportGroups = r.groups;
+    unclassified = r.unclassified;
+    // 未分类项放入「⚠️未分类」组
+    if (unclassified.length) {
+      exportGroups.push({
+        sheet_name: '⚠️未分类',
+        sections: [{ name: '未分配工种', rows: unclassified.map(u => ({
           seq: 0,
-          name: r.name || '',
-          spec: r.spec || '',
-          unit: r.unit || '',
-          qty: parseFloat(r.qty) || 0,
-          remark: r.remark || '',
-          mat_price: parseFloat(r.matPrice) || 0,
-          waste_rate: parseFloat(r.wasteRate) || 0,
-          aux_cost: parseFloat(r.auxCost) || 0,
-          labor_price: labor,
-          subs: (r.subs || []).map(sub => {
-            const it = getBench(sub.bid, sub.bsh);
-            return {
-              bid: sub.bid || '',
-              name: it ? (it.name || '') : '',
-              spec: it ? (it.spec || '') : '',
-              unit: it ? (it.unit || '') : '',
-              coef: sub.coef || 1.0,
-              conv: sub.conv || 1.0,
-              unit_price: effPrice(sub),
-              mat_price: parseFloat(sub.matPrice) || 0,
-              waste_rate: parseFloat(sub.wasteRate) || 0,
-            };
-          }).filter(s => s.name),
-        };
-      }),
-    })),
-  }));
+          name: u.name + '（' + u.reason + '）',
+          spec: '', unit: u.unit || '', qty: 0, remark: '',
+          mat_price: 0, waste_rate: 0, aux_cost: 0, labor_price: 0, subs: [],
+        })) }],
+      });
+    }
+  } else {
+    exportGroups = groups.map(g => ({
+      sheet_name: g.sheetName,
+      sections: g.sections.map(sec => ({
+        name: sec.name,
+        rows: sec.rows.map(r => {
+          const labor = rowUnitPrice(r) || 0;
+          return {
+            seq: 0,
+            name: r.name || '',
+            spec: r.spec || '',
+            unit: r.unit || '',
+            qty: parseFloat(r.qty) || 0,
+            remark: r.remark || '',
+            mat_price: parseFloat(r.matPrice) || 0,
+            waste_rate: parseFloat(r.wasteRate) || 0,
+            aux_cost: parseFloat(r.auxCost) || 0,
+            labor_price: labor,
+            subs: (r.subs || []).map(mapSubForExport).filter(s => s.name),
+          };
+        }),
+      })),
+    }));
+  }
 
   const useFormula = document.getElementById('expUseFormula')?.checked !== false;
 
@@ -1984,6 +2099,9 @@ function collectExportData() {
     group_folding: groupRows,
     show_subs: showSubs,
     use_formula: useFormula,
+    split_by_group: splitByTrade,
+    include_summary_sheet: includeSummary,
+    _unclassified: unclassified,
   };
 }
 
@@ -1991,6 +2109,37 @@ async function doConfigExport() {
   if (!groups.length) { toast('暂无数据'); return; }
   const selected = EXP_COLS.filter(c => document.getElementById('expchk_'+c.key)?.checked);
   if (!selected.length) { toast('请至少勾选一列'); return; }
+
+  const splitByTrade = document.getElementById('expSplitByTrade')?.checked || false;
+
+  // 拆分模式：未分类提示 + 导出对账
+  if (splitByTrade) {
+    const splitResult = buildSplitExport();
+    if (splitResult.unclassified.length) {
+      const n = splitResult.unclassified.length;
+      const sample = splitResult.unclassified.slice(0, 5).map((u, i) => (i+1) + '. ' + u.name + '（' + u.reason + '）').join('\n');
+      const more = n > 5 ? '\n...（共 ' + n + ' 项）' : '';
+      if (!confirm('⚠️ 检测到 ' + n + ' 项未分配工种：\n\n' + sample + more + '\n\n这些项将放入「⚠️未分类」Sheet，避免遗漏。是否继续导出？')) {
+        return;
+      }
+    }
+    // 对账：拆分后总价 vs 原总价
+    const originalTotal = getAllRows().reduce((s, r) => s + (rowTotal(r) || 0), 0);
+    const splitTotal = splitResult.groups.reduce((sum, g) =>
+      sum + g.sections.reduce((s, sec) => s + sec.rows.reduce((ss, row) => {
+        const labor = row.labor_price || 0;
+        const mgmt = labor * globalMgmtRate / 100;
+        const profit = labor * globalProfitRate / 100;
+        const usp = labor + (row.mat_price || 0) + (row.aux_cost || 0) + mgmt + profit;
+        return ss + usp * (row.qty || 0);
+      }, 0), 0), 0);
+    const diff = originalTotal - splitTotal;
+    if (Math.abs(diff) > 0.01) {
+      if (!confirm('⚠️ 对账校验：拆分后总价 ¥' + splitTotal.toFixed(2) + ' ≠ 原清单总价 ¥' + originalTotal.toFixed(2) + '，差额 ¥' + diff.toFixed(2) + '。\n\n差额可能来自未分配工种的清单项。是否仍要继续导出？')) {
+        return;
+      }
+    }
+  }
 
   const btn = event?.target?.closest('button');
   if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
@@ -2211,7 +2360,30 @@ function renderPicker() {
     '</div>'
   ).join('');
 }
-function pkSel(id,sh) { if(pickerRowId!==null) addSub(pickerRowId,id,sh); closePicker(); }
+function pkSel(id,sh) {
+  if (pendingBatch && pendingBatch.length) {
+    // 批量套用：同一子目挂到组内全部清单项
+    batchMode = true;
+    let added = 0;
+    pendingBatch.forEach(rid => { if (addSub(rid, id, sh)) added++; });
+    batchMode = false;
+    pendingBatch = null;
+    closePicker();
+    renderBoq();
+    toast('✓ 已批量套用到 ' + added + ' 条清单项');
+  } else if (pickerRowId !== null) {
+    addSub(pickerRowId, id, sh);
+    closePicker();
+  }
+}
+function batchApplySub(rowIds) {
+  pendingBatch = rowIds;
+  pickerRowId = null;
+  document.getElementById('pkSrch').value = '';
+  document.getElementById('pickerMod').classList.remove('hidden');
+  renderPicker();
+  setTimeout(() => document.getElementById('pkSrch').focus(), 50);
+}
 
 // ═══════════ COEF MODAL ═══════════
 const COEF_OPTS=[
@@ -2628,44 +2800,76 @@ function doLogoutTool() {
 // ═══════════ 补缺清单 ═══════════
 async function openUnmatchedModal() {
   const allRows = getAllRows();
-  const unmatched = allRows.filter(r => !r.subs || !r.subs.length);
 
-  let statsHtml = '';
-  try {
-    const r = await fetch(BACKEND_URL + '/api/v1/pricing/failure-stats?limit=30');
-    if (r.ok) {
-      const d = await r.json();
-      if (d.items && d.items.length) {
-        statsHtml = '<h4 style="margin:16px 0 8px">📊 全局失败排行 (Top ' + d.items.length + ')</h4>'
-          + '<div style="max-height:200px;overflow-y:auto;font-size:11px">'
-          + d.items.map((it,i) => '<div style="padding:3px 0;border-bottom:1px solid #eee">'
-            + '<span style="color:#888">#'+(i+1)+'</span> '
-            + '<b>'+esc(it.item_name)+'</b> '
-            + '<span style="color:#999">('+esc(it.item_unit)+')</span> '
-            + '<span style="color:#cf1322;float:right">×'+it.fail_count+'</span>'
-            + '<div style="color:#888;font-size:10px">'+esc((it.item_spec||'').substring(0,80))+'</div>'
-            + '</div>').join('')
-          + '</div>';
-      }
-    }
-  } catch(e) {}
+  // 三类问题分类
+  const unpriced = [];   // 未套价（无子目）
+  const noTrade = [];    // 无工种子目
+  const missing = [];    // 子目数据缺失
 
-  const currentHtml = unmatched.length
-    ? '<h4 style="margin:12px 0 8px">📋 本次未套价 (' + unmatched.length + ' 条)</h4>'
-      + unmatched.slice(0,10).map((r,i) => '<div style="padding:2px 0;font-size:12px">'
-        + (i+1)+'. '+esc(r.name)+' <span style="color:#888">('+esc(r.unit)+')</span></div>').join('')
+  allRows.forEach(r => {
+    const subs = r.subs || [];
+    if (!subs.length) { unpriced.push(r); return; }
+    let hasNoTrade = false, hasMissing = false;
+    subs.forEach(sub => {
+      const it = getBench(sub.bid, sub.bsh);
+      if (!it) { hasMissing = true; return; }
+      if (!sub.bsh || !it.sheet) hasNoTrade = true;
+    });
+    if (hasMissing) missing.push(r);
+    if (hasNoTrade) noTrade.push(r);
+  });
+
+  function groupBy(items) {
+    const map = {};
+    items.forEach(r => {
+      const key = (r.name || '').trim() + '|' + (r.unit || '').trim();
+      if (!map[key]) map[key] = { name: r.name || '', unit: r.unit || '', rows: [] };
+      map[key].rows.push(r);
+    });
+    return Object.values(map).sort((a, b) => b.rows.length - a.rows.length);
+  }
+
+  const unpricedGroups = groupBy(unpriced);
+  const noTradeGroups = groupBy(noTrade);
+  const missingGroups = groupBy(missing);
+
+  const unpricedHtml = unpricedGroups.length
+    ? '<h4 style="margin:14px 0 8px">📋 未套价（' + unpriced.length + ' 条 → ' + unpricedGroups.length + ' 组）</h4>'
+      + '<div style="max-height:280px;overflow-y:auto">'
+      + unpricedGroups.map(g => {
+          const ids = g.rows.map(r => r.id);
+          return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #eee">'
+            + '<span style="flex:1;font-size:12px">' + esc(g.name) + ' <span style="color:#888">(' + esc(g.unit) + ')</span></span>'
+            + '<span style="color:#b07000;font-size:11px;font-weight:600">×' + g.rows.length + '</span>'
+            + '<button class="btn btn-sm btn-suc" style="padding:2px 10px;font-size:11px" onclick="batchApplySub([' + ids.join(',') + '])">🔧 一键套用</button>'
+            + '</div>';
+        }).join('')
+      + '</div>'
     : '<p style="color:#389e0d">🎉 本次所有清单均已套价</p>';
 
-  const html = '<div style="padding:16px;max-width:600px">'
-    + '<h3 style="margin:0 0 8px">📋 补缺清单</h3>'
-    + currentHtml
-    + statsHtml
-    + '<p style="margin-top:12px;font-size:11px;color:#888">失败项自动累计，用于后续增补基准价</p>'
+  let diagnoseHtml = '';
+  if (noTradeGroups.length || missingGroups.length) {
+    diagnoseHtml = '<h4 style="margin:14px 0 8px;color:#b93232">⚠️ 数据问题（需在管理后台补录基准价工种）</h4>';
+    if (noTradeGroups.length) {
+      diagnoseHtml += '<div style="font-size:11px;color:#b93232;margin-bottom:4px">无工种（' + noTrade.length + ' 条）：</div>'
+        + noTradeGroups.slice(0, 8).map(g => '<div style="font-size:11px;color:#888;padding:1px 0">· ' + esc(g.name) + ' ×' + g.rows.length + '</div>').join('');
+    }
+    if (missingGroups.length) {
+      diagnoseHtml += '<div style="font-size:11px;color:#b93232;margin-bottom:4px;margin-top:8px">子目数据缺失（' + missing.length + ' 条）：</div>'
+        + missingGroups.slice(0, 8).map(g => '<div style="font-size:11px;color:#888;padding:1px 0">· ' + esc(g.name) + ' ×' + g.rows.length + '</div>').join('');
+    }
+  }
+
+  const html = '<div style="padding:16px;max-width:640px">'
+    + '<h3 style="margin:0 0 8px">📋 补缺清单（统一补录中心）</h3>'
+    + unpricedHtml
+    + diagnoseHtml
+    + '<p style="margin-top:12px;font-size:11px;color:#888">「一键套用」批量挂同一子目到组内全部清单项；数据问题请在管理后台补录基准价工种</p>'
     + '</div>';
 
   const modal = document.createElement('div');
   modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:500;display:flex;align-items:center;justify-content:center';
-  modal.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:620px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)">'
+  modal.innerHTML = '<div style="background:#fff;border-radius:12px;max-width:680px;width:92%;max-height:85vh;overflow-y:auto;box-shadow:0 8px 40px rgba(0,0,0,.2)">'
     + html
     + '<div style="padding:8px 16px 16px;text-align:right"><button class="btn btn-sm" onclick="this.closest(\'[style*=fixed]\').remove()">关闭</button></div>'
     + '</div>';

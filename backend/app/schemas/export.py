@@ -63,6 +63,8 @@ class ExportRequest(BaseModel):
     group_folding: bool = True    # 是否分组折叠
     show_subs: bool = False       # 是否显示子目明细
     use_formula: bool = True      # 是否写入 Excel 公式（否则静态数值）
+    split_by_group: bool = False  # 是否按工种拆分多 Sheet
+    include_summary_sheet: bool = False  # 是否额外生成汇总 Sheet
 
     class Config:
         # 允许额外字段（前端可能发送多余数据）
