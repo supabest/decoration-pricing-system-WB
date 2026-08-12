@@ -244,6 +244,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h3 style="margin:0">📢 系统版本发布</h3>
       <button class="btn btn-suc btn-sm" onclick="openReleaseForm()">+ 新建版本</button>
+      <button class="btn btn-sm" onclick="testEmail()" style="color:var(--acc);border-color:var(--acc)">📧 测试邮件</button>
     </div>
     <div id="releasesList"></div>
 
@@ -1180,6 +1181,19 @@ async function publishRelease() {
     }
     _relEditId = '';
   } catch(e) { relMsg('发布失败：'+e.message, true); }
+}
+
+async function testEmail() {
+  const email = prompt('请输入测试接收邮箱：');
+  if (!email) return;
+  try {
+    const r = await relAPI('/releases/admin/test-email', { method: 'POST', body: JSON.stringify({ email }) });
+    if (r.ok) {
+      alert('✅ 测试邮件发送成功！\nMessage ID: ' + (r.message_id || 'N/A'));
+    } else {
+      alert('❌ 发送失败：' + (r.error || '未知错误'));
+    }
+  } catch(e) { alert('请求失败：' + e.message); }
 }
 
 async function sendReleaseEmail(id) {
