@@ -1151,7 +1151,7 @@ async function saveReleaseDraft() {
     closeReleaseForm();
     await loadReleases();
     relMsg('草稿已保存');
-  } catch(e) { relMsg('保存失败：'+e.message, true); }
+  } catch(e) { alert('保存失败：'+e.message); }
 }
 
 async function publishRelease() {
@@ -1165,7 +1165,7 @@ async function publishRelease() {
     try {
       const r = await relAPI('/releases/admin/releases', { method: 'POST', body: JSON.stringify({ version: v, title: t, summary: document.getElementById('relSummary').value.trim(), content: document.getElementById('relContent').value.trim() }) });
       _relEditId = r.id;
-    } catch(e) { return relMsg('创建失败：'+e.message, true); }
+    } catch(e) { alert('创建失败：'+e.message); return; }
   }
   try {
     await relAPI('/releases/admin/releases/' + _relEditId + '/publish', { method: 'POST' });
@@ -1180,7 +1180,7 @@ async function publishRelease() {
       } catch(e) { alert('邮件发送失败：' + e.message + '。可稍后在已发布版本中重新发送。'); }
     }
     _relEditId = '';
-  } catch(e) { relMsg('发布失败：'+e.message, true); }
+  } catch(e) { alert('发布失败：'+e.message); }
 }
 
 async function testEmail() {
