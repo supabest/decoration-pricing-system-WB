@@ -14,11 +14,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 装修成本分析系统 — 装修工程人工费+材料费智能套价工具。
 
-- **后端**: Supabase PostgreSQL + Auth + REST API + FastAPI (Render 部署)
+- **后端**: Python 3.12, FastAPI, LangChain → DeepSeek API, Supabase PostgreSQL + Auth + REST API（Render 部署）
 - **前端**: React + TypeScript + Vite（Cloudflare Pages 部署）
+- **核心工具**: `docs/tool.html`（~2600行纯 HTML/CSS/JS 单页应用）
 - **生产**: https://decoration-pricing-system.pages.dev（Pages）+ https://decoration-pricing-system.onrender.com（Render）
 - **版本**: V1.2.0
-- **套价工具**: `docs/tool.html`（~2600行纯 HTML/CSS/JS 单页）
 - **仓库**: 私有（GitHub）
 
 ## 本地开发
@@ -29,7 +29,7 @@ cd docs && python3 -m http.server 8080
 # → http://localhost:8080/tool.html
 # → http://localhost:8080/admin.html
 
-# FastAPI 后端（Excel 导出服务）
+# FastAPI 后端（AI 套价 + Excel 导出）
 cd backend && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 # → http://localhost:8000/docs
 
@@ -40,23 +40,86 @@ cd frontend && npm run dev
 
 localhost 环境自动免登录（tool.html 和 admin.html 均已适配）。
 
-**后端依赖**：`fastapi`, `uvicorn`, `pydantic`, `pydantic-settings`, `openpyxl`, `sqlalchemy`, `psycopg2-binary`, `python-multipart`, `python-jose`, `passlib`, `bcrypt`, `httpx`
+## 核心架构
 
-## 核心文件
+### 数据流
+
+```
+用户上传 BOQ（Excel/手动输入）
+    ↓
+tool.html 渲染清单 → Supabase REST API 读取 497 条基准价
+    ↓
+用户点击「AI 套价」→ 未匹配行 → FastAPI 后端 → DeepSeek API
+    ↓
+DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
+    ↓
+导出 Excel（方式一：后端 openpyxl 生成 / 方式二：模板填入）
+```
+
+### 关键文件
 
 | 文件 | 说明 |
 |------|------|
 | `docs/tool.html` | **核心套价工具** — BOQ 导入、基准价侧栏、AI 套价、Excel 导出 |
 | `docs/admin.html` | 管理面板 — 用户管理 / 信息价录入 / 知识库 / 基准价浏览 |
+| `docs/v5.html` | V5 实验版 — AI 套价独立测试页面 |
+| `docs/ai_knowledge_base.json` | **AI 知识库** — tips/synonyms/rules 三类规则驱动 AI 匹配决策 |
 | `docs/benchmark_data.json` | 497 条基准价完整备份（含辅材配方），localhost 离线备用 |
+| `backend/app/ai/engine.py` | LangChain → DeepSeek LLM 初始化（`deepseek-v4-pro`） |
+| `backend/app/services/ai_pricing_service.py` | AI 套价核心服务：工程解析 → 候选匹配 → AI 推理 |
+| `backend/app/services/pricing_debug_logger.py` | 调试日志收集器，`DEBUG_PRICING=true` 时写入 `ai_pricing_logs` 表 |
+| `backend/app/services/similarity_checker.py` | 相似清单一致性校验 — 2-gram Jaccard + 子目差异检测 |
+| `backend/app/services/excel_export.py` | 方式一导出引擎 — openpyxl 生成 Excel（公式、折叠、自动行高） |
+| `backend/app/services/template_export.py` | 方式二导出引擎 — 读入用户模板，填入数据+插入子目行 |
 | `frontend/src/` | React 页面（登录、工作台、基准价查询、辅材规则等） |
-| `frontend/public/tool.html` | `docs/tool.html` 的同步副本 |
-| `backend/app/services/excel_export.py` | **方式一导出引擎** — openpyxl 生成 Excel（公式、折叠、自动行高） |
-| `backend/app/services/template_export.py` | **方式二导出引擎** — 读入用户模板，填入数据+插入子目行 |
-| `backend/app/schemas/export.py` | 导出请求模型（ExportRequest, TemplateExportRequest） |
-| `backend/app/api/v1/endpoints/export.py` | 导出 API 端点（`/excel`, `/template`） |
-| `data/seeds/` | 种子 SQL/JSON — 数据库恢复用 |
-| `scripts/` | 数据生成脚本（Excel 解析、辅材匹配、SQL 生成） |
+
+### DeepSeek 模型配置
+
+- 模型: `deepseek-v4-pro`（配置在 `backend/app/core/config.py` 的 `LLM_MODEL`）
+- `docs/tool.html` 和 `docs/v5.html` 中也硬编码了模型名，修改时需三处同步
+- API: `https://api.deepseek.com/v1`，max_tokens=2000，temperature=0
+
+### AI 知识库 (`docs/ai_knowledge_base.json`)
+
+三类规则:
+- **tips**: 通用提示（多工序拆解、天棚路由、排查指南）
+- **synonyms**: 同义词映射（扇灰→刮腻子、硬包→软包/饰面板 等 15 组）
+- **rules**: 套价规则（大板砖墙面、门槛石、灯槽、窗帘盒、假梁天花侧板、单位换算 等 24 条）
+
+同步到 Supabase: 通过 `admin.html` 管理面板的 📤 上传按钮，或 SQL Editor 执行 SQL。
+
+## Supabase
+
+- URL: `https://lnvtykghcpsjpwczbqsm.supabase.co`
+- Anon key: `sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q`
+- 前端通过 Fetch API 直连（`_get`/`_post`/`_patch`/`_del` 封装在 tool.html）
+
+### RLS 策略
+
+| 表 | SELECT | INSERT/UPDATE/DELETE |
+|----|--------|---------------------|
+| `benchmark_items` | `authenticated` 均可读 | 需 `is_admin=true` |
+| `material_prices` | 公开（无 RLS） | 需 `is_admin=true` |
+| `profiles` | — | 仅管理员 |
+
+### 数据库当前状态（2026-08-07）
+
+| 表 | 行数 | 备注 |
+|----|------|------|
+| `benchmark_items` | 497 | FIXED 432 / RATE 63 / GROUP 2，含 aux 辅材配方 |
+| `material_prices` | 21 | 21 种辅材信息价（2024-01 基准价） |
+| `main_material_catalog` | 226 | 主材目录+价格 |
+| `ai_pricing_logs` | — | 调试日志（`DEBUG_PRICING=true` 时写入） |
+
+### 数据库恢复
+
+```sql
+-- RLS 修复
+DROP POLICY IF EXISTS benchmark_read_approved ON benchmark_items;
+CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated USING (true);
+
+-- 数据恢复: Table Editor → Import CSV 或 SQL Editor 执行 data/seeds/ 下文件
+```
 
 ## 计价公式
 
@@ -67,62 +130,23 @@ localhost 环境自动免登录（tool.html 和 admin.html 均已适配）。
 合价     = 综合单价 × 工程量
 ```
 
-## Supabase
-
-- URL: `https://lnvtykghcpsjpwczbqsm.supabase.co`
-- Anon key: `sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q`
-- 前端通过 Fetch API 直连（`_get`/`_post`/`_patch`/`_del` 封装在 tool.html:536-540）
-
-### RLS 策略
-
-| 表 | SELECT | INSERT/UPDATE/DELETE |
-|----|--------|---------------------|
-| `benchmark_items` | `authenticated` 均可读 | 需 `is_admin=true` |
-| `material_prices` | 公开（无 RLS） | 需 `is_admin=true` |
-| `profiles` | — | 仅管理员 |
-
-`is_admin()` 函数检查 `profiles` 表。
-
-## 数据库当前状态（2026-07-31）
-
-| 表 | 行数 | 备注 |
-|----|------|------|
-| `benchmark_items` | 497 | FIXED 432 / RATE 63 / GROUP 2，含 aux 辅材配方 |
-| `material_prices` | 21 | 21 种辅材信息价（2024-01 基准价） |
-| `main_material_categories` | 23 | 主材品类 |
-| `main_material_catalog` | 226 | 主材目录 |
-| `main_material_prices` | 226 | 主材价格 |
-| `profiles` | 1 | Lee 管理员（leening222@126.com） |
-| `auxiliary_rules` | 0 | 旧版 keyword 规则（V2 系统不依赖） |
-| `ai_knowledge` | 0 | 已丢失 |
-
 ## Excel 导出（FastAPI 后端 + openpyxl）
-
-两种导出方式均通过 FastAPI 后端（`localhost:8000`）生成 xlsx 文件，前端 `tool.html` 以 fetch 调用。
 
 ### 方式一：配置导出 `POST /api/v1/export/excel`
 
 `collectExportData()` 收集 BOQ 数据 → `ExcelExporter` 生成新 sheet。
 
-关键格式设置：
-- **全部单元格**: `vertical: 'center'` + `wrapText: true`
-- **行高**: 根据内容字数自动估算（`_set_row_heights`）
-- **折叠**: `summaryBelow: false`，层级：分部(1)→清单(2)→子目(3)
-- **公式**: 管理费=lab×rate, 利润=lab×rate, 综合单价=Σ各项, 合价=usp×qty
-- **合计行**: 仅合价列 SUM，通过 `main_row_indices`（仅父行）避免子目双倍计数
-- **编号列**: 仅子目行显示基准价编号（`code` 列），清单行留空
-- **子目 USP**: 保留值（不含管理费/利润加成），父行 USP 为公式
-- **子目初始折叠**: `hidden: true`
+关键行为:
+- 折叠层级: 分部(1)→清单(2)→子目(3)，子目初始 `hidden: true`
+- 公式: 管理费/利润=lab×rate，综合单价=Σ各项，合价=usp×qty
+- 合计行仅合价列 SUM，通过 `main_row_indices`（仅父行）避免子目双倍计数
+- 编号列仅子目行显示基准价编号，清单行留空
 
 ### 方式二：模板导出 `POST /api/v1/export/template`
 
-前端 `handleTmplFile()` 解析模板识别表头 + `autoMatchTmplCols()` 自动映射列 → `doTemplateExport()` 以 FormData（template 文件 + JSON 数据）发送至后端 → `TemplateExcelExporter` 读入原模板，在表头下方填入数据。
+前端解析模板识别表头 + 自动映射列 → 后端读入原模板，`insert_rows()` 动态插入子目行，`_copy_row_style()` 复制样式。
 
-- `ws.insert_rows()` 在父行下方动态插入子目行
-- `_copy_row_style()` 将父行样式复制到插入行
-- `_apply_styles()` / `_set_row_heights()` 补齐格式（与方式一对齐）
-- `_set_outline()` 设置分组折叠（与方式一行为一致）
-- 支持 `📌 包含套价子目` 勾选框（`tmplShowSubs`）
+### 关键 schema
 
 ### 关键 schema 注意事项
 
@@ -166,10 +190,11 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 
 ## 注意事项
 
-- `docs/tool.html` 和 `frontend/public/tool.html` 必须保持同步（修改时两处都要改）
+- `docs/tool.html` ↔ `frontend/public/tool.html` 必须保持同步（修改时两处都要改）
 - 同理 `docs/admin.html` ↔ `frontend/public/admin.html`
-- 新增 BOQ 行字段需同步改 `makeRow()`、`rowTotal()`、`renderBoq()`、`collectExportData()`
-- `collectExportData()` 负责收集导出数据（方式一和方式二共用）
+- DeepSeek 模型名三处同步: `backend/app/core/config.py`, `docs/tool.html`, `docs/v5.html`
+- 新增 BOQ 行字段需同步改: `makeRow()`, `rowTotal()`, `renderBoq()`, `collectExportData()`
 - `rowUnitPrice(r)` 依赖 `r.subs`，`r.subs` 可能为 undefined，调用方需判空
+- 导出格式修改需同时验证方式一和方式二
 - 敏感数据（材料价格）只存 Supabase，不入 git
-- 导出格式修改需同时验证 **方式一**（配置导出）和 **方式二**（模板导出）
+- `data/seeds/` 已被 `.gitignore` 排除（含实际定价数据，不上传 GitHub）

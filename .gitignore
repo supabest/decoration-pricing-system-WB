@@ -27,6 +27,7 @@ env/
 Thumbs.db
 
 # Project
+*.modified-backup
 uploads/
 data/vector_indexes/*
 !data/vector_indexes/.gitkeep
