@@ -106,10 +106,42 @@ async def optional_auth(authorization: Optional[str] = Header(None)) -> Optional
 async def require_admin(user: dict = Depends(require_auth)) -> dict:
     """FastAPI 依赖：要求管理员权限
 
-    检查 Supabase JWT 中的 app_metadata.role == 'admin'
+    管理员判定（与 admin.html「设为管理员」按钮一致，以 profiles.is_admin 为准）：
+      1. JWT app_metadata.role == 'admin'（Supabase Auth 元数据）
+      2. 或 profiles 表 is_admin == true（admin.html 设置的来源）
     """
     app_meta = user.get("app_metadata", {}) or {}
-    role = app_meta.get("role", "")
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
+    if app_meta.get("role") == "admin":
+        return user
+
+    if await _profiles_is_admin(user["sub"]):
+        return user
+
+    raise HTTPException(status_code=403, detail="Admin access required")
+
+
+async def _profiles_is_admin(user_id: str) -> bool:
+    """通过 service_role key 查询 profiles.is_admin（绕过 RLS）。
+
+    返回该用户是否为管理员。service_role key 未配置或查询失败时返回 False。
+    """
+    if not settings.SUPABASE_SERVICE_ROLE_KEY:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/profiles",
+                headers={
+                    "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
+                    "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
+                },
+                params={"id": f"eq.{user_id}", "select": "is_admin"},
+            )
+            if r.status_code != 200:
+                logger.warning(f"profiles.is_admin query failed: HTTP {r.status_code}")
+                return False
+            rows = r.json()
+            return bool(rows) and bool(rows[0].get("is_admin"))
+    except Exception as e:
+        logger.error(f"profiles.is_admin check failed: {e}")
+        return False
