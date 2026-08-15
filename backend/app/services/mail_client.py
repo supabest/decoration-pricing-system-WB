@@ -59,11 +59,15 @@ async def send_email_via_worker(
         msg.set_content("请使用支持 HTML 的邮件客户端查看此邮件。")
         msg.add_alternative(html_body, subtype="html")
 
-        with smtplib.SMTP_SSL(
-            settings.SMTP_HOST,
-            settings.SMTP_PORT,
-            timeout=30,
-        ) as server:
+        if settings.SMTP_USE_SSL:
+            server = smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30)
+        else:
+            server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=30)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+
+        with server:
             server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
             server.send_message(msg)
 
