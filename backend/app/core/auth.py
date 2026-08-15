@@ -51,7 +51,7 @@ async def verify_supabase_jwt(token: str) -> dict:
         payload = jwt.decode(
             token,
             jwks,
-            algorithms=["RS256"],
+            algorithms=["RS256", "ES256"],
             issuer=f"{settings.SUPABASE_URL}/auth/v1",
             options={"verify_aud": False},
         )
