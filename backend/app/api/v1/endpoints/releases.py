@@ -217,6 +217,40 @@ async def get_release(
 
 # ═══════════ Admin Endpoints ═══════════
 
+@router.get("/debug/smtp")
+async def smtp_debug():
+    """诊断接口：查看后端实际读到的 SMTP 配置 + 解析结果 + 连通性（不含密码）。"""
+    import socket
+    import smtplib
+
+    out = {
+        "smtp_host": settings.SMTP_HOST,
+        "smtp_port": settings.SMTP_PORT,
+        "smtp_use_ssl": settings.SMTP_USE_SSL,
+        "smtp_password_set": bool(settings.SMTP_PASSWORD),
+    }
+    try:
+        addrs = socket.getaddrinfo(settings.SMTP_HOST, settings.SMTP_PORT)
+        out["resolved"] = [
+            {"family": "IPv6" if a[0] == socket.AF_INET6 else "IPv4", "addr": a[4][0]}
+            for a in addrs
+        ]
+    except Exception as e:
+        out["resolved_error"] = f"{type(e).__name__}: {e}"
+
+    try:
+        server = smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=8)
+        out["connect"] = "OK"
+        try:
+            server.quit()
+        except Exception:
+            pass
+    except Exception as e:
+        out["connect"] = f"FAILED: {type(e).__name__}: {e}"
+
+    return out
+
+
 @router.get("/admin/releases", response_model=List[ReleaseOut])
 async def admin_list_releases(
     user: dict = Depends(require_admin),
