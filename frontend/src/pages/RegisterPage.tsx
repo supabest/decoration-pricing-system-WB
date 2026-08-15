@@ -53,7 +53,7 @@ export default function RegisterPage() {
       }}>
         <div style={cardStyle}>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 48, marginBottom: 8 }}>🏗️</div>
+            <div style={{ fontSize: 48, marginBottom: 8 }}><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M9 20v-5h6v5"/><path d="M17 3v3h3v3"/></svg></div>
             <div style={{ fontSize: 56, marginBottom: 12 }}>✅</div>
             <h2 style={{ fontSize: 20, fontWeight: 700, color: '#1a1a2e', margin: '0 0 8px' }}>
               已提交审核
@@ -95,7 +95,7 @@ export default function RegisterPage() {
     }}>
       <div style={cardStyle}>
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ fontSize: 48, marginBottom: 8 }}>🏗️</div>
+          <div style={{ fontSize: 48, marginBottom: 8 }}><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M9 20v-5h6v5"/><path d="M17 3v3h3v3"/></svg></div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1a1a2e', margin: '0 0 4px' }}>
             注册新账户
           </h1>

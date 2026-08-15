@@ -59,9 +59,9 @@ function AppLayout({ children }: { children: React.ReactNode }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
                onClick={() => { window.location.hash = '#/dashboard' }}>
-            <span style={{ fontSize: 22 }}>🏗️</span>
+            <span style={{ fontSize: 22, display: 'inline-flex', alignItems: 'center' }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M9 20v-5h6v5"/><path d="M17 3v3h3v3"/></svg></span>
             <span style={{ fontSize: 16, fontWeight: 700, color: '#1a1a2e' }}>
-              装修成本分析系统
+              装修成本智能分析系统
             </span>
           </div>
           <nav style={{ display: 'flex', gap: 2 }}>
