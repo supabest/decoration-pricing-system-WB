@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>管理面板 - 装修成本分析系统 V1.2</title>
+<title>管理面板 - 装修成本智能分析系统 V1.2</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap');
@@ -107,7 +107,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
 <body>
 
 <div class="hdr">
-  <span class="hdr-title">⚙ 管理面板 · 装修成本分析系统 V1.2</span>
+  <span class="hdr-title">⚙ 管理面板 · 装修成本智能分析系统 <span id="appVersion">V1.2</span></span>
   <div style="display:flex;gap:10px;align-items:center">
     <span id="userLabel" style="font-size:12px;color:#888;cursor:pointer" onclick="setOwnDisplayName()" title="点击修改自己的昵称"></span>
     <a href="javascript:void(0)" onclick="if(window!==window.top){window.parent.location.hash='#/pricing'}else{location.href='tool.html'}" class="btn btn-sm" style="color:#0b7b50;border-color:#0b7b50;text-decoration:none">← 返回套价工具</a>
@@ -1071,6 +1071,25 @@ async function relAPI(path, opts = {}) {
   const data = await r.json().catch(() => null);
   if (!r.ok) throw new Error(data?.detail || r.statusText);
   return data;
+}
+
+function updateAppVersion() {
+  const el = document.getElementById('appVersion');
+  if (!el) return;
+  fetch(API_BASE + '/api/v1/releases?limit=1').then(r => r.json()).then(releases => {
+    if (releases.length && releases[0].version) {
+      let v = String(releases[0].version).trim();
+      if (v && !/^[vV]/.test(v)) v = 'V' + v;
+      el.textContent = v;
+      document.title = '管理面板 - 装修成本智能分析系统 ' + v;
+    }
+  }).catch(() => {});
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', updateAppVersion);
+} else {
+  updateAppVersion();
 }
 
 async function initReleasesTab() {
