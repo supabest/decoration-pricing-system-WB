@@ -192,6 +192,7 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 
 - `docs/tool.html` ↔ `frontend/public/tool.html` 必须保持同步（修改时两处都要改）
 - 同理 `docs/admin.html` ↔ `frontend/public/admin.html`
+- `docs/benchmark_data.json` / `docs/waste_rates.json` ↔ `frontend/public/` 必须同步（Pages 只部署 `frontend/public/`，缺了会导致线上离线兜底退化为 4 条内置数据）
 - DeepSeek 模型名三处同步: `backend/app/core/config.py`, `docs/tool.html`, `docs/v5.html`
 - 新增 BOQ 行字段需同步改: `makeRow()`, `rowTotal()`, `renderBoq()`, `collectExportData()`
 - `rowUnitPrice(r)` 依赖 `r.subs`，`r.subs` 可能为 undefined，调用方需判空
