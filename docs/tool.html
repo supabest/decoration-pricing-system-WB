@@ -2653,15 +2653,14 @@ function updateAnnounceBadge() {
   const badge = document.getElementById('announceBadge');
   if (!badge) return;
   const lastSeen = parseInt(localStorage.getItem('announcement-last-seen-id') || '0');
-  // 静默检查最新版本
-  const api = ANNOUNCE_API + '?limit=1';
-  fetch(api).then(r => r.json()).then(releases => {
-    if (releases.length && releases[0].id > lastSeen) {
-      badge.style.display = 'block';
-    } else {
-      badge.style.display = 'none';
-    }
-  }).catch(() => {});
+  const apply = (releases) => {
+    const r0 = Array.isArray(releases) && releases[0];
+    badge.style.display = (r0 && r0.id > lastSeen) ? 'block' : 'none';
+  };
+  // 优先读 Supabase（快、无冷启动）→ 失败/空再兜底 Render
+  _get('system_releases', {select:'id', eq:{col:'status',val:'published'}, order:{col:'id',asc:false}, limit:1})
+    .then(rs => (rs && rs.length) ? apply(rs) : fetch(ANNOUNCE_API + '?limit=1').then(r => r.json()).then(apply))
+    .catch(() => fetch(ANNOUNCE_API + '?limit=1').then(r => r.json()).then(apply).catch(() => {}));
 }
 
 function updateAppVersion() {
