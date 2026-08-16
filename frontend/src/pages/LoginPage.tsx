@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { getChineseErrorMessage } from '../lib/authErrors'
@@ -11,6 +11,25 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [appVersion, setAppVersion] = useState('')
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await (supabase as any)
+          .from('system_releases')
+          .select('version')
+          .eq('status', 'published')
+          .order('id', { ascending: false })
+          .limit(1)
+        if (data && data.length && data[0].version) {
+          let v = String(data[0].version).trim()
+          if (v && !/^[vV]/.test(v)) v = 'V' + v
+          setAppVersion(v)
+        }
+      } catch (e) { /* 忽略：版本号加载失败不阻塞登录 */ }
+    })()
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -68,6 +87,9 @@ export default function LoginPage() {
             装修成本智能分析系统
           </h1>
           <p style={{ color: '#888', fontSize: 14, margin: 0 }}>登录您的账户</p>
+          {appVersion && (
+            <p style={{ color: '#aaa', fontSize: 12, margin: '6px 0 0', fontFamily: 'monospace' }}>版本 {appVersion}</p>
+          )}
         </div>
 
         <form onSubmit={handleSubmit}>

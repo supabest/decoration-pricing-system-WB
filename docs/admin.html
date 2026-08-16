@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>管理面板 - 装修成本智能分析系统 V1.2</title>
+<title>管理面板 - 装修成本智能分析系统 V1.3.0</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMWQ2ZmE1IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTMgOWw5LTcgOSA3djExYTIgMiAwIDAgMS0yIDJINWEyIDIgMCAwIDEtMi0yeiIvPjxwb2x5bGluZSBwb2ludHM9IjkgMjIgOSAxMiAxNSAxMiAxNSAyMiIvPjwvc3ZnPgo=" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
@@ -108,7 +108,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
 <body>
 
 <div class="hdr">
-  <span class="hdr-title">⚙ 管理面板 · 装修成本智能分析系统 <span id="appVersion">V1.2</span></span>
+  <span class="hdr-title">⚙ 管理面板 · 装修成本智能分析系统 <span id="appVersion">V1.3.0</span></span>
   <div style="display:flex;gap:10px;align-items:center">
     <span id="userLabel" style="font-size:12px;color:#888;cursor:pointer" onclick="setOwnDisplayName()" title="点击修改自己的昵称"></span>
     <a href="javascript:void(0)" onclick="if(window!==window.top){window.parent.location.hash='#/pricing'}else{location.href='tool.html'}" class="btn btn-sm" style="color:#0b7b50;border-color:#0b7b50;text-decoration:none">← 返回套价工具</a>
@@ -1077,14 +1077,20 @@ async function relAPI(path, opts = {}) {
 function updateAppVersion() {
   const el = document.getElementById('appVersion');
   if (!el) return;
-  fetch(API_BASE + '/api/v1/releases?limit=1').then(r => r.json()).then(releases => {
-    if (releases.length && releases[0].version) {
-      let v = String(releases[0].version).trim();
+  const apply = (releases) => {
+    const r0 = Array.isArray(releases) && releases[0];
+    if (r0 && r0.version) {
+      let v = String(r0.version).trim();
       if (v && !/^[vV]/.test(v)) v = 'V' + v;
       el.textContent = v;
       document.title = '管理面板 - 装修成本智能分析系统 ' + v;
     }
-  }).catch(() => {});
+  };
+  // 优先读 Supabase（快、无冷启动）→ 失败/空再兜底 Render 后端
+  fetch(SUPABASE_URL + '/rest/v1/system_releases?select=version&status=eq.published&order=id.desc&limit=1', {
+    headers: {'apikey': SUPABASE_ANON_KEY}
+  }).then(r => r.json()).then(apply)
+    .catch(() => fetch(API_BASE + '/api/v1/releases?limit=1').then(r => r.json()).then(apply).catch(() => {}));
 }
 
 if (document.readyState === 'loading') {
