@@ -251,19 +251,109 @@ async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str) -> s
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             json={
                 "model": settings.LLM_MODEL,
-                "max_tokens": 2000,
+                "max_tokens": 8000,
                 "temperature": 0,
                 "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
             }
         )
         if r.status_code != 200:
             raise Exception(f"DeepSeek error {r.status_code}: {r.text[:200]}")
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        # deepseek-v4-pro 是推理模型：答案可能落在 content 或 reasoning_content
+        content = (msg.get("content") or "").strip()
+        if not content:
+            content = (msg.get("reasoning_content") or "").strip()
+        return content
 
 
 def parse_ai_response(raw: str) -> Optional[dict]:
+    """解析 AI 返回的 JSON，兼容代码块、前后杂质、以及被截断的 JSON。"""
+    if not raw or not str(raw).strip():
+        return None
+    text = re.sub(r'```json|```', '', str(raw)).strip()
+    # 1) 直接解析
     try:
-        return json.loads(re.sub(r'```json|```', '', raw).strip())
+        return json.loads(text)
+    except Exception:
+        pass
+    # 2) 提取第一个完整 JSON 对象（兼容前后杂质）
+    obj = _extract_balanced_json(text)
+    if obj is not None:
+        return obj
+    # 3) 截断修复：闭合未闭合的字符串和括号
+    return _repair_truncated_json(text)
+
+
+def _extract_balanced_json(text: str) -> Optional[dict]:
+    start = text.find('{')
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == '\\':
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except Exception:
+                        return None
+    return None
+
+
+def _repair_truncated_json(text: str) -> Optional[dict]:
+    start = text.find('{')
+    if start == -1:
+        return None
+    out = []
+    stack = []
+    in_str = False
+    esc = False
+    for c in text[start:]:
+        if in_str:
+            out.append(c)
+            if esc:
+                esc = False
+            elif c == '\\':
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+                out.append(c)
+            elif c in '{[':
+                stack.append(c)
+                out.append(c)
+            elif c in '}]':
+                if stack:
+                    top = stack[-1]
+                    if (top == '{' and c == '}') or (top == '[' and c == ']'):
+                        stack.pop()
+                out.append(c)
+            else:
+                out.append(c)
+    if in_str:
+        out.append('"')  # 闭合被截断的字符串
+    for open_ch in reversed(stack):  # 闭合未闭合的括号
+        out.append('}' if open_ch == '{' else ']')
+    try:
+        return json.loads(''.join(out))
     except Exception:
         return None
 

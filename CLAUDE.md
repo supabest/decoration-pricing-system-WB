@@ -77,7 +77,12 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 
 - 模型: `deepseek-v4-pro`（配置在 `backend/app/core/config.py` 的 `LLM_MODEL`）
 - `docs/tool.html` 和 `docs/v5.html` 中也硬编码了模型名，修改时需三处同步
-- API: `https://api.deepseek.com/v1`，max_tokens=2000，temperature=0
+- API: `https://api.deepseek.com/chat/completions`（`call_deepseek` 里硬编码，未走 `LLM_BASE_URL`），temperature=0
+- **`deepseek-v4-pro` 是推理模型**，`backend/app/services/ai_pricing_service.py` 的 `call_deepseek` 必须：
+  - `max_tokens=8000`（曾因 2000 太小被推理吃光，导致 `content` 空/截断，大量清单「套不上价」）
+  - 先读 `message.content`，为空回退读 `message.reasoning_content`
+  - `parse_ai_response` 已做健壮解析（兼容代码块/前后杂质/截断 JSON 修复）
+- ⚠️ 这几处是 2026-08-16 修复过的「易丢失」点，改回 `max_tokens=2000` 或删掉 `reasoning_content` 回退会导致套价成功率骤降，勿回退
 
 ### AI 知识库 (`docs/ai_knowledge_base.json`)
 
