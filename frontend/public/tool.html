@@ -1893,7 +1893,7 @@ const EXP_COLS = [
   {key:'profit',label:'利润',      get:r=>(rowUnitPrice(r)||0)*(globalProfitRate/100), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
   {key:'usp',  label:'综合单价',    get:r=>compUnitPrice(r)||0,   num:true, wide:12, def:true,  preset:{client:true, internal:true, labor:false}},
   {key:'total',label:'合价',       get:r=>rowTotal(r)||0,        num:true, wide:14, def:true,  preset:{client:true, internal:true, labor:true}},
-  {key:'remark',label:'备注',      get:r=>r.remark||'',         num:false, wide:22, def:true,  preset:{client:false,internal:true, labor:false}},
+  {key:'remark',label:'备注',      get:r=>exportRemark(r),       num:false, wide:22, def:true,  preset:{client:true, internal:true, labor:true}},
 ];
 
 function buildExpCols() {
@@ -1963,6 +1963,16 @@ function mapSubForExport(sub) {
   };
 }
 
+function exportRemark(r) {
+  const conf = (r.aiNote && r.aiNote.conf != null) ? r.aiNote.conf : null;
+  const base = r.remark || '';
+  if (conf != null && conf < 70) {
+    const mark = '⚠️低置信度' + conf + '%';
+    return base ? base + '｜' + mark : mark;
+  }
+  return base;
+}
+
 // 按子目 bsh（工种）重新分组，跨工种清单项拆分为多个部分
 function buildSplitExport() {
   const unclassified = [];  // {name, unit, reason}
@@ -2006,7 +2016,7 @@ function buildSplitExport() {
         spec: r.spec || '',
         unit: r.unit || '',
         qty: parseFloat(r.qty) || 0,
-        remark: r.remark || '',
+        remark: exportRemark(r),
         mat_price: matCost,
         waste_rate: 0,
         aux_cost: auxCost,
@@ -2070,7 +2080,7 @@ function collectExportData() {
             spec: r.spec || '',
             unit: r.unit || '',
             qty: parseFloat(r.qty) || 0,
-            remark: r.remark || '',
+            remark: exportRemark(r),
             mat_price: parseFloat(r.matPrice) || 0,
             waste_rate: parseFloat(r.wasteRate) || 0,
             aux_cost: parseFloat(r.auxCost) || 0,
