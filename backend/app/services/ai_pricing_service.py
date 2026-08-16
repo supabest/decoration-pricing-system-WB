@@ -245,7 +245,7 @@ def build_user_prompt(name: str, spec: str, unit: str, candidates: list[dict]) -
 
 # ── DeepSeek 调用 ──
 async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str) -> str:
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
         r = await client.post(
             "https://api.deepseek.com/chat/completions",
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
@@ -396,8 +396,9 @@ async def price_single(name: str, spec: str, unit: str, api_key: str,
         result = parse_ai_response(raw)
         debug_log.log_response(raw, result)
     except Exception as e:
-        debug_log.log_error(str(e))
-        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": str(e)[:100]})
+        err_msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+        debug_log.log_error(err_msg)
+        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": err_msg[:100]})
         await save_debug_log(debug_log)
         raise
 

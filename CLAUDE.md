@@ -80,6 +80,7 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 - API: `https://api.deepseek.com/chat/completions`（`call_deepseek` 里硬编码，未走 `LLM_BASE_URL`），temperature=0
 - **`deepseek-v4-pro` 是推理模型**，`backend/app/services/ai_pricing_service.py` 的 `call_deepseek` 必须：
   - `max_tokens=8000`（曾因 2000 太小被推理吃光，导致 `content` 空/截断，大量清单「套不上价」）
+  - `httpx timeout=180`（曾因 60 太短，推理长时 ReadTimeout，4/26 超时失败）
   - 先读 `message.content`，为空回退读 `message.reasoning_content`
   - `parse_ai_response` 已做健壮解析（兼容代码块/前后杂质/截断 JSON 修复）
 - ⚠️ 这几处是 2026-08-16 修复过的「易丢失」点，改回 `max_tokens=2000` 或删掉 `reasoning_content` 回退会导致套价成功率骤降，勿回退
