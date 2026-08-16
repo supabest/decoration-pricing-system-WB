@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-v4-pro"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
+    # deepseek-v4-pro 是推理模型，需留足输出 token，否则 content 被推理吃光→空/截断
+    LLM_MAX_TOKENS: int = 8000
+    # 推理模型生成慢，复杂项会超过 60s，需放宽
+    LLM_TIMEOUT_SECONDS: int = 180
+    # 套价置信度阈值：低于此值在导出备注列标 ⚠️低置信度
+    CONFIDENCE_LOW_THRESHOLD: int = 70
 
     # ── Supabase ──
     SUPABASE_URL: str = "https://lnvtykghcpsjpwczbqsm.supabase.co"

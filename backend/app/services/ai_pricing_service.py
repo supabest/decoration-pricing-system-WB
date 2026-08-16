@@ -245,13 +245,14 @@ def build_user_prompt(name: str, spec: str, unit: str, candidates: list[dict]) -
 
 # ── DeepSeek 调用 ──
 async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str) -> str:
-    async with httpx.AsyncClient(timeout=180) as client:
+    url = settings.LLM_BASE_URL.rstrip('/') + '/chat/completions'
+    async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
         r = await client.post(
-            "https://api.deepseek.com/chat/completions",
+            url,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             json={
                 "model": settings.LLM_MODEL,
-                "max_tokens": 8000,
+                "max_tokens": settings.LLM_MAX_TOKENS,
                 "temperature": 0,
                 "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
             }
