@@ -1971,15 +1971,15 @@ function buildSplitExport() {
   getAllRows().forEach(r => {
     const subs = r.subs || [];
     if (!subs.length) {
-      unclassified.push({name: r.name || '', unit: r.unit || '', reason: '未套价'});
+      unclassified.push({name: r.name || '', unit: r.unit || '', spec: r.spec || '', qty: parseFloat(r.qty) || 0, remark: r.remark || '', reason: '未套价'});
       return;
     }
     const byTrade = {};
     subs.forEach(sub => {
       const it = getBench(sub.bid, sub.bsh);
-      if (!it) { unclassified.push({name: r.name || '', unit: r.unit || '', reason: '子目缺失'}); return; }
+      if (!it) { unclassified.push({name: r.name || '', unit: r.unit || '', spec: r.spec || '', qty: parseFloat(r.qty) || 0, remark: r.remark || '', reason: '子目缺失'}); return; }
       const trade = (sub.bsh || it.sheet || '').trim();
-      if (!trade) { unclassified.push({name: r.name || '', unit: r.unit || '', reason: '无工种'}); return; }
+      if (!trade) { unclassified.push({name: r.name || '', unit: r.unit || '', spec: r.spec || '', qty: parseFloat(r.qty) || 0, remark: r.remark || '', reason: '无工种'}); return; }
       if (!byTrade[trade]) byTrade[trade] = [];
       byTrade[trade].push(sub);
     });
@@ -2052,7 +2052,7 @@ function collectExportData() {
         sections: [{ name: '未分配工种', rows: unclassified.map(u => ({
           seq: 0,
           name: u.name + '（' + u.reason + '）',
-          spec: '', unit: u.unit || '', qty: 0, remark: '',
+          spec: u.spec || '', unit: u.unit || '', qty: u.qty || 0, remark: u.remark || '',
           mat_price: 0, waste_rate: 0, aux_cost: 0, labor_price: 0, subs: [],
         })) }],
       });
