@@ -386,6 +386,7 @@ class ExcelExporter:
 
     def _apply_formulas(self):
         """将数据行的计算列替换为 Excel 公式"""
+        split = self.req.split_by_group
         lab_col = self._col_letter("lab")
         mat_col = self._col_letter("mat")
         mat_price_col = self._col_letter("mat_price")
@@ -424,27 +425,34 @@ class ExcelExporter:
 
             # 综合单价：
             # - 子目行：保留值 = unit_price（不含管理费/利润加成）
-            # - 父行：公式 = 人工 + 主材 + 辅材 + 管理费 + 利润
+            # - 劳务清单(拆分)：父行 = 人工单价
+            # - 普通模式父行：= 人工 + 主材 + 辅材 + 管理费 + 利润
             if usp_col and not is_sub:
-                parts = []
-                if lab_col:
-                    parts.append(f"{lab_col}{R}")
-                if mat_col:
-                    parts.append(f"{mat_col}{R}")
-                if aux_col:
-                    parts.append(f"{aux_col}{R}")
-                if mgmt_col:
-                    parts.append(f"{mgmt_col}{R}")
-                if profit_col:
-                    parts.append(f"{profit_col}{R}")
-                if parts:
+                if split and lab_col:
                     cell = self.ws.cell(row=R, column=self.col_idx["usp"] + 1)
-                    cell.value = f"={'+'.join(parts)}"
+                    cell.value = f"={lab_col}{R}"
+                else:
+                    parts = []
+                    if lab_col:
+                        parts.append(f"{lab_col}{R}")
+                    if mat_col:
+                        parts.append(f"{mat_col}{R}")
+                    if aux_col:
+                        parts.append(f"{aux_col}{R}")
+                    if mgmt_col:
+                        parts.append(f"{mgmt_col}{R}")
+                    if profit_col:
+                        parts.append(f"{profit_col}{R}")
+                    if parts:
+                        cell = self.ws.cell(row=R, column=self.col_idx["usp"] + 1)
+                        cell.value = f"={'+'.join(parts)}"
 
-            # 合价 = 综合单价 × 工程量
-            if total_col and usp_col and qty_col:
-                cell = self.ws.cell(row=R, column=self.col_idx["total"] + 1)
-                cell.value = f"={usp_col}{R}*{qty_col}{R}"
+            # 合价 = 综合单价 × 工程量（无综合单价列时，劳务清单用人工单价 × 工程量）
+            if total_col and qty_col:
+                ref_col = usp_col if usp_col else (lab_col if split else None)
+                if ref_col:
+                    cell = self.ws.cell(row=R, column=self.col_idx["total"] + 1)
+                    cell.value = f"={ref_col}{R}*{qty_col}{R}"
 
     def _col_letter(self, key: str) -> Optional[str]:
         """获取列 key 对应的 Excel 列字母，不存在返回 None"""
