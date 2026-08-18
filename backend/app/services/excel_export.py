@@ -331,9 +331,13 @@ class ExcelExporter:
         elif key == "profit":
             return labor * profit_rate
         elif key == "usp":
+            if self.req.split_by_group:
+                return labor  # 劳务清单：综合单价 = 人工单价（不含主材/辅材/管理费/利润）
             mat_cost = (row.mat_price or 0) * (1 + (row.waste_rate or 0) / 100)
             return labor + mat_cost + (row.aux_cost or 0) + labor * mgmt_rate + labor * profit_rate
         elif key == "total":
+            if self.req.split_by_group:
+                return labor * (row.qty or 0)  # 劳务清单：合价 = 人工单价 × 工程量（与子目一致）
             usp = labor + (row.mat_price or 0) * (1 + (row.waste_rate or 0) / 100) + (row.aux_cost or 0) + labor * mgmt_rate + labor * profit_rate
             return usp * (row.qty or 0)
         elif key == "remark":
