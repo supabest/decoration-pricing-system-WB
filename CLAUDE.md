@@ -76,6 +76,7 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 ### DeepSeek 模型配置
 
 - 模型: `deepseek-v4-pro`（配置在 `backend/app/core/config.py` 的 `LLM_MODEL`）
+- 支持两种可选模型：`deepseek-v4-pro`（强·贵，默认）和 `deepseek-v4-flash`（省·快，`LLM_MODEL_FLASH`），前端 AI 面板下拉选择，`model` 字段经 `/pricing/single` 透传到 `call_deepseek`
 - `docs/tool.html` 和 `docs/v5.html` 中也硬编码了模型名，修改时需三处同步
 - API 走 `settings.LLM_BASE_URL`（默认 `https://api.deepseek.com/v1`），temperature=0
 - **`deepseek-v4-pro` 是推理模型**，`backend/app/services/ai_pricing_service.py` 的 `call_deepseek` 必须：

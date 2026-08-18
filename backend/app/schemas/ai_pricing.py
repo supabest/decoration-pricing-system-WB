@@ -12,11 +12,13 @@ class PricingItem(BaseModel):
 class PriceSingleRequest(BaseModel):
     item: PricingItem
     api_key: str = Field(..., description="DeepSeek API Key")
+    model: Optional[str] = Field(None, description="模型名，如 deepseek-v4-pro / deepseek-v4-flash，默认 pro")
 
 
 class PriceBatchRequest(BaseModel):
     items: list[PricingItem] = Field(..., description="清单项目列表")
     api_key: str = Field(..., description="DeepSeek API Key")
+    model: Optional[str] = Field(None, description="模型名，如 deepseek-v4-pro / deepseek-v4-flash，默认 pro")
 
 
 class MatchedSubItem(BaseModel):

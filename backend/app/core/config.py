@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # ── AI / LLM ──
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "deepseek-v4-pro"
+    LLM_MODEL_FLASH: str = "deepseek-v4-flash"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     # deepseek-v4-pro 是推理模型，需留足输出 token，否则 content 被推理吃光→空/截断
     LLM_MAX_TOKENS: int = 8000

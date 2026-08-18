@@ -244,14 +244,16 @@ def build_user_prompt(name: str, spec: str, unit: str, candidates: list[dict]) -
 
 
 # ── DeepSeek 调用 ──
-async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str) -> str:
+async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
+                        model: Optional[str] = None) -> str:
     url = settings.LLM_BASE_URL.rstrip('/') + '/chat/completions'
+    use_model = model or settings.LLM_MODEL
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
         r = await client.post(
             url,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             json={
-                "model": settings.LLM_MODEL,
+                "model": use_model,
                 "max_tokens": settings.LLM_MAX_TOKENS,
                 "temperature": 0,
                 "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
@@ -361,7 +363,7 @@ def _repair_truncated_json(text: str) -> Optional[dict]:
 
 # ── 单行套价 ──
 async def price_single(name: str, spec: str, unit: str, api_key: str,
-                       debug_log=None) -> dict:
+                       model: Optional[str] = None, debug_log=None) -> dict:
     benchmark = await load_benchmark_data()
     knowledge = await load_knowledge()
 
@@ -393,7 +395,7 @@ async def price_single(name: str, spec: str, unit: str, api_key: str,
 
     # 5. DeepSeek 调用
     try:
-        raw = await call_deepseek(sys_prompt, user_prompt, api_key)
+        raw = await call_deepseek(sys_prompt, user_prompt, api_key, model=model)
         result = parse_ai_response(raw)
         debug_log.log_response(raw, result)
     except Exception as e:
@@ -430,11 +432,11 @@ async def price_single(name: str, spec: str, unit: str, api_key: str,
 
 
 # ── 批量套价 ──
-async def price_batch(items: list[dict], api_key: str) -> list[dict]:
+async def price_batch(items: list[dict], api_key: str, model: Optional[str] = None) -> list[dict]:
     results = []
     for item in items:
         try:
-            r = await price_single(item['name'], item.get('spec', ''), item.get('unit', ''), api_key)
+            r = await price_single(item['name'], item.get('spec', ''), item.get('unit', ''), api_key, model=model)
             results.append({**item, **r})
         except Exception as e:
             results.append({**item, "matched": [], "overall_confidence": 0, "note": str(e)[:100]})

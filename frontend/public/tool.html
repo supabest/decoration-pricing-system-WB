@@ -288,6 +288,10 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
         <input class="ai-key-input" id="aiKey" type="password" placeholder="sk-xxxxxxxx（仅本次使用，不保存）">
         <button class="btn btn-sm" onclick="var e=document.getElementById('aiKey');e.type=e.type==='password'?'text':'password';this.textContent=e.type==='password'?'👁':'🙈'">👁</button>
       </div>
+      <select id="aiModel" onchange="saveAiModel()" title="选择 DeepSeek 模型" style="height:28px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;padding:0 6px;background:var(--bg2);color:var(--tx);outline:none;margin-left:4px">
+        <option value="deepseek-v4-pro">V4 Pro（强·贵）</option>
+        <option value="deepseek-v4-flash">V4 Flash（省·快）</option>
+      </select>
       <button class="btn btn-sm" onclick="testBackend()" style="color:var(--acc2);border-color:var(--acc);margin-left:4px">🔌 测试</button>
       <div class="ai-prog-wrap hidden" id="aiProgWrap">
         <div class="ai-prog-txt"><span id="aiProgLbl">准备中…</span><span id="aiProgCnt"></span></div>
@@ -2418,10 +2422,19 @@ function applyCoef() {
 }
 
 // ═══════════ AI PRICING ═══════════
+function saveAiModel() {
+  const v = document.getElementById('aiModel')?.value;
+  if (v) localStorage.setItem('ai-model', v);
+}
+function initAiModel() {
+  const el = document.getElementById('aiModel');
+  if (el) el.value = localStorage.getItem('ai-model') || 'deepseek-v4-pro';
+}
 async function priceOne(r, key) {
+  const model = document.getElementById('aiModel')?.value || 'deepseek-v4-pro';
   const resp = await fetch(BACKEND_URL + '/api/v1/pricing/single', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({item:{name:r.name, spec:r.spec||'', unit:r.unit||''}, api_key: key})
+    body: JSON.stringify({item:{name:r.name, spec:r.spec||'', unit:r.unit||''}, api_key: key, model: model})
   });
   if (!resp.ok) throw new Error('套价失败 (' + resp.status + '): 请确认 FastAPI 服务已启动');
   const data = await resp.json();
@@ -2697,10 +2710,12 @@ function updateAppVersion() {
     document.addEventListener('DOMContentLoaded', function() {
       updateAnnounceBadge();
       updateAppVersion();
+      initAiModel();
     });
   } else {
     updateAnnounceBadge();
     updateAppVersion();
+    initAiModel();
   }
 })();
 
