@@ -1264,8 +1264,12 @@ async function _fetchAllRows(baseQuery, h) {
 }
 
 function _countItem(map, r) {
-  const k = (r.name || '') + '|' + (r.unit || '') + '|' + (r.spec || '');
-  if (!map[k]) map[k] = { name: r.name || '', unit: r.unit || '', spec: r.spec || '', count: 0 };
+  const name = r.name || '';
+  const spec = r.spec || '';
+  const unit = r.unit || '';
+  const disp = name || spec || '(未命名项目)';
+  const k = disp + '|' + unit + '|' + spec;
+  if (!map[k]) map[k] = { name: disp, unit: unit, spec: (name ? spec : ''), count: 0 };
   map[k].count++;
 }
 
