@@ -127,6 +127,7 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
     <button class="tab-btn" data-tab="knowledge" onclick="switchTab('knowledge')">🧠 知识库</button>
     <button class="tab-btn" data-tab="benchmark" onclick="switchTab('benchmark')">📊 基准价管理</button>
     <button class="tab-btn" data-tab="releases" onclick="switchTab('releases')">📢 版本发布</button>
+    <button class="tab-btn" data-tab="stats" onclick="switchTab('stats')">📈 使用统计</button>
   </div>
 
   <!-- ═══════════ Tab 1: 用户管理 ═══════════ -->
@@ -274,6 +275,28 @@ body{background:#f5f6fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
   </div>
 </div>
 
+  <!-- ═══════════ Tab 6: 使用统计 ═══════════ -->
+  <div id="tab-stats" class="tab-content hidden">
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">📋 未完成套价清单统计 <span id="statsMeta" style="font-size:11px;color:#888;font-weight:400"></span></h3>
+        <div>
+          <button class="btn btn-sm" onclick="loadStats()">🔄 刷新</button>
+          <button class="btn btn-pri btn-sm" onclick="exportUnpricedExcel()">⬇ 导出 Excel</button>
+        </div>
+      </div>
+      <div id="statsUnpriced" style="font-size:12px;color:#888"></div>
+    </div>
+
+    <div class="section">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h3 style="margin:0">💬 用户反馈汇总 <span id="statsFbMeta" style="font-size:11px;color:#888;font-weight:400"></span></h3>
+        <button class="btn btn-sm" onclick="loadStats()">🔄 刷新</button>
+      </div>
+      <div id="statsFeedback" style="font-size:12px;color:#888"></div>
+    </div>
+  </div>
+
 <!-- Excel 粘贴弹窗 -->
 <div id="pasteModal" class="modal-overlay hidden" onclick="if(event.target===this)hidePasteModal()">
   <div class="modal-box">
@@ -313,6 +336,7 @@ function switchTab(tab) {
   if (tab === 'knowledge') loadKnowledge();
   if (tab === 'benchmark') initBenchmarkTab();
   if (tab === 'releases') initReleasesTab();
+  if (tab === 'stats') loadStats();
   // 更新 URL hash 以便外部链接直接跳转到对应 Tab
   history.replaceState(null, '', '#' + tab);
 }
@@ -1212,12 +1236,130 @@ async function load() {
   document.getElementById('content').classList.remove('hidden');
 
   const targetTab = location.hash.replace(/^#/, '') || '';
-  if (['users','prices','knowledge','benchmark','releases'].includes(targetTab)) {
+  if (['users','prices','knowledge','benchmark','releases','stats'].includes(targetTab)) {
     await loadUsers();
     switchTab(targetTab);
   } else {
     await loadUsers();
   }
+}
+
+// ═══════════ 使用统计 Tab ═══════════
+let _statsUnpriced = null;   // { unpriced:{}, missing:{}, noTrade:{} } 供导出用
+
+async function _fetchAllRows(baseQuery, h) {
+  // baseQuery 形如 'projects?select=groups_json&order=created_at.desc'
+  const all = [];
+  let offset = 0, pageSize = 200;
+  for (;;) {
+    const r = await fetch(SUPABASE_URL + '/rest/v1/' + baseQuery + '&limit=' + pageSize + '&offset=' + offset, { headers: h });
+    if (!r.ok) throw new Error('拉取数据失败 HTTP ' + r.status);
+    const rows = await r.json();
+    if (!rows || !rows.length) break;
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+
+function _countItem(map, r) {
+  const k = (r.name || '') + '|' + (r.unit || '') + '|' + (r.spec || '');
+  if (!map[k]) map[k] = { name: r.name || '', unit: r.unit || '', spec: r.spec || '', count: 0 };
+  map[k].count++;
+}
+
+async function loadStats() {
+  const el = document.getElementById('statsUnpriced');
+  const fbel = document.getElementById('statsFeedback');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">加载中…</div>';
+  fbel.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const h = authHeaders();
+
+    // 1. 基准价集合（key = trade_team|internal_code）
+    const benchSet = new Set();
+    const benchRows = await _fetchAllRows('benchmark_items?select=internal_code,trade_team&order=trade_team.asc', h);
+    benchRows.forEach(it => benchSet.add((it.trade_team || '') + '|' + (it.internal_code || '')));
+
+    // 2. 全量用户方案（分页）
+    const allProjects = await _fetchAllRows('projects?select=groups_json,name,user_id&order=created_at.desc', h);
+
+    // 3. 统计三类未完成
+    const categories = { unpriced: {}, missing: {}, noTrade: {} };
+    allProjects.forEach(p => {
+      const g = p.groups_json;
+      (g || []).forEach(gr => (gr.sections || []).forEach(s => (s.rows || []).forEach(r => {
+        const subs = r.subs || [];
+        if (!subs.length) { _countItem(categories.unpriced, r); return; }
+        let hasMissing = false, hasNoTrade = false;
+        subs.forEach(sub => {
+          if (!sub.bsh) hasNoTrade = true;
+          else if (!benchSet.has(sub.bsh + '|' + sub.bid)) hasMissing = true;
+        });
+        if (hasMissing) _countItem(categories.missing, r);
+        else if (hasNoTrade) _countItem(categories.noTrade, r);
+      })));
+    });
+
+    _statsUnpriced = categories;
+    document.getElementById('statsMeta').textContent = '（共 ' + allProjects.length + ' 个方案）';
+    const blocks = [
+      ['未套价（无子目）', '#cf1322', categories.unpriced],
+      ['子目缺失（基准价未找到）', '#b07000', categories.missing],
+      ['无工种（子目缺工种）', '#1d6fa5', categories.noTrade],
+    ];
+    el.innerHTML = blocks.map(([label, color, map]) => {
+      const list = Object.values(map).sort((a, b) => b.count - a.count);
+      if (!list.length) return '<div style="margin:8px 0"><b style="color:' + color + '">' + label + '</b>：0 项</div>';
+      return '<div style="margin:10px 0"><b style="color:' + color + '">' + label + '（' + list.length + ' 项）</b>' +
+        list.map(it => '<div style="padding:3px 0;display:flex;gap:6px;border-bottom:1px solid #f0f0f0"><span style="background:#fff2f0;color:' + color + ';padding:0 6px;border-radius:3px;font-size:11px;font-weight:600">' + it.count + '次</span><span>' + esc(it.name) + '</span><span style="color:#888;font-size:11px">' + esc(it.unit) + '</span>' + (it.spec ? '<span style="color:#bbb;font-size:11px">' + esc(it.spec) + '</span>' : '') + '</div>').join('') + '</div>';
+    }).join('');
+
+    // 4. 反馈汇总
+    const fb = await _fetchAllRows('feedback?select=*&order=created_at.desc', h);
+    const typeCount = {};
+    fb.forEach(f => { const t = f.fb_type || '其他'; typeCount[t] = (typeCount[t] || 0) + 1; });
+    document.getElementById('statsFbMeta').textContent = '（共 ' + fb.length + ' 条）';
+    const statBar = Object.entries(typeCount).sort((a, b) => b[1] - a[1]).map(([t, c]) =>
+      '<span style="background:#e6f7ff;color:#1d6fa5;padding:2px 8px;border-radius:10px;font-size:11px;margin:0 4px 4px 0;display:inline-block">' + esc(t) + ' ' + c + ' 条</span>').join('');
+    const groups = {};
+    fb.forEach(f => { const t = f.fb_type || '其他'; (groups[t] = groups[t] || []).push(f); });
+    const groupHtml = Object.entries(groups).sort((a, b) => b[1].length - a[1].length).map(([t, list]) =>
+      '<div style="margin:10px 0"><b style="color:#1d6fa5">' + esc(t) + '（' + list.length + ' 条）</b>' +
+      list.map(f => '<div style="padding:4px 0;border-bottom:1px solid #f0f0f0;font-size:12px">' +
+        '<span style="color:#888;font-size:11px">' + esc(f.user_name || f.user_id || '') + '</span>' +
+        '<span style="color:#888;font-size:11px;margin-left:6px">' + new Date(f.created_at).toLocaleString('zh-CN') + '</span>' +
+        (f.proj_name ? '<span style="background:#f6ffed;color:#389e0d;padding:0 4px;border-radius:3px;font-size:11px;margin-left:6px">' + esc(f.proj_name) + '</span>' : '') +
+        (f.fb_ref ? '<span style="color:#bbb;font-size:11px;margin-left:6px">' + esc(f.fb_ref) + '</span>' : '') +
+        '<div style="margin-top:2px">' + esc(f.fb_desc) + '</div></div>').join('') + '</div>').join('');
+    fbel.innerHTML = (statBar ? '<div>' + statBar + '</div>' : '') + '<div style="margin-top:6px">' + (groupHtml || '<div class="empty">暂无反馈</div>') + '</div>';
+
+  } catch (e) {
+    el.innerHTML = '<div class="empty">统计失败：' + esc(e.message) + '</div>';
+    fbel.innerHTML = '';
+  }
+}
+
+function exportUnpricedExcel() {
+  if (!_statsUnpriced) { alert('请先点击「刷新」加载统计数据'); return; }
+  const wb = XLSX.utils.book_new();
+  const cats = [
+    ['未套价（无子目）', _statsUnpriced.unpriced],
+    ['子目缺失（基准价未找到）', _statsUnpriced.missing],
+    ['无工种（子目缺工种）', _statsUnpriced.noTrade],
+  ];
+  cats.forEach(([sheetName, map]) => {
+    const list = Object.values(map).sort((a, b) => b.count - a.count);
+    if (!list.length) return;
+    const data = [['出现次数', '项目名称', '单位', '规格']].concat(list.map(it => [it.count, it.name, it.unit, it.spec]));
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [{ wch: 8 }, { wch: 40 }, { wch: 10 }, { wch: 20 }];
+    XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 30));
+  });
+  if (!wb.SheetNames.length) { alert('暂无可导出的统计数据'); return; }
+  XLSX.writeFile(wb, '未完成套价统计_' + new Date().toISOString().slice(0, 10) + '.xlsx');
 }
 
 load();
