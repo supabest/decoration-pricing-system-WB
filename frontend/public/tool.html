@@ -825,6 +825,7 @@ function init() {
     buildCoefOpts();
     renderLib();
     diag('完成！token=' + (hasToken ? '有' : '无') + '，Supabase=' + (hasSb ? '在线' : '离线') + '，已加载ALL=' + ALL.length + '条，班组=' + SHEETS.length + '个');
+    checkDraftRestore();
   })();
 }
 
@@ -1526,6 +1527,7 @@ function renderBoq() {
   });
   main.innerHTML = html;
   updateSum();
+  scheduleAutoSave();
 }
 function importBoq() { document.getElementById('fileIn').click(); }
 function uDragover(e) { e.preventDefault(); document.getElementById('uploadArea').classList.add('dov'); }
@@ -2346,6 +2348,7 @@ function updateSum() {
   document.getElementById('s-subs').textContent=nsubs;
   document.getElementById('s-total').textContent='¥ '+fmt(laborOnly);
   document.getElementById('s-grand').textContent='¥ '+fmt(total);
+  scheduleAutoSave();
 }
 
 // ═══════════ PICKER ═══════════
@@ -2727,6 +2730,89 @@ function toast(msg) {
 }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closePicker();closeCoefModal();} });
 
+// ═══════════ 云端自动保存（草稿，is_draft=true）═══════
+let _autoSaveTimer = null;
+
+// 数据变化后调用：停止操作 3 秒后自动上传工作区（含未套价项）
+function scheduleAutoSave() {
+  if (!getAllRows().length) return;              // 无数据不存
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(doAutoSave, 3000);
+}
+
+async function doAutoSave() {
+  if (!getAllRows().length) return;
+  // 未登录：降级为浏览器本地备份
+  if (!CURRENT_USER || !CURRENT_USER.id) {
+    try {
+      localStorage.setItem('tool_draft_backup', JSON.stringify({
+        t: Date.now(), groups,
+        projName: document.getElementById('projName').value || '',
+      }));
+    } catch(e) {}
+    return;
+  }
+  try {
+    const payload = {
+      user_id: CURRENT_USER.id,
+      name: document.getElementById('projName').value.trim() || '未命名方案',
+      global_coef: globalCoef,
+      proj_team: document.getElementById('projTeam')?.value || '',
+      proj_date: document.getElementById('projDate')?.value || '',
+      hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
+      groups_json: JSON.parse(JSON.stringify(groups)),
+      price_overrides: JSON.parse(JSON.stringify(userPriceOverrides || {})),
+      mgmt_rate: globalMgmtRate,
+      profit_rate: globalProfitRate,
+      row_count: getAllRows().length,
+      priced_count: getAllRows().filter(r => r.subs.length > 0).length,
+      is_draft: true,
+      created_at: new Date().toISOString(),
+    };
+    const h = _h();
+    // 覆盖该用户已有草稿（唯一一份），没有则新建
+    const r = await fetch(SUPABASE_URL + '/rest/v1/projects?user_id=eq.' + CURRENT_USER.id + '&is_draft=eq.true&select=id&limit=1', { headers: h });
+    const rows = await r.json().catch(() => []);
+    const draft = rows && rows[0];
+    if (draft) {
+      await fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + draft.id, {
+        method: 'PATCH', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
+      });
+    } else {
+      await fetch(SUPABASE_URL + '/rest/v1/projects', {
+        method: 'POST', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
+      });
+    }
+  } catch(e) {}
+}
+
+// 页面加载完成后检测是否有云端草稿，提示恢复
+async function checkDraftRestore() {
+  if (!CURRENT_USER || !CURRENT_USER.id) return;
+  try {
+    const h = _h();
+    const r = await fetch(SUPABASE_URL + '/rest/v1/projects?user_id=eq.' + CURRENT_USER.id + '&is_draft=eq.true&order=created_at.desc&select=id,name,row_count,priced_count,created_at&limit=1', { headers: h });
+    const rows = await r.json().catch(() => []);
+    const draft = rows && rows[0];
+    if (!draft) return;
+    const t = new Date(draft.created_at).toLocaleString('zh-CN');
+    if (confirm('检测到上次未完成的套价数据（' + t + '，清单 ' + (draft.row_count || 0) + ' 条），是否恢复？')) {
+      await restoreProject(draft.id);
+    }
+  } catch(e) {}
+}
+
+// 手动正式保存后删除云端草稿（避免统计里重复计数）
+async function deleteDraft() {
+  if (!CURRENT_USER || !CURRENT_USER.id) return;
+  try {
+    const h = _h();
+    await fetch(SUPABASE_URL + '/rest/v1/projects?user_id=eq.' + CURRENT_USER.id + '&is_draft=eq.true', {
+      method: 'DELETE', headers: { ...h, 'Prefer': 'return=minimal' },
+    });
+  } catch(e) {}
+}
+
 // ═══════════ PHASE 5-3: 历史方案保存 ═══════════
 // ═══════════ SUPABASE PROJECTS ═══════════
 async function saveProject() {
@@ -2747,8 +2833,14 @@ async function saveProject() {
     row_count: allRows.length,
     priced_count: allRows.filter(r=>r.subs.length>0).length,
   };
-  // 同名检查
-  const exist = await _get('projects', {eq:{col:'user_id',val:CURRENT_USER.id}, select:'id,name', limit:100});
+  // 同名检查（只看正式方案，排除自动草稿）
+  const exist = await (async () => {
+    try {
+      const h = _h();
+      const r = await fetch(SUPABASE_URL + '/rest/v1/projects?user_id=eq.' + CURRENT_USER.id + '&is_draft=eq.false&select=id,name&limit=100', { headers: h });
+      return await r.json();
+    } catch(e) { return []; }
+  })();
   const dup = exist?.find(p => p.name === projName);
   if (dup) {
     if (!confirm('已存在同名方案「'+projName+'」，是否覆盖？')) return;
@@ -2756,6 +2848,7 @@ async function saveProject() {
   } else {
     await _post('projects', payload);
   }
+  deleteDraft();   // 正式保存后清除云端草稿，避免统计重复
   toast('✓ 方案已保存：' + projName);
 }
 
@@ -2773,7 +2866,13 @@ function closeHistory() { document.getElementById('histMod')?.classList.add('hid
 async function renderHistList() {
   const el = document.getElementById('histList');
   if (!CURRENT_USER) { el.innerHTML='<div style="padding:30px;text-align:center;color:var(--tx3)">请先登录</div>'; return; }
-  const hist = await _get('projects', {eq:{col:'user_id',val:CURRENT_USER.id}, order:{col:'created_at',asc:false}, limit:30}).catch(()=>[]);
+  const hist = await (async () => {
+    try {
+      const h = _h();
+      const r = await fetch(SUPABASE_URL + '/rest/v1/projects?user_id=eq.' + CURRENT_USER.id + '&is_draft=eq.false&order=created_at.desc&limit=30', { headers: h });
+      return await r.json();
+    } catch(e) { return []; }
+  })();
   if (!hist.length) { el.innerHTML='<div style="padding:30px;text-align:center;color:var(--tx3);font-size:12px">暂无保存的方案</div>'; return; }
   el.innerHTML = hist.map(h => `
     <div class="hist-item">
