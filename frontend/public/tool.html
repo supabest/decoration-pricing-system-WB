@@ -947,7 +947,7 @@ function rebuildBenchMap() {
   benchMap = {};
   if (typeof DB === 'undefined') return;
   Object.keys(DB).forEach(sh => {
-    DB[sh].forEach(i => { benchMap[sh+'|'+i.id] = i; });
+    DB[sh].forEach(i => { benchMap[sh+'|'+i.id] = {...i, sheet: sh}; });
   });
 }
 function getBench(id,sh) { return benchMap[sh+'|'+id] || null; }
