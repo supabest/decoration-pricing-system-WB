@@ -2774,16 +2774,16 @@ async function doAutoSave() {
     const r = await fetch(SUPABASE_URL + '/rest/v1/projects?user_id=eq.' + CURRENT_USER.id + '&is_draft=eq.true&select=id&limit=1', { headers: h });
     const rows = await r.json().catch(() => []);
     const draft = rows && rows[0];
-    if (draft) {
-      await fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + draft.id, {
-        method: 'PATCH', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
-      });
-    } else {
-      await fetch(SUPABASE_URL + '/rest/v1/projects', {
-        method: 'POST', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
-      });
-    }
-  } catch(e) {}
+    const resp = draft
+      ? await fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + draft.id, {
+          method: 'PATCH', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
+        })
+      : await fetch(SUPABASE_URL + '/rest/v1/projects', {
+          method: 'POST', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
+        });
+    if (resp.ok) console.log('✅ 云端自动保存成功（草稿 ' + payload.row_count + ' 条）');
+    else { const et = await resp.text().catch(() => ''); console.warn('⚠️ 自动保存失败 HTTP ' + resp.status + ': ' + String(et).substring(0, 200)); }
+  } catch(e) { console.warn('⚠️ 自动保存异常', e); }
 }
 
 // 页面加载完成后检测是否有云端草稿，提示恢复
