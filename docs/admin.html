@@ -1273,6 +1273,117 @@ function _countItem(map, r) {
   map[k].count++;
 }
 
+// ── 相似项目归类引擎 ──
+// 1) 名称归一化：去空白/标点/编号/修饰词 + 同义词合并（与 ai_knowledge_base.json 同步的紧凑词表）
+const _SYN_RULES = [
+  [/墙布硬包|布艺硬包|皮革硬包|软包/g, '硬包'],
+  [/墙纸|壁纸|壁布|墙布/g, '墙布'],
+  [/满刮腻子|刮腻子|批腻子|扇灰|批灰|刮腻|批腻|刮塑|膏灰/g, '腻子'],
+  [/乳胶漆|水性涂料|矿物涂料|硅藻泥|无机涂料/g, '涂料'],
+  [/天棚|吊顶|顶棚/g, '天花'],
+  [/阻燃夹板|基层板|木夹板|细木工板|夹板/g, '夹板'],
+  [/轻钢龙骨|金属龙骨|龙骨/g, '龙骨'],
+  [/素水泥浆|掺胶水泥浆|水泥胶浆|水泥膏|水泥浆/g, '水泥浆'],
+  [/瓷砖背胶|双组份背胶|玻化砖背胶|背胶/g, '背胶'],
+  [/瓷砖粘合剂|专用胶粘剂|胶粘剂|瓷砖胶|胶泥/g, '粘结剂'],
+];
+function _normUnit(u) { return String(u || '').trim().toLowerCase().replace(/㎡/g, 'm2').replace(/㎥/g, 'm3'); }
+function _normName(name) {
+  let s = String(name || '').toLowerCase()
+    .replace(/[\s　]+/g, '')
+    .replace(/[（）()【】\[\]｛｝{}《》“”"‘’'、，,。．.：:；;！!？?\-—_~～*·]/g, '')
+    .replace(/[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮]/g, '')
+    .replace(/^[\d]+[、.．\-]/, '')
+    .replace(/^含/, '')
+    .replace(/综合考虑[\s\S]*$/, '');
+  _SYN_RULES.forEach(rl => { s = s.replace(rl[0], rl[1]); });
+  return s || String(name || '');
+}
+// 2) 相似度：包含/同字异序=同类；头部不同(地面/墙面)=不同项目；否则重叠系数
+function _similar(a, b) {
+  if (!a || !b) return 0;
+  if (a === b || a.includes(b) || b.includes(a)) return 1;
+  if (a.split('').sort().join('') === b.split('').sort().join('')) return 1;
+  if (a.length >= 3 && b.length >= 3 && a.substring(0, 2) !== b.substring(0, 2)) return 0;
+  const A = new Set(), B = new Set();
+  for (let i = 0; i < a.length - 1; i++) A.add(a.substring(i, i + 2));
+  for (let i = 0; i < b.length - 1; i++) B.add(b.substring(i, i + 2));
+  if (a.length === 1) A.add(a);
+  if (b.length === 1) B.add(b);
+  let inter = 0;
+  A.forEach(g => { if (B.has(g)) inter++; });
+  return inter / Math.min(A.size, B.size);
+}
+// 3) 聚类：归一化精确合并 → 按次数降序贪心归入相似簇（同单位才合并）
+function _groupSimilar(map) {
+  const exact = new Map();
+  Object.values(map).forEach(it => {
+    const norm = _normName(it.name), uk = _normUnit(it.unit);
+    const k = norm + '|' + uk;
+    if (!exact.has(k)) exact.set(k, { name: it.name, norm: norm, unit: it.unit, unitKey: uk, specs: [], count: 0, variants: new Map() });
+    const g = exact.get(k);
+    g.count += it.count;
+    if (it.spec && g.specs.indexOf(it.spec) < 0) g.specs.push(it.spec);
+    const vk = (it.name || '(未命名)') + (it.spec ? '｜' + it.spec : '');
+    g.variants.set(vk, (g.variants.get(vk) || 0) + it.count);
+  });
+  const clusters = [];
+  [...exact.values()].sort((a, b) => b.count - a.count).forEach(g => {
+    const host = clusters.find(c => (c.unitKey === g.unitKey || !c.unitKey || !g.unitKey) && _similar(c.norm, g.norm) >= 0.65);
+    if (host) {
+      host.count += g.count;
+      g.specs.forEach(sp => { if (host.specs.indexOf(sp) < 0 && host.specs.length < 8) host.specs.push(sp); });
+      g.variants.forEach((n, vk) => host.variants.set(vk, (host.variants.get(vk) || 0) + n));
+    } else {
+      clusters.push({ name: g.name, norm: g.norm, unit: g.unit, unitKey: g.unitKey, specs: g.specs.slice(0, 5), count: g.count, variants: g.variants });
+    }
+  });
+  return clusters.sort((a, b) => b.count - a.count);
+}
+
+let _catRows = [];   // 展开的扁平簇列表，供行点击查详情
+
+function _renderCatTable(clusters, color) {
+  if (!clusters.length) return '';
+  const th = 'text-align:left;padding:5px 6px;font-weight:600;color:#888;border-bottom:2px solid #e8e8e8;font-size:11px';
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;margin:6px 0 4px"><thead><tr>' +
+    '<th style="' + th + ';width:44px">序号</th>' +
+    '<th style="' + th + ';width:88px">未套价次数</th>' +
+    '<th style="' + th + '">项目名称</th>' +
+    '<th style="' + th + '">项目特征</th></tr></thead><tbody>';
+  clusters.forEach(c => {
+    const idx = _catRows.push(c) - 1;
+    const specShow = c.specs.length
+      ? '<span style="color:#666">' + esc(c.specs[0].length > 60 ? c.specs[0].substring(0, 60) + '…' : c.specs[0]) + '</span>' +
+        (c.specs.length > 1 ? ' <span style="color:#bbb;font-size:10px">等' + c.specs.length + '种</span>' : '')
+      : '<span style="color:#ccc">—</span>';
+    html += '<tr style="border-bottom:1px solid #f2f2f2;cursor:pointer" ' +
+      'onmouseover="this.style.background=\'#fafbfc\'" onmouseout="this.style.background=\'\'" ' +
+      'onclick="_toggleCatDetail(' + idx + ',this)">' +
+      '<td style="padding:6px;color:#999;font-size:11px">' + (idx + 1) + '</td>' +
+      '<td style="padding:6px"><span style="background:' + color + '18;color:' + color + ';padding:1px 7px;border-radius:3px;font-weight:700;font-size:11px;white-space:nowrap">' + c.count + ' 次</span></td>' +
+      '<td style="padding:6px">' + esc(c.name) +
+        (c.variants.size > 1 ? ' <span style="color:#bbb;font-size:10px">(含' + c.variants.size + '种写法)</span>' : '') +
+        (c.unit ? ' <span style="color:#aaa;font-size:10px">[' + esc(c.unit) + ']</span>' : '') + '</td>' +
+      '<td style="padding:6px">' + specShow + '</td></tr>';
+  });
+  return html + '</tbody></table>';
+}
+
+function _toggleCatDetail(idx, tr) {
+  const next = tr.nextElementSibling;
+  if (next && next._isDetail) { next.remove(); return; }
+  const c = _catRows[idx]; if (!c) return;
+  const det = document.createElement('tr');
+  det._isDetail = true;
+  det.innerHTML = '<td colspan="4" style="background:#fafbfc;padding:8px 14px;border-bottom:1px solid #eee">' +
+    '<div style="font-size:11px;color:#888;margin-bottom:4px">该类包含的原始写法（点击行收起）：</div>' +
+    [...c.variants.entries()].sort((a, b) => b[1] - a[1]).map(([vk, n]) =>
+      '<span style="display:inline-block;background:#fff;border:1px solid #e8e8e8;border-radius:3px;padding:1px 6px;margin:2px 4px 2px 0;font-size:11px;color:#555">' + esc(vk) + ' <b style="color:#1d6fa5">×' + n + '</b></span>').join('') +
+    '</td>';
+  tr.after(det);
+}
+
 async function loadStats() {
   const el = document.getElementById('statsUnpriced');
   const fbel = document.getElementById('statsFeedback');
@@ -1308,17 +1419,19 @@ async function loadStats() {
     });
 
     _statsUnpriced = categories;
-    document.getElementById('statsMeta').textContent = '（共 ' + allProjects.length + ' 个方案）';
+    _catRows = [];
+    document.getElementById('statsMeta').textContent = '（共 ' + allProjects.length + ' 个方案 · 相似名称已自动归类，点击行查看原始写法）';
     const blocks = [
       ['未套价（无子目）', '#cf1322', categories.unpriced],
       ['子目缺失（基准价未找到）', '#b07000', categories.missing],
       ['无工种（子目缺工种）', '#1d6fa5', categories.noTrade],
     ];
     el.innerHTML = blocks.map(([label, color, map]) => {
-      const list = Object.values(map).sort((a, b) => b.count - a.count);
-      if (!list.length) return '<div style="margin:8px 0"><b style="color:' + color + '">' + label + '</b>：0 项</div>';
-      return '<div style="margin:10px 0"><b style="color:' + color + '">' + label + '（' + list.length + ' 项）</b>' +
-        list.map(it => '<div style="padding:3px 0;display:flex;gap:6px;border-bottom:1px solid #f0f0f0"><span style="background:#fff2f0;color:' + color + ';padding:0 6px;border-radius:3px;font-size:11px;font-weight:600">' + it.count + '次</span><span>' + esc(it.name) + '</span><span style="color:#888;font-size:11px">' + esc(it.unit) + '</span>' + (it.spec ? '<span style="color:#bbb;font-size:11px">' + esc(it.spec) + '</span>' : '') + '</div>').join('') + '</div>';
+      const rawN = Object.keys(map).length;
+      const clusters = _groupSimilar(map);
+      return '<div style="margin:12px 0"><b style="color:' + color + '">' + label + '</b>' +
+        '<span style="font-size:11px;color:#999;margin-left:6px">' + (rawN ? rawN + ' 种写法 → 归类为 ' + clusters.length + ' 类' : '0 项') + '</span>' +
+        _renderCatTable(clusters, color) + '</div>';
     }).join('');
 
     // 4. 反馈汇总
@@ -1355,15 +1468,19 @@ function exportUnpricedExcel() {
     ['无工种（子目缺工种）', _statsUnpriced.noTrade],
   ];
   cats.forEach(([sheetName, map]) => {
-    const list = Object.values(map).sort((a, b) => b.count - a.count);
-    if (!list.length) return;
-    const data = [['出现次数', '项目名称', '单位', '规格']].concat(list.map(it => [it.count, it.name, it.unit, it.spec]));
+    const clusters = _groupSimilar(map);
+    if (!clusters.length) return;
+    const data = [['出现次数', '项目名称（归类）', '单位', '项目特征（示例）', '原始写法数', '原始写法明细']];
+    clusters.forEach(c => {
+      const variants = [...c.variants.entries()].sort((a, b) => b[1] - a[1]).map(([vk, n]) => vk + ' ×' + n).join('；');
+      data.push([c.count, c.name, c.unit || '', c.specs[0] || '', c.variants.size, variants]);
+    });
     const ws = XLSX.utils.aoa_to_sheet(data);
-    ws['!cols'] = [{ wch: 8 }, { wch: 40 }, { wch: 10 }, { wch: 20 }];
+    ws['!cols'] = [{ wch: 9 }, { wch: 32 }, { wch: 8 }, { wch: 26 }, { wch: 10 }, { wch: 60 }];
     XLSX.utils.book_append_sheet(wb, ws, sheetName.slice(0, 30));
   });
   if (!wb.SheetNames.length) { alert('暂无可导出的统计数据'); return; }
-  XLSX.writeFile(wb, '未完成套价统计_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  XLSX.writeFile(wb, '未完成套价统计_归类_' + new Date().toISOString().slice(0, 10) + '.xlsx');
 }
 
 load();
