@@ -499,7 +499,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
     </div>
     <div style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
       <div style="font-size:11px;color:var(--tx3);line-height:1.7">
-        反馈将保存在本地浏览器，可随时导出汇总发给维护人员，用于持续改进基准价库和套价规则。
+        反馈将自动上传到云端，管理员可在管理面板汇总查看，用于持续改进基准价库和套价规则。
       </div>
       <div>
         <div style="font-size:11px;color:var(--tx2);margin-bottom:5px;font-weight:600">问题类型</div>
@@ -527,7 +527,6 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
         <span style="font-size:11px;color:var(--tx3)">已积累 <b id="fbCount" style="color:var(--acc)">0</b> 条反馈</span>
         <div style="display:flex;gap:6px">
           <button class="btn btn-sm" onclick="exportFeedback()">⬇ 导出反馈记录</button>
-          <button class="btn btn-sm btn-danger-txt" onclick="clearFeedback()">清空</button>
         </div>
       </div>
     </div>
@@ -1613,16 +1612,6 @@ function processFile(file) {
 }
 
 // ═══════════ 用户意见反馈（self-improving）═══════════
-const FB_KEY = 'quota_tool_feedback';
-
-function loadFeedback() {
-  try { return JSON.parse(localStorage.getItem(FB_KEY) || '[]'); }
-  catch(e) { return []; }
-}
-function saveFeedbackList(list) {
-  localStorage.setItem(FB_KEY, JSON.stringify(list));
-}
-
 function openFeedback() {
   document.getElementById('fbType').value = '价格不准';
   document.getElementById('fbRef').value = '';
@@ -1646,21 +1635,33 @@ async function submitFeedback() {
   if (!desc) { toast('请填写详细描述'); return; }
   if (!CURRENT_USER) { toast('请先登录'); return; }
 
-  await _post('feedback', {
-    user_id: CURRENT_USER.id,
-    user_name: CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id,
-    fb_type: type, fb_ref: ref, fb_desc: desc,
-    proj_name: document.getElementById('projName').value || '',
+  const h = _h(); h['Prefer'] = 'return=minimal';
+  const resp = await fetch(SUPABASE_URL + '/rest/v1/feedback', {
+    method: 'POST', headers: h,
+    body: JSON.stringify({
+      user_id: CURRENT_USER.id,
+      user_name: CURRENT_USER.display_name || CURRENT_USER.email || CURRENT_USER.id,
+      fb_type: type, fb_ref: ref, fb_desc: desc,
+      proj_name: document.getElementById('projName').value || '',
+    }),
   });
+  if (!resp.ok) {
+    const et = await resp.text().catch(() => '');
+    console.warn('反馈提交失败 HTTP ' + resp.status + ': ' + String(et).substring(0, 200));
+    toast('❌ 反馈提交失败（HTTP ' + resp.status + '），请联系管理员');
+    return;
+  }
 
   document.getElementById('fbRef').value = '';
   document.getElementById('fbDesc').value = '';
   toast('✅ 反馈已提交，感谢您的建议！');
 }
 
-function exportFeedback() {
-  const list = loadFeedback();
-  if (!list.length) { toast('暂无反馈记录'); return; }
+async function exportFeedback() {
+  if (!CURRENT_USER) { toast('请先登录'); return; }
+  toast('⏳ 正在从云端获取反馈记录…');
+  const list = await _get('feedback', {eq:{col:'user_id',val:CURRENT_USER.id}, order:{col:'created_at',asc:false}, limit:9999}).catch(() => []);
+  if (!list || !list.length) { toast('暂无反馈记录'); return; }
 
   const wb = XLSX.utils.book_new();
   const aoa = [
@@ -1669,7 +1670,7 @@ function exportFeedback() {
     [],
     ['提交时间','问题类型','相关清单/子目','详细描述','关联项目'],
   ];
-  list.forEach(f => aoa.push([f.date, f.type, f.ref, f.desc, f.projName]));
+  list.forEach(f => aoa.push([f.created_at ? new Date(f.created_at).toLocaleString('zh-CN') : '', f.fb_type || '', f.fb_ref || '', f.fb_desc || '', f.proj_name || '']));
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = [{wch:18},{wch:14},{wch:20},{wch:50},{wch:18}];
@@ -1682,13 +1683,6 @@ function exportFeedback() {
   XLSX.utils.book_append_sheet(wb, ws, '意见反馈');
   XLSX.writeFile(wb, '意见反馈记录_' + new Date().toISOString().slice(0,10) + '.xlsx');
   toast('✓ 已导出 ' + list.length + ' 条反馈记录');
-}
-
-function clearFeedback() {
-  if (!confirm('确认清空全部反馈记录？此操作不可撤销。')) return;
-  localStorage.removeItem(FB_KEY);
-  updateFbCount();
-  toast('已清空反馈记录');
 }
 
 // ═══════════ EXPORT ═══════════
