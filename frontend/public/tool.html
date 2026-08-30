@@ -413,6 +413,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button class="btn btn-sm" onclick="closeExportModal()">取消</button>
+            <button class="btn btn-sm" onclick="doAuxExport(event)">🧴 辅材清单（分工种）</button>
             <button class="btn btn-sm btn-suc" onclick="doConfigExport()">✅ 导出 Excel</button>
           </div>
         </div>
@@ -966,6 +967,7 @@ function rowTotal(r) { const p=rowUnitPrice(r),q=parseFloat(r.qty); const lab=(p
 // ═══════════ AUXILIARY PRICE ENGINE ═══════════
 // 辅材计价引擎：从 benchmark_items 的 aux 配方 + material_prices 信息价实时计算
 let priceLib = {};           // 默认信息价 {materialName: {price, unit}}
+let priceLibMonth = '';      // 信息价最新月份（辅材清单导出标注用）
 let userPriceOverrides = {}; // 用户覆盖价 {materialName: price}（按项目加载/保存）
 
 async function loadMaterialPrices() {
@@ -974,12 +976,15 @@ async function loadMaterialPrices() {
     if (!items || !items.length) return;
     // 取每材料最新月份价
     const latest = {};
+    let maxMonth = '';
     items.forEach(it => {
       if (!latest[it.name] || it.effective_month > latest[it.name].effective_month) {
         latest[it.name] = {price: parseFloat(it.price)||0, unit: it.unit||''};
       }
+      if (it.effective_month > maxMonth) maxMonth = it.effective_month;
     });
     priceLib = latest;
+    priceLibMonth = maxMonth;
   } catch(e) { console.warn('材料信息价加载失败', e); }
 }
 
@@ -989,24 +994,30 @@ function getMaterialPrice(name) {
   return 0;
 }
 
-function computeAuxForSub(sub) {
-  // 计算单个子目的辅材费（fixedK + RATE/GROUP 配方材料费）
-  if (!sub) return 0;
+function getAuxDetailForSub(sub) {
+  // 单个子目的辅材明细（每单位清单量）：固定费 fixedK + 配方材料行（RATE 单材料 / GROUP 多材料）
+  if (!sub) return {fixedK: 0, materials: []};
   const bench = getBench(sub.bid, sub.bsh);
-  if (!bench || !bench.auxType) return 0;
+  if (!bench || !bench.auxType) return {fixedK: 0, materials: []};
   const fixedK = bench.auxFixedK || 0;
-  let rateSum = 0;
+  const materials = [];
   const rd = bench.auxRateDetail;
   if (rd && rd.type === 'RATE') {
     const p = getMaterialPrice(rd.materialName);
-    rateSum += p * (rd.consume || 0);
+    materials.push({name: rd.materialName || '', unit: (priceLib[rd.materialName] || {}).unit || '', consume: rd.consume || 0, price: p, subtotal: p * (rd.consume || 0)});
   } else if (rd && rd.type === 'GROUP') {
     (rd.items || []).forEach(it => {
       const p = getMaterialPrice(it.name);
-      rateSum += p * (it.consume || 0);
+      materials.push({name: it.name || '', unit: (priceLib[it.name] || {}).unit || '', consume: it.consume || 0, price: p, subtotal: p * (it.consume || 0)});
     });
   }
-  return fixedK + rateSum;
+  return {fixedK, materials};
+}
+
+function computeAuxForSub(sub) {
+  // 计算单个子目的辅材费（fixedK + RATE/GROUP 配方材料费）
+  const d = getAuxDetailForSub(sub);
+  return d.fixedK + d.materials.reduce((s, m) => s + m.subtotal, 0);
 }
 
 function computeAuxForRow(r) {
@@ -2177,6 +2188,115 @@ async function doConfigExport() {
     toast('❌ 导出失败: ' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '导出 Excel'; }
+  }
+}
+
+// ═══════════ 🧴 辅材费用清单（分工种·品种明细） ═══════════
+function buildAuxExport() {
+  const unclassified = [];   // {name, unit, reason}
+  const tradeMap = {};       // trade -> {lines: {材料名: 聚合行}, fixed: 固定辅材费}
+
+  getAllRows().forEach(r => {
+    const qty = parseFloat(r.qty) || 0;
+    const subs = r.subs || [];
+    if (!subs.length) {
+      unclassified.push({name: r.name || '', unit: r.unit || '', reason: '未套价'});
+      return;
+    }
+    subs.forEach(sub => {
+      const it = getBench(sub.bid, sub.bsh);
+      if (!it) { unclassified.push({name: r.name || '', unit: r.unit || '', reason: '子目缺失'}); return; }
+      const trade = (sub.bsh || it.sheet || '').trim();
+      if (!trade) { unclassified.push({name: r.name || '', unit: r.unit || '', reason: '无工种'}); return; }
+      const detail = getAuxDetailForSub(sub);
+      if (!detail.fixedK && !detail.materials.length) return;   // 该子目无辅材配方
+      if (!tradeMap[trade]) tradeMap[trade] = {lines: {}, fixed: 0};
+      const t = tradeMap[trade];
+      t.fixed += detail.fixedK * qty;
+      detail.materials.forEach(m => {
+        if (!t.lines[m.name]) t.lines[m.name] = {name: m.name, unit: m.unit || '', qty_total: 0, price: m.price, subtotal: 0, is_fixed: false};
+        t.lines[m.name].qty_total += (m.consume || 0) * qty;
+        t.lines[m.name].subtotal += (m.subtotal || 0) * qty;
+      });
+    });
+  });
+
+  const tradeGroups = Object.entries(tradeMap).map(([trade, t]) => {
+    const lines = Object.values(t.lines).sort((a, b) => b.subtotal - a.subtotal);
+    const matSub = lines.reduce((s, l) => s + l.subtotal, 0);
+    if (t.fixed) lines.push({name: '固定辅材费（定额包干）', unit: '', qty_total: null, price: null, subtotal: t.fixed, is_fixed: true});
+    return {
+      sheet_name: trade,
+      lines,
+      fixed_subtotal: t.fixed,
+      material_subtotal: matSub,
+      total: matSub + t.fixed,
+    };
+  }).sort((a, b) => b.total - a.total);
+
+  return {
+    groups: tradeGroups,
+    unclassified,
+    grandTotal: tradeGroups.reduce((s, g) => s + g.total, 0),
+  };
+}
+
+async function doAuxExport(ev) {
+  if (!groups.length) { toast('暂无数据'); return; }
+  const btn = ev?.target?.closest('button');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  try {
+    const result = buildAuxExport();
+    if (!result.groups.length) { toast('没有可导出的辅材数据（清单尚未套价或子目无辅材配方）'); return; }
+
+    // 未分类确认：未套价/无工种的清单项不计入辅材清单
+    if (result.unclassified.length) {
+      const n = result.unclassified.length;
+      const sample = result.unclassified.slice(0, 5).map((u, i) => (i + 1) + '. ' + u.name + '（' + u.reason + '）').join('\n');
+      const more = n > 5 ? '\n...（共 ' + n + ' 项）' : '';
+      if (!confirm('⚠️ 检测到 ' + n + ' 项未分配工种：\n\n' + sample + more + '\n\n这些项不计入辅材清单。是否继续导出？')) return;
+    }
+
+    // 对账：品种明细聚合合计 vs 逐行实时计算的辅材总计
+    const expectTotal = getAllRows().reduce((s, r) => s + computeAuxForRow(r).total * (parseFloat(r.qty) || 0), 0);
+    const diff = expectTotal - result.grandTotal;
+    if (Math.abs(diff) > 0.01) {
+      if (!confirm('⚠️ 对账校验：辅材明细合计 ¥' + result.grandTotal.toFixed(2) + ' ≠ 清单辅材总计 ¥' + expectTotal.toFixed(2) + '，差额 ¥' + diff.toFixed(2) + '。是否仍要继续导出？')) return;
+    }
+
+    const payload = {
+      project_name: document.getElementById('projName').value || '套价表',
+      price_month: priceLibMonth || '',
+      groups: result.groups,
+    };
+
+    const resp = await fetch(BACKEND_URL + '/api/v1/export/aux-excel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error('后端导出失败: ' + (err || resp.status));
+    }
+
+    const blob = await resp.blob();
+    const fname = payload.project_name + '_辅材费用清单.xlsx';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+
+    closeExportModal();
+    toast('✓ 已导出：' + fname);
+  } catch (e) {
+    console.error('辅材清单导出失败', e);
+    toast('❌ 导出失败: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🧴 辅材清单（分工种）'; }
   }
 }
 

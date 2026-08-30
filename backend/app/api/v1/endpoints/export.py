@@ -5,9 +5,10 @@ from urllib.parse import quote
 import logging
 import json
 
-from app.schemas.export import ExportRequest, TemplateExportRequest
+from app.schemas.export import ExportRequest, TemplateExportRequest, AuxListExportRequest
 from app.services.excel_export import ExcelExporter
 from app.services.template_export import TemplateExcelExporter
+from app.services.aux_export import AuxListExporter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -40,6 +41,38 @@ async def export_excel(request: ExportRequest):
         )
     except Exception as e:
         logger.error(f"Excel export error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+
+@router.post("/aux-excel")
+async def export_aux_excel(request: AuxListExportRequest):
+    """
+    生成辅材费用清单 Excel（分工种·品种明细）
+
+    - 每个工种一个 sheet：辅材品种行（消耗量合计×信息价=合价）+ 固定辅材费行 + 小计
+    - 末尾「辅材汇总」sheet：工种 → 材料费/固定费/合计 + 总计
+    - 返回 xlsx 文件流
+    """
+    try:
+        exporter = AuxListExporter(request)
+        buffer = exporter.generate()
+
+        filename = f"{request.project_name}_辅材费用清单.xlsx"
+        encoded_name = quote(filename)
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_name}",
+                "Cache-Control": "no-cache",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Aux list export error: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"error": str(e)}

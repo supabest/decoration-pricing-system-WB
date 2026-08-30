@@ -76,3 +76,29 @@ class TemplateExportRequest(ExportRequest):
     header_row: int = 0             # 模板中表头行的 0-based 行索引
     column_mapping: dict = {}       # {模板列索引(int或str): 数据字段key}
 
+
+class AuxMaterialLine(BaseModel):
+    """辅材清单品种行（工种内已按材料聚合）"""
+    name: str = ""                    # 辅材名称；固定费行为「固定辅材费（定额包干）」
+    unit: str = ""                    # 单位（固定费行为空）
+    qty_total: Optional[float] = None  # 消耗量合计 Σ(清单qty×消耗量)，固定费行为 None
+    price: Optional[float] = None      # 信息价单价，固定费行为 None
+    subtotal: float = 0.0             # 合价
+    is_fixed: bool = False            # 是否固定辅材费（定额包干，无单价/用量）
+
+
+class AuxGroup(BaseModel):
+    """辅材清单分组（一个工种 = 一个 sheet）"""
+    sheet_name: str = ""
+    lines: List[AuxMaterialLine] = []
+    fixed_subtotal: float = 0.0     # 其中：固定辅材费
+    material_subtotal: float = 0.0  # 其中：材料费
+    total: float = 0.0              # 辅材合计
+
+
+class AuxListExportRequest(BaseModel):
+    """辅材费用清单导出请求（分工种·品种明细）"""
+    project_name: str = "套价表"
+    price_month: str = ""           # 信息价月份（标题标注）
+    groups: List[AuxGroup] = []
+
