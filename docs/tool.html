@@ -303,11 +303,16 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
     <div class="proj-bar" style="background:var(--bg3);border-bottom:1px solid var(--border);padding:6px 14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">项目名称</span><input class="pi" id="projName" type="text" placeholder="请输入项目名称" style="min-width:160px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--border);font-size:12px;outline:none"></div>
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">人工系数</span><span class="coef-badge" id="coefBadge" onclick="openCoefModal()" style="background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;padding:3px 9px;border-radius:5px;font-family:var(--mono);cursor:pointer;font-weight:700">×1.00</span></div>
-      <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">管理费</span><input class="pi" id="mgmtRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="管理费 = 人工单价 × 管理费率%">ℹ️</span></div>
-      <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">利润</span><input class="pi" id="profitRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="利润 = 人工单价 × 利润率%">ℹ️</span></div>
-      <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:2px dashed var(--border)" title="对内成本测算：与对外报价口径严格分离，合同金额与目标利润率不进入任何对外导出文件">
-        <span style="font-size:10px;font-weight:700;color:var(--yel);background:var(--yel-d);padding:2px 6px;border-radius:4px">对内</span>
-        <span style="font-size:11px;color:var(--tx2);font-weight:500">合同金额</span><input class="pi" id="contractAmtInp" type="number" min="0" step="0.01" placeholder="0.00" style="width:96px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onInternalCostChange()"><span style="font-size:11px;color:var(--tx2)">元</span>
+      <div style="display:flex;align-items:center;gap:8px;padding-left:12px;border-left:1px solid var(--border)" title="对外报价口径：管理费/利润为报价加成，计入综合单价，随对外报价导出">
+        <span style="font-size:10px;font-weight:700;color:var(--tx2);background:var(--bg);border:1.5px solid var(--border);padding:2px 6px;border-radius:4px">对外报价</span>
+        <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">管理费</span><input class="pi" id="mgmtRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="管理费 = 人工单价 × 管理费率%">ℹ️</span></div>
+        <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">利润</span><input class="pi" id="profitRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="利润 = 人工单价 × 利润率%">ℹ️</span></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:1px solid var(--border)" title="对外签订的项目合同总金额（对外事实数据）：作为对内成本测算基数，本身不进入任何对外导出文件">
+        <span style="font-size:12px">📄</span><span style="font-size:11px;color:var(--tx2);font-weight:500">合同金额</span><input class="pi" id="contractAmtInp" type="number" min="0" step="0.01" placeholder="0.00" style="width:96px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onInternalCostChange()"><span style="font-size:11px;color:var(--tx2)">元</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:2px dashed var(--border)" title="对内核算预设：目标利润率由用户按项目全部直接成本（含未录入本工具的费用项）对比合同总金额自行测算。目标成本线 = 合同金额 × (1 - 目标利润率)，不进入任何对外导出">
+        <span style="font-size:10px;font-weight:700;color:var(--yel);background:var(--yel-d);padding:2px 6px;border-radius:4px">对内核算</span>
         <span style="font-size:11px;color:var(--tx2);font-weight:500">目标利润率</span><input class="pi" id="targetProfitInp" type="number" min="0" max="100" step="1" value="0" style="width:44px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onInternalCostChange()">%
       </div>
       <!-- 保留隐藏元素供JS读取 -->
@@ -781,19 +786,19 @@ function updateInternalCostPanel() {
   const profitRate = globalContractAmount > 0 ? (globalContractAmount - direct) / globalContractAmount * 100 : 0;
 
   let html = '<span style="font-weight:700;color:var(--tx2)">📊 成本测算</span>'
-    + '<span>合同金额 <b style="font-family:var(--mono)">' + fmt(globalContractAmount) + '</b> 元</span>'
-    + '<span>目标利润率 <b style="font-family:var(--mono)">' + globalTargetProfitRate + '%</b></span>'
+    + '<span>合同金额 <b style="font-family:var(--mono)">' + fmt(globalContractAmount) + '</b> 元（对外）</span>'
+    + '<span>目标利润率 <b style="font-family:var(--mono)">' + globalTargetProfitRate + '%</b>（对内预设）</span>'
     + '<span>目标成本线 <b style="font-family:var(--mono)">' + fmt(targetCost) + '</b> 元</span>';
   if (hasData) {
-    html += '<span>测算直接成本 <b style="font-family:var(--mono)">' + fmt(direct) + '</b> 元</span>'
+    html += '<span>清单直接成本 <b style="font-family:var(--mono)">' + fmt(direct) + '</b> 元</span>'
       + (gap >= 0
-        ? '<span style="color:var(--grn);font-weight:700">✓ 成本节余 ' + fmt(gap) + ' 元</span>'
-        : '<span style="color:var(--red);font-weight:700">⚠️ 成本超支 ' + fmt(-gap) + ' 元</span>')
-      + '<span>测算利润率 <b style="font-family:var(--mono);color:' + (profitRate >= globalTargetProfitRate ? 'var(--grn)' : 'var(--red)') + '">' + profitRate.toFixed(1) + '%</b>（目标 ' + globalTargetProfitRate + '%）</span>';
+        ? '<span style="color:var(--grn);font-weight:700">✓ 较目标线节余 ' + fmt(gap) + ' 元</span>'
+        : '<span style="color:var(--red);font-weight:700">⚠️ 较目标线超支 ' + fmt(-gap) + ' 元</span>')
+      + '<span>清单利润率 <b style="font-family:var(--mono);color:' + (profitRate >= globalTargetProfitRate ? 'var(--grn)' : 'var(--red)') + '">' + profitRate.toFixed(1) + '%</b>（目标 ' + globalTargetProfitRate + '%）</span>';
   } else {
     html += '<span style="color:var(--tx3)">清单尚未套价，暂无成本测算</span>';
   }
-  html += '<span style="color:var(--tx3);margin-left:auto;font-size:10px">对内数据·不进入对外导出 · 请确保合同金额与清单口径一致</span>';
+  html += '<span style="color:var(--tx3);margin-left:auto;font-size:10px">对内数据·不进入对外导出 · 清单直接成本仅含已录入套价的费用项，目标利润率请按项目全部直接成本预设</span>';
   panel.innerHTML = html;
 }
 let hourlyRate = 350;  // 时工单价（元/工日），可调整

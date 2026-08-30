@@ -151,7 +151,8 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 测算利润率   = (合同金额 - 测算直接成本) / 合同金额 × 100
 ```
 
-- 管理费/利润率属**对外报价**范畴；合同金额/目标利润率属**对内成本测算**范畴，两套口径不可混淆
+- 管理费/利润率属**对外报价**范畴；**合同金额是对外事实数据**（对外合同总额，仅作测算基数）；**预估目标利润率是对内预设值**（用户按项目全部直接成本——含未录入工具的费用项——对比合同金额自行测算）。两套口径不可混淆
+- 工具内"清单直接成本"仅覆盖已录入套价的费用项 ≠ 项目全部直接成本，面板文案已注明
 - 存储：`projects.contract_amount`、`projects.target_profit_rate`（迁移见 `data/migrations/projects_internal_cost_migration.sql`）
 
 ## Excel 导出（FastAPI 后端 + openpyxl）
