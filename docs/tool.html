@@ -302,7 +302,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
     </div>
     <div class="proj-bar" style="background:var(--bg3);border-bottom:1px solid var(--border);padding:6px 14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">项目名称</span><input class="pi" id="projName" type="text" placeholder="请输入项目名称" style="min-width:160px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--border);font-size:12px;outline:none"></div>
-      <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">类型系数</span><span class="coef-badge" id="coefBadge" onclick="openCoefModal()" style="background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;padding:3px 9px;border-radius:5px;font-family:var(--mono);cursor:pointer;font-weight:700">×1.00</span></div>
+      <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">人工系数</span><span class="coef-badge" id="coefBadge" onclick="openCoefModal()" style="background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;padding:3px 9px;border-radius:5px;font-family:var(--mono);cursor:pointer;font-weight:700">×1.00</span></div>
       <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">管理费</span><input class="pi" id="mgmtRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="管理费 = 人工单价 × 管理费率%">ℹ️</span></div>
       <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">利润</span><input class="pi" id="profitRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="利润 = 人工单价 × 利润率%">ℹ️</span></div>
       <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:2px dashed var(--border)" title="对内成本测算：与对外报价口径严格分离，合同金额与目标利润率不进入任何对外导出文件">
@@ -483,9 +483,9 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 </div>
 <div class="modal-ov hidden" id="coefMod">
   <div class="modal" style="width:420px">
-    <div class="modal-hdr"><span class="modal-ttl">装修类型系数（第25条）</span><button class="modal-x" onclick="closeCoefModal()">×</button></div>
+    <div class="modal-hdr"><span class="modal-ttl">装修人工系数（第25条）</span><button class="modal-x" onclick="closeCoefModal()">×</button></div>
     <div style="padding:16px 18px;display:flex;flex-direction:column;gap:10px">
-      <div style="font-size:11px;color:var(--tx3);line-height:1.7">以人工费为基数乘以浮动率：</div>
+      <div style="font-size:11px;color:var(--tx3);line-height:1.7">仅作用于人工单价：以人工费为基数乘以浮动率：</div>
       <div id="coefOpts"></div>
       <div style="display:flex;align-items:center;gap:8px;padding-top:6px">
         <span style="font-size:12px;color:var(--tx3)">自定义系数：</span>
@@ -2593,7 +2593,7 @@ function applyCoef() {
   const v=parseFloat(document.getElementById('customCoef').value);
   globalCoef=(!isNaN(v)&&v>=0.5&&v<=3)?v:pendCoef;
   document.getElementById('coefBadge').textContent='×'+globalCoef.toFixed(2);
-  closeCoefModal(); renderBoq(); toast('✓ 类型系数已设为 ×'+globalCoef.toFixed(2));
+  closeCoefModal(); renderBoq(); toast('✓ 人工系数已设为 ×'+globalCoef.toFixed(2));
 }
 
 // ═══════════ AI PRICING ═══════════
