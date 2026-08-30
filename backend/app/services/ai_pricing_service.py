@@ -1,6 +1,6 @@
 """AI 套价服务 — 与 tool.html 逻辑完全一致的 Python 实现"""
 import re, json, asyncio, httpx
-from typing import Optional
+from typing import List, Optional
 from app.core.config import settings
 from app.services.pricing_debug_logger import PricingDebugLog, save_debug_log
 
@@ -257,10 +257,31 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _RETRY_BACKOFF_SECONDS = [2, 4, 8, 15]
 
 
+def _llm_candidates(use_model: str) -> List[str]:
+    """按 model 返回候选端点（依序尝试）：glm → 智谱套餐端点 + 普通按量备端点，其余 → DeepSeek。
+
+    两类智谱 key 计费端点不同：套餐 key 只在 coding 端点有额度，普通 key 只在
+    paas 端点有钱。先试主端点，鉴权/余额类错误时由 call_deepseek 换备端点。
+    """
+    if use_model.lower().startswith('glm'):
+        urls = [settings.LLM_BASE_URL_ZHIPU.rstrip('/')]
+        fb = (settings.LLM_BASE_URL_ZHIPU_FALLBACK or '').rstrip('/')
+        if fb and fb not in urls:
+            urls.append(fb)
+        return urls
+    return [settings.LLM_BASE_URL.rstrip('/')]
+
+
+def _is_endpoint_mismatch(status_code: int, body: str) -> bool:
+    """鉴权/余额类错误 → 大概率 key 类型与端点不匹配，值得换端点重试"""
+    if status_code in (401, 402, 403):
+        return True
+    return '1113' in body   # 智谱「余额不足或无可用资源包」
+
+
 async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
                         model: Optional[str] = None) -> str:
     use_model = model or settings.LLM_MODEL
-    url = _resolve_base_url(use_model) + '/chat/completions'
     payload = {
         "model": use_model,
         "max_tokens": settings.LLM_MAX_TOKENS,
@@ -268,22 +289,34 @@ async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     }
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    candidates = _llm_candidates(use_model)
+    last_err: Optional[Exception] = None
 
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
-        for attempt in range(len(_RETRY_BACKOFF_SECONDS) + 1):
-            r = await client.post(url, headers=headers, json=payload)
-            if r.status_code == 200:
-                data = r.json()
-                msg = (data.get("choices") or [{}])[0].get("message") or {}
-                # deepseek-v4-pro 是推理模型：答案可能落在 content 或 reasoning_content
-                content = (msg.get("content") or "").strip()
-                if not content:
-                    content = (msg.get("reasoning_content") or "").strip()
-                return content
-            if r.status_code in _RETRYABLE_STATUS and attempt < len(_RETRY_BACKOFF_SECONDS):
-                await asyncio.sleep(_RETRY_BACKOFF_SECONDS[attempt])
-                continue
-            raise Exception(f"LLM error {r.status_code}: {r.text[:200]}")
+        for ci, base in enumerate(candidates):
+            url = base + '/chat/completions'
+            for attempt in range(len(_RETRY_BACKOFF_SECONDS) + 1):
+                r = await client.post(url, headers=headers, json=payload)
+                if r.status_code == 200:
+                    data = r.json()
+                    msg = (data.get("choices") or [{}])[0].get("message") or {}
+                    # deepseek-v4-pro 是推理模型：答案可能落在 content 或 reasoning_content
+                    content = (msg.get("content") or "").strip()
+                    if not content:
+                        content = (msg.get("reasoning_content") or "").strip()
+                    return content
+                body = r.text[:200]
+                mismatch = _is_endpoint_mismatch(r.status_code, body)
+                # 限流(1302 等)退避重试；计费/鉴权类(1113/401/402/403)等待无意义，立即换端点。
+                # 注意智谱的 1113 余额不足也返回 HTTP 429，不能只看状态码
+                if r.status_code in _RETRYABLE_STATUS and not mismatch and attempt < len(_RETRY_BACKOFF_SECONDS):
+                    await asyncio.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+                    continue
+                if mismatch and ci < len(candidates) - 1:
+                    last_err = Exception(f"LLM error {r.status_code}: {body}")
+                    break   # 换备端点
+                raise Exception(f"LLM error {r.status_code}: {body}")
+    raise last_err or Exception("LLM error: all endpoints exhausted")
 
 
 def parse_ai_response(raw: str) -> Optional[dict]:
