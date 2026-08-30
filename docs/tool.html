@@ -283,14 +283,15 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
   </div>
   <div class="main">
     <div class="ai-panel">
-      <span style="font-size:11px;color:var(--tx3);white-space:nowrap">🔑 DeepSeek Key</span>
+      <span style="font-size:11px;color:var(--tx3);white-space:nowrap">🔑 AI Key</span>
       <div class="ai-key-wrap">
-        <input class="ai-key-input" id="aiKey" type="password" placeholder="sk-xxxxxxxx（仅本次使用，不保存）">
+        <input class="ai-key-input" id="aiKey" type="password" placeholder="API Key 需与所选模型厂商匹配（仅本次使用，不保存）">
         <button class="btn btn-sm" onclick="var e=document.getElementById('aiKey');e.type=e.type==='password'?'text':'password';this.textContent=e.type==='password'?'👁':'🙈'">👁</button>
       </div>
-      <select id="aiModel" onchange="saveAiModel()" title="选择 DeepSeek 模型" style="height:28px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;padding:0 6px;background:var(--bg2);color:var(--tx);outline:none;margin-left:4px">
-        <option value="deepseek-v4-pro">V4 Pro（强·贵）</option>
-        <option value="deepseek-v4-flash">V4 Flash（省·快）</option>
+      <select id="aiModel" onchange="saveAiModel()" title="选择 AI 模型（Key 需与厂商匹配）" style="height:28px;border:1.5px solid var(--border);border-radius:6px;font-size:12px;padding:0 6px;background:var(--bg2);color:var(--tx);outline:none;margin-left:4px">
+        <option value="deepseek-v4-pro">V4 Pro（DeepSeek·强）</option>
+        <option value="deepseek-v4-flash">V4 Flash（DeepSeek·快）</option>
+        <option value="glm-5.3-flash">GLM-5.3 Flash（智谱·快）</option>
       </select>
       <button class="btn btn-sm" onclick="testBackend()" style="color:var(--acc2);border-color:var(--acc);margin-left:4px">🔌 测试</button>
       <div class="ai-prog-wrap hidden" id="aiProgWrap">
@@ -611,7 +612,7 @@ async function testBackend() {
       _backendOk = true;
       if (el) { el.textContent = '🖥️ 后端在线'; el.style.background = '#e6f7ff'; el.style.color = '#1890ff'; }
       var hasKey = document.getElementById('aiKey').value.trim();
-      toast(hasKey ? '✅ 连接正常，可以开始套价' : '✅ 后端连接正常，请填入 DeepSeek Key');
+      toast(hasKey ? '✅ 连接正常，可以开始套价' : '✅ 后端连接正常，请填入 AI Key（与所选模型厂商匹配）');
     } else {
       throw new Error('status '+r.status);
     }
@@ -2587,7 +2588,7 @@ function showConsistencyWarnings(warnings) {
 
 async function startAiPricing() {
   const key=document.getElementById('aiKey').value.trim();
-  if(!key){toast('请先输入 DeepSeek API Key');return;}
+  if(!key){toast('请先输入 API Key（需与所选模型厂商匹配）');return;}
   const allRows=getAllRows();
   if(!allRows.length){toast('请先导入清单');return;}
   const targets=allRows.filter(r=>r.subs.length===0);

@@ -73,12 +73,15 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 | `backend/app/services/template_export.py` | 方式二导出引擎 — 读入用户模板，填入数据+插入子目行 |
 | `frontend/src/` | React 页面（登录、工作台、基准价查询、辅材规则等） |
 
-### DeepSeek 模型配置
+### AI 模型配置（DeepSeek + 智谱）
 
-- 模型: `deepseek-v4-pro`（配置在 `backend/app/core/config.py` 的 `LLM_MODEL`）
-- 支持两种可选模型：`deepseek-v4-pro`（强·贵，默认）和 `deepseek-v4-flash`（省·快，`LLM_MODEL_FLASH`），前端 AI 面板下拉选择，`model` 字段经 `/pricing/single` 透传到 `call_deepseek`
-- `docs/tool.html` 和 `docs/v5.html` 中也硬编码了模型名，修改时需三处同步
-- API 走 `settings.LLM_BASE_URL`（默认 `https://api.deepseek.com/v1`），temperature=0
+- 默认模型: `deepseek-v4-pro`（配置在 `backend/app/core/config.py` 的 `LLM_MODEL`）
+- 支持模型（前端 AI 面板下拉选择，`model` 字段经 `/pricing/single` 透传到 `call_deepseek`）：
+  - `deepseek-v4-pro`（强，默认）/ `deepseek-v4-flash`（省·快）
+  - `glm-5.3-flash`（智谱·快）— `call_deepseek` 的 `_resolve_base_url` 按 model 前缀路由：`glm*` → `LLM_BASE_URL_ZHIPU`（默认 `https://open.bigmodel.cn/api/paas/v4`，国际版可覆盖），其余 → `LLM_BASE_URL`
+- API Key 由用户在前端 AI 面板输入（仅本次使用，不保存），经 `/pricing/single` 透传，**需与所选模型厂商匹配**
+- 模型名出现在 `backend/app/core/config.py` 和 `docs/tool.html` 两处（`docs/v5.html` 已删除），修改时需两处同步
+- API 走 OpenAI 兼容 `/chat/completions`，temperature=0
 - **`deepseek-v4-pro` 是推理模型**，`backend/app/services/ai_pricing_service.py` 的 `call_deepseek` 必须：
   - `max_tokens=settings.LLM_MAX_TOKENS`（8000，曾因 2000 太小被推理吃光，导致 `content` 空/截断，大量清单「套不上价」）
   - `timeout=settings.LLM_TIMEOUT_SECONDS`（180，曾因 60 太短，推理长时 ReadTimeout）

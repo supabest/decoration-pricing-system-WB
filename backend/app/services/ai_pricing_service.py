@@ -244,10 +244,17 @@ def build_user_prompt(name: str, spec: str, unit: str, candidates: list[dict]) -
 
 
 # ── DeepSeek 调用 ──
+def _resolve_base_url(use_model: Optional[str]) -> str:
+    """按 model 前缀路由 LLM 端点：glm* → 智谱，其余 → DeepSeek"""
+    if use_model and use_model.lower().startswith('glm'):
+        return settings.LLM_BASE_URL_ZHIPU.rstrip('/')
+    return settings.LLM_BASE_URL.rstrip('/')
+
+
 async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
                         model: Optional[str] = None) -> str:
-    url = settings.LLM_BASE_URL.rstrip('/') + '/chat/completions'
     use_model = model or settings.LLM_MODEL
+    url = _resolve_base_url(use_model) + '/chat/completions'
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
         r = await client.post(
             url,
@@ -260,7 +267,7 @@ async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
             }
         )
         if r.status_code != 200:
-            raise Exception(f"DeepSeek error {r.status_code}: {r.text[:200]}")
+            raise Exception(f"LLM error {r.status_code}: {r.text[:200]}")
         data = r.json()
         msg = (data.get("choices") or [{}])[0].get("message") or {}
         # deepseek-v4-pro 是推理模型：答案可能落在 content 或 reasoning_content
