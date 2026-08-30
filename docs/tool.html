@@ -305,6 +305,11 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">类型系数</span><span class="coef-badge" id="coefBadge" onclick="openCoefModal()" style="background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;padding:3px 9px;border-radius:5px;font-family:var(--mono);cursor:pointer;font-weight:700">×1.00</span></div>
       <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">管理费</span><input class="pi" id="mgmtRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="管理费 = 人工单价 × 管理费率%">ℹ️</span></div>
       <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">利润</span><input class="pi" id="profitRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="利润 = 人工单价 × 利润率%">ℹ️</span></div>
+      <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:2px dashed var(--border)" title="对内成本测算：与对外报价口径严格分离，合同金额与目标利润率不进入任何对外导出文件">
+        <span style="font-size:10px;font-weight:700;color:var(--yel);background:var(--yel-d);padding:2px 6px;border-radius:4px">对内</span>
+        <span style="font-size:11px;color:var(--tx2);font-weight:500">合同金额</span><input class="pi" id="contractAmtInp" type="number" min="0" step="0.01" placeholder="0.00" style="width:96px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onInternalCostChange()"><span style="font-size:11px;color:var(--tx2)">元</span>
+        <span style="font-size:11px;color:var(--tx2);font-weight:500">目标利润率</span><input class="pi" id="targetProfitInp" type="number" min="0" max="100" step="1" value="0" style="width:44px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onInternalCostChange()">%
+      </div>
       <!-- 保留隐藏元素供JS读取 -->
       <input type="hidden" id="projTeam" value="">
       <input type="hidden" id="projDate" value="">
@@ -452,6 +457,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
           自动识别多工作簿、楼地面/天棚/墙面等分部标题<br>
           支持列：项目名称 · 项目特征 · 单位 · 工程量</div>
       </div>
+      <div id="internalCostPanel" class="hidden" style="margin:8px 14px 0;padding:8px 14px;background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--yel);border-radius:8px;font-size:11.5px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"></div>
       <div id="boqMain" class="hidden"></div>
     </div>
     <div class="sbar2">
@@ -739,6 +745,56 @@ function onGlobalRateChange() {
   globalMgmtRate = parseInt(document.getElementById('mgmtRateInp').value) || 0;
   globalProfitRate = parseInt(document.getElementById('profitRateInp').value) || 0;
   _deb('rate',renderBoq,150);
+}
+
+// ═══════════ 对内成本测算（与对外报价口径严格分离，不进入任何导出）═══════════
+let globalContractAmount = 0;    // 项目合同金额（元）
+let globalTargetProfitRate = 0;  // 预估目标利润率%（事前目标；与对外报价的「利润率」是两回事）
+
+function onInternalCostChange() {
+  globalContractAmount = parseFloat(document.getElementById('contractAmtInp').value) || 0;
+  let t = parseFloat(document.getElementById('targetProfitInp').value) || 0;
+  if (t < 0) t = 0;
+  if (t > 100) t = 100;
+  globalTargetProfitRate = Math.round(t);
+  _deb('internalCost', updateInternalCostPanel, 150);
+}
+
+// 直接成本（对内口径）= 人工 + 主材×(1+损耗) + 辅材；管理费/利润是对外加成，不计入
+function rowDirectCost(r) {
+  return (rowUnitPrice(r) || 0) + rowMatCost(r) + (parseFloat(r.auxCost) || 0);
+}
+function totalDirectCost() {
+  return getAllRows().reduce((s, r) => s + rowDirectCost(r) * (parseFloat(r.qty) || 0), 0);
+}
+
+function updateInternalCostPanel() {
+  const panel = document.getElementById('internalCostPanel');
+  if (!panel) return;
+  if (!globalContractAmount || globalContractAmount <= 0) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+
+  const targetCost = globalContractAmount * (1 - globalTargetProfitRate / 100);
+  const direct = totalDirectCost();
+  const hasData = direct > 0;
+  const gap = targetCost - direct;                       // +节余 / −超支
+  const profitRate = globalContractAmount > 0 ? (globalContractAmount - direct) / globalContractAmount * 100 : 0;
+
+  let html = '<span style="font-weight:700;color:var(--tx2)">📊 成本测算</span>'
+    + '<span>合同金额 <b style="font-family:var(--mono)">' + fmt(globalContractAmount) + '</b> 元</span>'
+    + '<span>目标利润率 <b style="font-family:var(--mono)">' + globalTargetProfitRate + '%</b></span>'
+    + '<span>目标成本线 <b style="font-family:var(--mono)">' + fmt(targetCost) + '</b> 元</span>';
+  if (hasData) {
+    html += '<span>测算直接成本 <b style="font-family:var(--mono)">' + fmt(direct) + '</b> 元</span>'
+      + (gap >= 0
+        ? '<span style="color:var(--grn);font-weight:700">✓ 成本节余 ' + fmt(gap) + ' 元</span>'
+        : '<span style="color:var(--red);font-weight:700">⚠️ 成本超支 ' + fmt(-gap) + ' 元</span>')
+      + '<span>测算利润率 <b style="font-family:var(--mono);color:' + (profitRate >= globalTargetProfitRate ? 'var(--grn)' : 'var(--red)') + '">' + profitRate.toFixed(1) + '%</b>（目标 ' + globalTargetProfitRate + '%）</span>';
+  } else {
+    html += '<span style="color:var(--tx3)">清单尚未套价，暂无成本测算</span>';
+  }
+  html += '<span style="color:var(--tx3);margin-left:auto;font-size:10px">对内数据·不进入对外导出 · 请确保合同金额与清单口径一致</span>';
+  panel.innerHTML = html;
 }
 let hourlyRate = 350;  // 时工单价（元/工日），可调整
 let drag = null;
@@ -1400,6 +1456,7 @@ function grpTotal(g) { return g.sections.reduce((a,s)=>a+secTotal(s),0); }
 // ═══════════ RENDER ═══════════
 function renderBoq() {
   const main = document.getElementById('boqMain');
+  updateInternalCostPanel();
   if (!groups.length) { updateSum(); return; }
   recomputeAllAux();
   rebuildRowMap();
@@ -2879,6 +2936,8 @@ async function doAutoSave() {
       price_overrides: JSON.parse(JSON.stringify(userPriceOverrides || {})),
       mgmt_rate: globalMgmtRate,
       profit_rate: globalProfitRate,
+      contract_amount: globalContractAmount,
+      target_profit_rate: globalTargetProfitRate,
       row_count: getAllRows().length,
       priced_count: getAllRows().filter(r => r.subs.length > 0).length,
       is_draft: true,
@@ -2945,6 +3004,8 @@ async function saveProject() {
     price_overrides: JSON.parse(JSON.stringify(userPriceOverrides)),
     mgmt_rate: globalMgmtRate,
     profit_rate: globalProfitRate,
+    contract_amount: globalContractAmount,
+    target_profit_rate: globalTargetProfitRate,
     row_count: allRows.length,
     priced_count: allRows.filter(r=>r.subs.length>0).length,
   };
@@ -3019,6 +3080,8 @@ async function restoreProject(id) {
   if (snap.price_overrides) { userPriceOverrides = snap.price_overrides; recomputeAllAux(); }
   if (snap.mgmt_rate !== undefined) { globalMgmtRate = Math.round(parseFloat(snap.mgmt_rate)||0); document.getElementById('mgmtRateInp').value = globalMgmtRate; }
   if (snap.profit_rate !== undefined) { globalProfitRate = Math.round(parseFloat(snap.profit_rate)||0); document.getElementById('profitRateInp').value = globalProfitRate; }
+  if (snap.contract_amount !== undefined) { globalContractAmount = parseFloat(snap.contract_amount)||0; document.getElementById('contractAmtInp').value = globalContractAmount || ''; }
+  if (snap.target_profit_rate !== undefined) { globalTargetProfitRate = Math.round(parseFloat(snap.target_profit_rate)||0); document.getElementById('targetProfitInp').value = globalTargetProfitRate; }
   let maxId = 0;
   groups.forEach(g => { maxId = Math.max(maxId, g.id); g.sections?.forEach(s => { maxId = Math.max(maxId, s.id); s.rows?.forEach(r => { maxId = Math.max(maxId, r.id); }); }); });
   uid = maxId + 1;

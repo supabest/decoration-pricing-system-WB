@@ -143,6 +143,17 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 合价     = 综合单价 × 工程量
 ```
 
+### 对内成本测算（与对外报价严格分离，不进入任何导出）
+
+```
+目标成本线   = 项目合同金额 × (1 - 预估目标利润率/100)
+测算直接成本 = Σ[(人工 + 主材×(1+损耗) + 辅材) × 工程量]   ← 不含管理费/利润加成
+测算利润率   = (合同金额 - 测算直接成本) / 合同金额 × 100
+```
+
+- 管理费/利润率属**对外报价**范畴；合同金额/目标利润率属**对内成本测算**范畴，两套口径不可混淆
+- 存储：`projects.contract_amount`、`projects.target_profit_rate`（迁移见 `data/migrations/projects_internal_cost_migration.sql`）
+
 ## Excel 导出（FastAPI 后端 + openpyxl）
 
 ### 方式一：配置导出 `POST /api/v1/export/excel`
