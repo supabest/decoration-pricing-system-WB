@@ -1,5 +1,5 @@
 """AI 套价服务 — 与 tool.html 逻辑完全一致的 Python 实现"""
-import re, json, httpx
+import re, json, asyncio, httpx
 from typing import Optional
 from app.core.config import settings
 from app.services.pricing_debug_logger import PricingDebugLog, save_debug_log
@@ -251,30 +251,39 @@ def _resolve_base_url(use_model: Optional[str]) -> str:
     return settings.LLM_BASE_URL.rstrip('/')
 
 
+# 限流/瞬时错误重试：免费编码套餐并发限额低，前端并发 3 会触发智谱 1302，
+# 指数退避重试让请求从容排队（总等待 ≤29s，远小于单次 180s 超时预算）
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+_RETRY_BACKOFF_SECONDS = [2, 4, 8, 15]
+
+
 async def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
                         model: Optional[str] = None) -> str:
     use_model = model or settings.LLM_MODEL
     url = _resolve_base_url(use_model) + '/chat/completions'
+    payload = {
+        "model": use_model,
+        "max_tokens": settings.LLM_MAX_TOKENS,
+        "temperature": 0,
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+
     async with httpx.AsyncClient(timeout=settings.LLM_TIMEOUT_SECONDS) as client:
-        r = await client.post(
-            url,
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-            json={
-                "model": use_model,
-                "max_tokens": settings.LLM_MAX_TOKENS,
-                "temperature": 0,
-                "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-            }
-        )
-        if r.status_code != 200:
+        for attempt in range(len(_RETRY_BACKOFF_SECONDS) + 1):
+            r = await client.post(url, headers=headers, json=payload)
+            if r.status_code == 200:
+                data = r.json()
+                msg = (data.get("choices") or [{}])[0].get("message") or {}
+                # deepseek-v4-pro 是推理模型：答案可能落在 content 或 reasoning_content
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    content = (msg.get("reasoning_content") or "").strip()
+                return content
+            if r.status_code in _RETRYABLE_STATUS and attempt < len(_RETRY_BACKOFF_SECONDS):
+                await asyncio.sleep(_RETRY_BACKOFF_SECONDS[attempt])
+                continue
             raise Exception(f"LLM error {r.status_code}: {r.text[:200]}")
-        data = r.json()
-        msg = (data.get("choices") or [{}])[0].get("message") or {}
-        # deepseek-v4-pro 是推理模型：答案可能落在 content 或 reasoning_content
-        content = (msg.get("content") or "").strip()
-        if not content:
-            content = (msg.get("reasoning_content") or "").strip()
-        return content
 
 
 def parse_ai_response(raw: str) -> Optional[dict]:
