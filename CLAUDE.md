@@ -78,7 +78,7 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 - 默认模型: `deepseek-v4-pro`（配置在 `backend/app/core/config.py` 的 `LLM_MODEL`）
 - 支持模型（前端 AI 面板下拉选择，`model` 字段经 `/pricing/single` 透传到 `call_deepseek`）：
   - `deepseek-v4-pro`（强，默认）/ `deepseek-v4-flash`（省·快）
-  - `glm-5.3-flash`（智谱·快）— `call_deepseek` 的 `_resolve_base_url` 按 model 前缀路由：`glm*` → `LLM_BASE_URL_ZHIPU`（默认 `https://open.bigmodel.cn/api/paas/v4`，国际版可覆盖），其余 → `LLM_BASE_URL`
+  - `glm-5.3-flash`（智谱·快）— `call_deepseek` 的 `_resolve_base_url` 按 model 前缀路由：`glm*` → `LLM_BASE_URL_ZHIPU`（默认 **GLM Coding Plan 专用端点** `https://open.bigmodel.cn/api/coding/paas/v4`，套餐额度在此计费；普通按量付费改回 `/api/paas/v4`；国际版 `https://api.z.ai/api/coding/paas/v4`），其余 → `LLM_BASE_URL`
 - API Key 由用户在前端 AI 面板输入（仅本次使用，不保存），经 `/pricing/single` 透传，**需与所选模型厂商匹配**
 - 模型名出现在 `backend/app/core/config.py` 和 `docs/tool.html` 两处（`docs/v5.html` 已删除），修改时需两处同步
 - API 走 OpenAI 兼容 `/chat/completions`，temperature=0
