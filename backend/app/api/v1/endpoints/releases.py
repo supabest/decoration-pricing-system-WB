@@ -27,6 +27,13 @@ STALE_TIMEOUT_MINUTES = 30  # sending 超过此时间视为异常中断
 # ═══════════ Helpers ═══════════
 
 def _service_role_headers() -> dict:
+    if not settings.SUPABASE_SERVICE_ROLE_KEY:
+        # 安全规则：service_role key 只存 Render 环境变量，本地没有属正常情况。
+        # 明确返回 503 提示，而不是让 httpx 因空 Bearer 头抛 LocalProtocolError（前端只见「加载失败」）
+        raise HTTPException(
+            status_code=503,
+            detail="本地开发环境未配置 SUPABASE_SERVICE_ROLE_KEY，版本发布管理请在线上管理面板（pages.dev/admin.html）使用",
+        )
     return {
         "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
         "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
