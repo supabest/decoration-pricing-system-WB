@@ -2702,7 +2702,7 @@ async function startAiPricing() {
   }
 
   // ⚡ 并发池：同时处理3条，大幅提速
-  const CONCURRENCY = 3;
+  const CONCURRENCY = 6;  // 并发池：同时套价 6 条（每条独立请求，不影响单条准确度；被限流时后端有指数退避兜底）
   let idx = 0;
   async function worker() {
     while (idx < targets.length && !aiStop) {

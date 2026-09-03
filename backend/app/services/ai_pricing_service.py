@@ -251,17 +251,17 @@ def _resolve_base_url(use_model: Optional[str]) -> str:
     return settings.LLM_BASE_URL.rstrip('/')
 
 
-# 限流/瞬时错误重试：免费编码套餐并发限额低，前端并发 3 会触发智谱 1302，
+# 限流/瞬时错误重试：前端并发已提至 6，编码套餐/低限额 key 仍可能触发智谱 1302，
 # 指数退避重试让请求从容排队（总等待 ≤29s，远小于单次 180s 超时预算）
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _RETRY_BACKOFF_SECONDS = [2, 4, 8, 15]
 
 
 def _llm_candidates(use_model: str) -> List[str]:
-    """按 model 返回候选端点（依序尝试）：glm → 智谱套餐端点 + 普通按量备端点，其余 → DeepSeek。
+    """按 model 返回候选端点（依序尝试）：glm → 智谱按量计费端点 + Coding Plan 套餐备端点，其余 → DeepSeek。
 
-    两类智谱 key 计费端点不同：套餐 key 只在 coding 端点有额度，普通 key 只在
-    paas 端点有钱。先试主端点，鉴权/余额类错误时由 call_deepseek 换备端点。
+    两类智谱 key 计费端点不同：普通 key 只在 paas 端点有钱，套餐 key 只在
+    coding 端点有额度。先试主端点（按量），鉴权/余额类错误时由 call_deepseek 换备端点。
     """
     if use_model.lower().startswith('glm'):
         urls = [settings.LLM_BASE_URL_ZHIPU.rstrip('/')]

@@ -19,11 +19,11 @@ class Settings(BaseSettings):
     LLM_MODEL_FLASH: str = "deepseek-v4-flash"
     LLM_BASE_URL: str = "https://api.deepseek.com/v1"
     # 智谱 GLM（OpenAI 兼容端点）；model 名以 glm 开头时 call_deepseek 自动路由
-    # 主端点 = GLM Coding Plan 专用（套餐额度在此计费）；备端点 = 普通按量计费。
+    # 主端点 = 普通按量计费（API key 流量计费在此扣费）；备端点 = GLM Coding Plan 专用（套餐额度）。
     # 遇鉴权/余额类错误（401/402/403/1113）自动换备端点重试，兼容两类用户
-    # 国际版分别对应 https://api.z.ai/api/coding/paas/v4 与 https://api.z.ai/api/paas/v4
-    LLM_BASE_URL_ZHIPU: str = "https://open.bigmodel.cn/api/coding/paas/v4"
-    LLM_BASE_URL_ZHIPU_FALLBACK: str = "https://open.bigmodel.cn/api/paas/v4"
+    # 国际版分别对应 https://api.z.ai/api/paas/v4 与 https://api.z.ai/api/coding/paas/v4
+    LLM_BASE_URL_ZHIPU: str = "https://open.bigmodel.cn/api/paas/v4"
+    LLM_BASE_URL_ZHIPU_FALLBACK: str = "https://open.bigmodel.cn/api/coding/paas/v4"
     # deepseek-v4-pro 是推理模型，需留足输出 token，否则 content 被推理吃光→空/截断
     LLM_MAX_TOKENS: int = 8000
     # 推理模型生成慢，复杂项会超过 60s，需放宽
