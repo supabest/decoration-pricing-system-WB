@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 - 装修成本智能分析系统</title>
+<style>
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#f0f5fa;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#fff;border:2px solid #c8d8e8;border-radius:12px;padding:32px 36px;width:340px;box-shadow:0 8px 30px rgba(20,50,80,.12)}
+h1{font-size:17px;color:#1a2d3d;margin:0 0 6px}.sub{font-size:12px;color:#6e8fa8;margin:0 0 20px}
+label{display:block;font-size:12px;color:#3a5470;margin:10px 0 4px;font-weight:600}
+input{width:100%;box-sizing:border-box;border:1.5px solid #c8d8e8;border-radius:6px;padding:9px 11px;font-size:13px;outline:none}
+input:focus{border-color:#1d6fa5;box-shadow:0 0 0 3px rgba(29,111,165,.12)}
+button{width:100%;margin-top:18px;background:#1d6fa5;color:#fff;border:none;border-radius:7px;padding:10px;font-size:14px;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:not-allowed}
+.msg{margin-top:12px;font-size:12px;min-height:18px}
+.err{color:#b93232}.ok{color:#0b7b50}
+a{color:#1d6fa5;font-size:12px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>装修成本智能分析系统</h1>
+  <p class="sub">本地开发登录页（写入本站 localStorage，供 tool.html / admin.html 使用）</p>
+  <label>邮箱</label>
+  <input id="email" type="email" autocomplete="username" placeholder="you@example.com">
+  <label>密码</label>
+  <input id="pwd" type="password" autocomplete="current-password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
+  <button id="btn" onclick="doLogin()">登 录</button>
+  <div class="msg" id="msg"></div>
+  <a href="admin.html">← 返回管理面板</a>&nbsp;&nbsp;<a href="tool.html">← 返回套价工具</a>
+</div>
+<script>
+const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
+const msg = (t, cls) => { const el = document.getElementById('msg'); el.textContent = t; el.className = 'msg ' + (cls || ''); };
+
+(async function init() {
+  // 已有 refresh_token → 静默续期后直接跳转
+  const rt = localStorage.getItem('sb-refresh-token');
+  if (rt && await refresh(rt)) { location.href = 'admin.html'; }
+})();
+
+async function refresh(rt) {
+  try {
+    const r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY},
+      body: JSON.stringify({refresh_token: rt})
+    });
+    if (!r.ok) return false;
+    save(await r.json());
+    return true;
+  } catch(e) { return false; }
+}
+
+function save(d) {
+  localStorage.setItem('sb-access-token', d.access_token);
+  localStorage.setItem('sb-refresh-token', d.refresh_token);
+  localStorage.setItem('sb-user', JSON.stringify(d.user));
+}
+
+async function doLogin() {
+  const email = document.getElementById('email').value.trim();
+  const pwd = document.getElementById('pwd').value;
+  if (!email || !pwd) { msg('请输入邮箱和密码', 'err'); return; }
+  const btn = document.getElementById('btn');
+  btn.disabled = true; btn.textContent = '登录中…'; msg('');
+  try {
+    const r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
+      method: 'POST', headers: {'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY},
+      body: JSON.stringify({email, password: pwd})
+    });
+    const d = await r.json();
+    if (!r.ok) { msg('登录失败：' + (d.error_description || d.msg || d.error || r.status), 'err'); return; }
+    save(d);
+    msg('✅ 登录成功，正在跳转…', 'ok');
+    setTimeout(() => { location.href = new URLSearchParams(location.search).get('to') || 'admin.html'; }, 400);
+  } catch(e) {
+    msg('网络错误：' + e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = '登 录';
+  }
+}
+</script>
+</body>
+</html>

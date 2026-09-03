@@ -326,6 +326,28 @@ function authHeaders() {
   return {'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY,'Authorization':'Bearer '+token};
 }
 
+// 用 refresh_token 换新的 access_token（与 tool.html 相同逻辑）
+// access_token 约 1 小时过期，管理面板长时间开着会 401，需在启动时和 401 后刷新
+async function refreshAuthToken() {
+  const rt = localStorage.getItem('sb-refresh-token');
+  if (!rt) return false;
+  try {
+    const r = await fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY},
+      body: JSON.stringify({refresh_token: rt})
+    });
+    if (r.ok) {
+      const d = await r.json();
+      localStorage.setItem('sb-access-token', d.access_token);
+      localStorage.setItem('sb-refresh-token', d.refresh_token);
+      localStorage.setItem('sb-user', JSON.stringify(d.user));
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
 // ═══════════ Tab 切换 ═══════════
 let currentTab = 'users';
 function switchTab(tab) {
@@ -1225,13 +1247,15 @@ async function deleteReleaseConfirm(id, ver) {
 function editRelease(id) { openReleaseForm(id); }
 
 async function load() {
-  const token = localStorage.getItem('sb-access-token');
+  let token = localStorage.getItem('sb-access-token');
   // localhost 免登录，其他环境需要登录
   const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   if (!token && !isLocal) {
     showMsg('请先登录（打开 tool.html 登录后回到此页面）', true);
     return;
   }
+  // token 过期则先用 refresh_token 换新（长时间开着的管理面板会 401）
+  if (token) await refreshAuthToken();
   document.getElementById('loadMsg').classList.add('hidden');
   document.getElementById('content').classList.remove('hidden');
 
@@ -1252,7 +1276,12 @@ async function _fetchAllRows(baseQuery, h) {
   const all = [];
   let offset = 0, pageSize = 200;
   for (;;) {
-    const r = await fetch(SUPABASE_URL + '/rest/v1/' + baseQuery + '&limit=' + pageSize + '&offset=' + offset, { headers: h });
+    let r = await fetch(SUPABASE_URL + '/rest/v1/' + baseQuery + '&limit=' + pageSize + '&offset=' + offset, { headers: h });
+    if (r.status === 401 && await refreshAuthToken()) {
+      // token 过期：刷新后重试一次
+      h = authHeaders();
+      r = await fetch(SUPABASE_URL + '/rest/v1/' + baseQuery + '&limit=' + pageSize + '&offset=' + offset, { headers: h });
+    }
     if (!r.ok) throw new Error('拉取数据失败 HTTP ' + r.status);
     const rows = await r.json();
     if (!rows || !rows.length) break;
@@ -1454,7 +1483,12 @@ async function loadStats() {
     fbel.innerHTML = (statBar ? '<div>' + statBar + '</div>' : '') + '<div style="margin-top:6px">' + (groupHtml || '<div class="empty">暂无反馈</div>') + '</div>';
 
   } catch (e) {
-    el.innerHTML = '<div class="empty">统计失败：' + esc(e.message) + '</div>';
+    const m = String(e.message || e);
+    if (m.includes('401')) {
+      el.innerHTML = '<div class="empty">登录已过期，请 <a href="login.html">重新登录</a> 后回到本页刷新</div>';
+    } else {
+      el.innerHTML = '<div class="empty">统计失败：' + esc(m) + '</div>';
+    }
     fbel.innerHTML = '';
   }
 }
