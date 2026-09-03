@@ -65,6 +65,10 @@ class ExportRequest(BaseModel):
     use_formula: bool = True      # 是否写入 Excel 公式（否则静态数值）
     split_by_group: bool = False  # 是否按工种拆分多 Sheet
     include_summary_sheet: bool = False  # 是否额外生成汇总 Sheet
+    # 对内核算参数：仅用于汇总 sheet 计算「占总成本比例」（总成本 = 合同金额×(1-目标利润率)），
+    # 数值本身不出现在导出表中；contract_amount<=0 时比例列整体不输出
+    contract_amount: float = 0.0      # 对甲合同金额（不含暂列金额），元
+    target_profit_rate: float = 0.0   # 预估目标利润率 %
 
     class Config:
         # 允许额外字段（前端可能发送多余数据）
@@ -96,9 +100,22 @@ class AuxGroup(BaseModel):
     total: float = 0.0              # 辅材合计
 
 
+class AuxUnclassifiedItem(BaseModel):
+    """未套子目的清单项（辅材费未计入汇总，单独列出供人工补充）"""
+    name: str = ""                    # 项目名称
+    spec: str = ""                    # 项目特征
+    unit: str = ""                    # 单位
+    qty: Optional[float] = None       # 工程量
+    reason: str = ""                  # 原因：未套价 / 子目缺失 / 无工种
+
+
 class AuxListExportRequest(BaseModel):
     """辅材费用清单导出请求（分工种·品种明细）"""
     project_name: str = "套价表"
-    price_month: str = ""           # 信息价月份（标题标注）
     groups: List[AuxGroup] = []
+    unclassified: List[AuxUnclassifiedItem] = []   # 未套子目清单项 → 「⚠️未套子目清单」sheet
+    use_formula: bool = True         # 是否写入 Excel 公式（合价=消耗量×信息价、小计=SUM、汇总引用工种 sheet）
+    # 对内核算参数：仅用于辅材汇总 sheet 计算「占总成本比例」，数值本身不出现在导出表中
+    contract_amount: float = 0.0      # 对甲合同金额（不含暂列金额），元；<=0 时比例列不输出
+    target_profit_rate: float = 0.0   # 预估目标利润率 %
 

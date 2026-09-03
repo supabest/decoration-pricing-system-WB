@@ -115,8 +115,14 @@ class ExcelExporter:
         if not self.req.include_summary_sheet:
             return
         ws = self.wb.create_sheet(title="汇总")
+        # 占总成本比例：总成本 = 对甲合同金额 × (1 - 目标利润率/100)；合同金额未填(<=0)时整列不输出
+        cost_base = None
+        if getattr(self.req, "contract_amount", 0) and self.req.contract_amount > 0:
+            cost_base = self.req.contract_amount * (1 - (getattr(self.req, "target_profit_rate", 0) or 0) / 100.0)
         ws.cell(row=1, column=1, value="班组")
         ws.cell(row=1, column=2, value="总价")
+        if cost_base:
+            ws.cell(row=1, column=3, value="占总成本比例")
         r = 2
         grand_total = 0.0
         for group in self.req.groups:
@@ -126,18 +132,26 @@ class ExcelExporter:
             ws.cell(row=r, column=1, value=group.sheet_name)
             c = ws.cell(row=r, column=2, value=total)
             c.number_format = NUM_FMT
+            if cost_base:
+                ratio = ws.cell(row=r, column=3, value=total / cost_base)
+                ratio.number_format = '0.00%'
             grand_total += total
             r += 1
         ws.cell(row=r, column=1, value="总计")
         c = ws.cell(row=r, column=2, value=grand_total)
         c.number_format = NUM_FMT
+        if cost_base:
+            ratio = ws.cell(row=r, column=3, value=grand_total / cost_base)
+            ratio.number_format = '0.00%'
         # 样式
-        for row in ws.iter_rows(min_row=1, max_row=r, min_col=1, max_col=2):
+        for row in ws.iter_rows(min_row=1, max_row=r, min_col=1, max_col=3 if cost_base else 2):
             for cell in row:
                 cell.font = Font(name=FONT_NAME, bold=(cell.row == 1 or cell.row == r))
                 cell.border = THIN_BORDER
         ws.column_dimensions["A"].width = 20
         ws.column_dimensions["B"].width = 16
+        if cost_base:
+            ws.column_dimensions["C"].width = 14
 
     # ── 行写入 ────────────────────────────────────────────
 
