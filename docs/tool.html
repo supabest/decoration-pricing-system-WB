@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>装修成本智能分析系统 V1.3.0</title>
+<title>装修成本智能分析系统 V1.4.0</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMWQ2ZmE1IiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTMgOWw5LTcgOSA3djExYTIgMiAwIDAgMS0yIDJINWEyIDIgMCAwIDEtMi0yeiIvPjxwb2x5bGluZSBwb2ludHM9IjkgMjIgOSAxMiAxNSAxMiAxNSAyMiIvPjwvc3ZnPgo=" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
@@ -254,7 +254,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 <div class="hdr" style="display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 14px;background:var(--bg2);border-bottom:2px solid var(--border);position:sticky;top:0;z-index:100;box-shadow:var(--shadow);overflow-x:auto;white-space:nowrap">
   <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;margin-right:10px">
     <span style="font-size:18px;display:inline-flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#1d6fa5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span>
-    <span style="font-size:14px;font-weight:700;color:var(--tx)">装修成本智能分析系统 <span id="appVersion">V1.3.0</span></span>
+    <span style="font-size:14px;font-weight:700;color:var(--tx)">装修成本智能分析系统 <span id="appVersion">V1.4.0</span></span>
   </div>
   <div style="display:flex;align-items:center;gap:5px;flex-wrap:nowrap">
     <button class="btn btn-sm" onclick="importBoq()">📂 导入清单</button>
@@ -789,20 +789,28 @@ function updateInternalCostPanel() {
   const gap = targetCost - direct;                       // +节余 / −超支
   const profitRate = globalContractAmount > 0 ? (globalContractAmount - direct) / globalContractAmount * 100 : 0;
 
+  // 主材价录入完整度：主材价常未录全，直接成本偏低会让利润率虚高，必须明示避免误导
+  let subTotal = 0, subNoMat = 0;
+  getAllRows().forEach(r => (r.subs || []).forEach(s => { subTotal++; if (!(parseFloat(s.matPrice) || 0)) subNoMat++; }));
+  const matIncomplete = subTotal > 0 && subNoMat > 0;
+
   let html = '<span style="font-weight:700;color:var(--tx2)">📊 成本测算</span>'
     + '<span>对甲合同金额 <b style="font-family:var(--mono)">' + fmt(globalContractAmount) + '</b> 元</span>'
     + '<span>目标利润率 <b style="font-family:var(--mono)">' + globalTargetProfitRate + '%</b>（对内预设）</span>'
     + '<span>目标成本线 <b style="font-family:var(--mono)">' + fmt(targetCost) + '</b> 元</span>';
   if (hasData) {
-    html += '<span>清单直接成本 <b style="font-family:var(--mono)">' + fmt(direct) + '</b> 元</span>'
+    html += '<span>已录直接成本 <b style="font-family:var(--mono)">' + fmt(direct) + '</b> 元（仅已录入套价的费用项）</span>'
       + (gap >= 0
         ? '<span style="color:var(--grn);font-weight:700">✓ 较目标线节余 ' + fmt(gap) + ' 元</span>'
         : '<span style="color:var(--red);font-weight:700">⚠️ 较目标线超支 ' + fmt(-gap) + ' 元</span>')
-      + '<span>清单利润率 <b style="font-family:var(--mono);color:' + (profitRate >= globalTargetProfitRate ? 'var(--grn)' : 'var(--red)') + '">' + profitRate.toFixed(1) + '%</b>（目标 ' + globalTargetProfitRate + '%）</span>';
+      + '<span>已录费用测算利润率 <b style="font-family:var(--mono);color:' + (profitRate >= globalTargetProfitRate ? 'var(--grn)' : 'var(--red)') + '">' + profitRate.toFixed(1) + '%</b>（目标 ' + globalTargetProfitRate + '%）</span>';
+    if (matIncomplete) {
+      html += '<span style="color:var(--yel);font-weight:600">⚠️ ' + subNoMat + '/' + subTotal + ' 个子目未录主材价：成本偏低，此利润率≠项目实际利润率</span>';
+    }
   } else {
     html += '<span style="color:var(--tx3)">清单尚未套价，暂无成本测算</span>';
   }
-  html += '<span style="color:var(--tx3);margin-left:auto;font-size:10px">对内数据·不进入对外导出 · 合同金额不含暂列金额 · 清单直接成本仅含已录入套价的费用项，目标利润率请按项目全部直接成本预设</span>';
+  html += '<span style="color:var(--tx3);margin-left:auto;font-size:10px">对内数据·不进入对外导出 · 合同金额不含暂列金额 · 成本仅含已录入套价的费用项；主材价未录全时利润率偏高，仅供过程参考，不代表项目实际利润</span>';
   panel.innerHTML = html;
 }
 let hourlyRate = 350;  // 时工单价（元/工日），可调整
