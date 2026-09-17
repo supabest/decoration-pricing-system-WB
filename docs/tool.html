@@ -333,8 +333,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <button class="btn btn-sm" onclick="openHistory()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">📂 历史方案</button>
       <button class="btn btn-sm" id="pricePanelBtn" onclick="togglePricePanel()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="辅材材料价格">💰 辅材价格</button>
       <button class="btn btn-sm" onclick="openMainMatPanel()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="查询系统主材价格">📦 主材价格</button>
-      <button class="btn btn-sm" onclick="exportSupplierInquiry()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="导出给供应商填价的主材报价单（不含人工/管理费/利润等内部价格）">📤 询价单</button>
-      <button class="btn btn-sm" onclick="importSupplierQuote()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="上传供应商填好的报价单，自动匹配主材价">📥 导入报价</button>
+      <button class="btn btn-sm" onclick="importSupplierQuote()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="上传供应商填好的报价单，系统自动识别材料品类与填价列，确认后回填主材价">📥 导入报价</button>
     </div>
     <!-- 💰 辅材价格面板（浮动可拖拽） -->
     <div id="pricePanel" class="price-panel hidden" style="position:fixed;top:80px;right:20px;width:420px;max-height:70vh;background:var(--bg2);border:2px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.2);z-index:999;overflow:hidden;font-size:12px">
@@ -607,16 +606,37 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 
 <input type="file" id="quoteFileIn" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleQuoteFile(event)">
 
-<!-- 📥 供应商报价回填预览弹窗 -->
+<!-- 📥 供应商报价导入：识别确认 + 匹配预览弹窗 -->
 <div class="modal-ov hidden" id="quoteMod">
-  <div class="modal" style="width:860px;max-height:86vh;display:flex;flex-direction:column">
+  <div class="modal" style="width:900px;max-height:88vh;display:flex;flex-direction:column">
     <div class="modal-hdr">
       <span class="modal-ttl">📥 导入供应商主材报价</span>
       <button class="modal-x" onclick="closeQuoteModal()">×</button>
     </div>
+
+    <!-- ① 识别确认区（始终可见，未确认前不写入任何数据） -->
     <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
-      <div id="quoteFileInfo" style="font-size:11px;color:var(--tx3);margin-bottom:8px"></div>
-      <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:12px">
+      <div id="quoteFileInfo" style="font-size:11px;color:var(--tx3);margin-bottom:9px"></div>
+      <div style="font-size:12px;font-weight:600;color:var(--tx1);margin-bottom:9px">请确认系统识别结果</div>
+
+      <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:9px">
+        <span style="font-size:12px;color:var(--tx2);width:158px;flex:none;padding-top:4px">① 这是哪类材料的报价？</span>
+        <div style="flex:1;min-width:0">
+          <select id="qCat" onchange="quoteReMatch()" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:5px;background:var(--bg2);color:var(--tx1)"></select>
+          <div id="qCatWhy" style="font-size:10px;color:var(--tx3);margin-top:3px;line-height:1.6"></div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <span style="font-size:12px;color:var(--tx2);width:158px;flex:none;padding-top:4px">② 供应商把价格填在哪一列？</span>
+        <div style="flex:1;min-width:0">
+          <select id="qPriceCol" onchange="quoteReMatch()" style="width:100%;padding:4px 6px;font-size:12px;border:1px solid var(--border);border-radius:5px;background:var(--bg2);color:var(--tx1)"></select>
+          <div id="qColWhy" style="font-size:10px;color:var(--tx3);margin-top:3px;line-height:1.6"></div>
+          <div id="quoteColRisk" class="hidden" style="margin-top:5px;padding:5px 8px;background:var(--yel-d);border:1px solid var(--yel);border-radius:4px;font-size:11px;color:var(--yel);line-height:1.6"></div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;font-size:12px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--border)">
         <span style="color:var(--tx2)">价格口径：
           <label style="margin-left:4px"><input type="radio" name="qTax" value="ex" checked onchange="quoteTaxHint()"> 不含税</label>
           <label style="margin-left:6px"><input type="radio" name="qTax" value="in" onchange="quoteTaxHint()"> 含税</label>
@@ -628,17 +648,23 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       </div>
       <div id="quoteTaxWarn" class="hidden" style="margin-top:8px;padding:6px 8px;background:var(--yel-d);border:1px solid var(--yel);border-radius:4px;font-size:11px;color:var(--yel)"></div>
     </div>
-    <div id="quoteStats" style="padding:8px 16px;font-size:12px;border-bottom:1px solid var(--border)"></div>
-    <div style="flex:1;overflow-y:auto;padding:0 16px">
+
+    <div id="quoteConfirmHint" style="padding:16px;font-size:12px;color:var(--tx3);text-align:center;line-height:1.8">
+      确认上面两项无误后，点右下角「确认识别，开始匹配」。<br>
+      系统只在你点「确认导入」后才写入清单，中途可以随时改。
+    </div>
+    <div id="quoteStats" class="hidden" style="padding:8px 16px;font-size:12px;border-bottom:1px solid var(--border)"></div>
+    <div id="quoteTblWrap" class="hidden" style="flex:1;overflow-y:auto;padding:0 16px">
       <table id="quoteTbl" style="width:100%;border-collapse:collapse;font-size:11px"></table>
     </div>
     <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:10px;align-items:center">
-      <button class="btn btn-sm" onclick="quoteToggleAll(true)" style="padding:4px 10px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">全选</button>
-      <button class="btn btn-sm" onclick="quoteToggleAll(false)" style="padding:4px 10px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">全不选</button>
+      <button class="btn btn-sm" id="quoteSelAll" onclick="quoteToggleAll(true)" style="display:none;padding:4px 10px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">全选</button>
+      <button class="btn btn-sm" id="quoteSelNone" onclick="quoteToggleAll(false)" style="display:none;padding:4px 10px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">全不选</button>
       <span id="quoteApplyInfo" style="font-size:11px;color:var(--tx3)"></span>
       <span style="flex:1"></span>
       <button class="btn btn-sm" onclick="closeQuoteModal()" style="padding:4px 14px;font-size:12px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">取消</button>
-      <button class="btn btn-sm" id="quoteApplyBtn" onclick="applyQuoteImport()" style="padding:4px 16px;font-size:12px;border:none;border-radius:6px;cursor:pointer;background:var(--acc);color:#fff;font-weight:600">确认导入</button>
+      <button class="btn btn-sm" id="quoteMatchBtn" onclick="quoteConfirmDetect()" style="padding:4px 16px;font-size:12px;border:none;border-radius:6px;cursor:pointer;background:var(--acc);color:#fff;font-weight:600">确认识别，开始匹配</button>
+      <button class="btn btn-sm" id="quoteApplyBtn" onclick="applyQuoteImport()" style="display:none;padding:4px 16px;font-size:12px;border:none;border-radius:6px;cursor:pointer;background:var(--acc);color:#fff;font-weight:600">确认导入</button>
     </div>
   </div>
 </div>
@@ -2483,47 +2509,41 @@ async function doAuxExport(ev) {
   }
 }
 
-// ═══════════ 📤 供应商询价单 / 📥 报价回填（工作流 A：套价前询价）═══════════
-// 流程：导出纯清单行（脱敏）→ 供应商只填「主材单价」→ 回传导入 → 写入行级暂存价
-//      → AI 套价时由 syncRowMat() 分配到子目（唯一子目自动，多子目标记待分配）
-const QUOTE_HEAD = ['序号','行号','项目名称','项目特征','单位','工程量','主材单价','备注'];
+// ═══════════ 📥 供应商主材报价导入（识别 → 确认 → 匹配 → 回填）═══════════
+// 供应商拿到的是用户最初导入系统的同一份清单（系统不另出询价单），各家文件表头/列序
+// 各不相同，所以不依赖系统生成的行号，改为三步：
+//   ① 认品类 —— 从文件名 / 工作表名 / 报价行文本推断这份报价属于哪类材料
+//   ② 认列   —— 从表头关键词 + 「与该列数值和当前清单的比对结果」推断供应商填价的列
+//   ③ 让用户确认 ①② 后再匹配；改任一项立即重算。全程只读，点「确认导入」才写 r.matPrice
+// 写入的是行级暂存价，随后由 syncRowMat() 分配到子目（唯一子目自动，多子目标记待分配）
 
-function exportSupplierInquiry() {
-  const all = getAllRows();
-  if (!all.length) { toast('请先导入清单'); return; }
-  const projName = document.getElementById('projName').value || '套价表';
-  const wb = XLSX.utils.book_new();
-  let totalOut = 0;
-
-  groups.forEach((g, gi) => {
-    const aoa = [
-      [projName + ' — 供应商主材报价单'],
-      ['填写说明：请仅在「主材单价」列填写贵司供应材料的不含税单价（元）；不涉及的材料请留空或填「不供」。请勿改动其它列及行号，以便系统自动匹配。'],
-      [],
-      QUOTE_HEAD,
-    ];
-    let seq = 0, n = 0;
-    g.sections.forEach(s => {
-      if (!s.rows.length) return;
-      aoa.push([s.name, '', '', '', '', '', '', '']);   // 分部标题行（无行号无价格，导入时自动跳过）
-      s.rows.forEach(r => {
-        seq++;
-        aoa.push([seq, 'R-' + String(r.id).padStart(4, '0'), r.name || '', r.spec || '',
-                  r.unit || '', parseFloat(r.qty) || 0, '', r.remark || '']);
-        n++; totalOut++;
-      });
-    });
-    if (!n) return;
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{wch:6},{wch:11},{wch:30},{wch:44},{wch:8},{wch:10},{wch:12},{wch:18}];
-    ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:1,c:0},e:{r:1,c:7}}];
-    XLSX.utils.book_append_sheet(wb, ws, String(g.sheetName || ('清单' + (gi+1))).substring(0,31));
-  });
-
-  if (!totalOut) { toast('没有可导出的清单行'); return; }
-  XLSX.writeFile(wb, projName + '_供应商报价单_' + new Date().toISOString().slice(0,10) + '.xlsx');
-  toast('✓ 已导出 ' + totalOut + ' 条询价行（不含人工/管理费/利润等内部价格）');
-}
+// 品类关键词表：键必须与 main_material_categories.category_name 一致
+// 打分按关键词长度加权 —— 「门槛石」(3) 胜过「门」(1)，长词更具体，天然避免大类误判
+const MAT_CAT_KEYWORDS = {
+  '瓷砖':              ['瓷砖','地砖','墙砖','抛釉砖','抛光砖','仿古砖','岩板','马赛克','文化砖'],
+  '石材':              ['石材','大理石','花岗岩','人造石','石英石','门槛石','窗台石','云石','奢石'],
+  '木地板':            ['木地板','实木地板','复合地板','强化地板','实木复合地板'],
+  '玻璃':              ['玻璃','镜子','镜面','夹胶','夹丝','超白玻','磨砂玻','银镜','灰镜'],
+  '不锈钢':            ['不锈钢','拉丝不锈','镜面不锈'],
+  '铝板':              ['铝板','铝单板','蜂窝铝','铝方通','铝格栅','铝扣板','收口条','铝型材'],
+  '地毯':              ['地毯','方块毯','满铺毯','拼块毯'],
+  '织物/窗帘':         ['窗帘','布艺','织物','窗纱','卷帘','柔纱帘','百叶帘','电动帘'],
+  '油漆涂料':          ['涂料','油漆','乳胶漆','面漆','底漆','腻子','艺术漆','肌理漆','真石漆','清漆'],
+  '金属门窗':          ['铝合金门','铝合金窗','推拉门','电动门','防火门','玻璃门','移门','开门机'],
+  '卫浴五金':          ['洁具','马桶','坐便器','洗手盆','台盆','龙头','花洒','五金','地漏','浴室柜','小便器'],
+  '智能设备':          ['智能','面板','开关','插座','传感器','调光','网关'],
+  '暖通设备':          ['风口','空调','风管','冷凝水','风机','盘管','排气扇','百叶风口','新风'],
+  '照明设备':          ['灯具','灯带','筒灯','射灯','灯槽','轨道灯','吊灯','壁灯','LED','灯膜'],
+  '墙纸皮革':          ['墙纸','壁纸','皮革','硬包','软包','壁布','扪皮'],
+  '厨房设备':          ['厨房','橱柜','灶','水槽','烟机','冰箱柜','消毒柜'],
+  '石膏制品':          ['石膏','GRG','GRC','石膏线'],
+  '木饰面/木门/柜体':  ['木饰面','木门','衣柜','鞋柜','电视柜','书柜','柜体','中岛','地台','护墙板','木作','家政柜'],
+  '塑胶地板':          ['塑胶地板','PVC地板','橡胶地板','LVT','石塑地板'],
+  '亚克力':            ['亚克力','有机玻璃'],
+  '成品隔断':          ['隔断','抗倍特','小便挡板','成品隔断'],
+  '架空地板':          ['架空地板','网络地板','防静电地板','OA地板'],
+  '户外木地板':        ['户外木地板','户外木','防腐木','塑木','木塑','炭化木'],
+};
 
 // 报价单元格语义：数字=有效报价；0=甲供/不计；空=未报价；其它文本=明确不供（不计入漏报）
 function parseQuotePrice(v) {
@@ -2534,29 +2554,169 @@ function parseQuotePrice(v) {
   return {kind:'skip'};
 }
 function normKey(s) { return String(s||'').replace(/\s/g,'').replace(/[（）()【】\[\]]/g,'').toLowerCase(); }
+function countHit(hay, needle) { return (!hay || !needle) ? 0 : hay.split(needle).length - 1; }
+function colLetter(i) { let s = ''; i = i + 1; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
 
-// 匹配优先级：① 行号 R-0001（100% 可靠）② 名称+单位+工程量+特征 四元组全等 ③ 多候选→交用户确认
-function matchQuoteRow(it, rows) {
-  const m = String(it.code || '').match(/R-?0*(\d+)/i);
-  if (m) {
-    const rid = parseInt(m[1], 10);
-    const r = rows.find(x => x.id === rid);
-    if (r) return {row:r, how:'code'};
-  }
-  const cands = rows.filter(r =>
-    normKey(r.name) === normKey(it.name) && normKey(it.name) !== '' &&
-    normKey(r.unit) === normKey(it.unit) &&
-    Math.abs((parseFloat(r.qty) || 0) - (parseFloat(it.qty) || 0)) < 1e-6);
-  if (cands.length === 1) return {row:cands[0], how:'exact'};
-  if (cands.length > 1) return {row:null, how:'ambiguous', cands};
-  return {row:null, how:'none'};
+// ── ① 品类识别：文件名 / 工作表名权重 ×4（人给文件命名时最直白），报价行文本权重 ×1 ──
+function detectQuoteCategory(fileName, sheetNames, blob) {
+  const head = normKey(fileName + ' ' + (sheetNames || []).join(' '));
+  const body = normKey(blob);
+  let best = '', bestScore = 0, bestWhy = '';
+  Object.keys(MAT_CAT_KEYWORDS).forEach(cat => {
+    let hs = 0, bs = 0, hw = '', bw = '';
+    MAT_CAT_KEYWORDS[cat].forEach(k => {
+      const nk = normKey(k);
+      if (!nk) return;
+      const hc = countHit(head, nk), bc = countHit(body, nk);
+      if (hc && !hw) hw = k;
+      if (bc && !bw) bw = k;
+      hs += nk.length * Math.min(hc, 3);
+      bs += nk.length * Math.min(bc, 30);
+    });
+    const score = hs * 4 + bs;
+    if (score > bestScore) {
+      bestScore = score; best = cat;
+      bestWhy = hw ? '文件名或工作表名含「' + hw + '」'
+                   : (bw ? '报价行内容命中「' + bw + '」等关键词' : '');
+    }
+  });
+  if (bestScore < 6) return {cat:'', score:0, why:'未能从文件名或内容里认出材料品类，请手动选择（或选「不做品类校验」）'};
+  return {cat: best, score: bestScore, why: bestWhy};
 }
 
+// ── ② 填价列识别 ──
+// 表头关键词：越像「主材单价」分越高；越像内部价目（人工/管理费/利润）或清单固有列（工程量/单位/名称）分越低
+const QH_POS = [
+  [/主材单价|材料单价|主材价|材料价|主材报价|材料报价|主材费|材料费/, 120],
+  [/单价|报价|价格|金额/, 45],
+  [/主材|材料/, 25],
+  [/元/, 10],
+];
+const QH_NEG = [
+  [/人工|工费|工时|工资/, -120],
+  [/管理费|利润|税金|税率|费率|取费/, -120],
+  [/辅材/, -60],
+  [/合价|总价|小计|合计/, -30],
+  [/工程量|数量|计量单位|单位|序号|行号|编号|项目名称|清单名称|名称|项目特征|特征|规格|型号|备注|说明|品牌/, -200],
+];
+function qHeaderScore(h) {
+  if (!h) return 0;
+  let s = 0;
+  QH_POS.forEach(([re, v]) => { if (re.test(h)) s = Math.max(s, v); });
+  QH_NEG.forEach(([re, v]) => { if (re.test(h)) s += v; });
+  return s;
+}
+
+// 解析单个工作表：定表头行 → 给每列做画像 → 推断各语义列 + 排出填价列候选
+// nameSet/unitSet/qtySet 由调用方按当前清单预先算好（避免逐格 O(n) 扫描）
+function analyzeQuoteSheet(data, nameSet, unitSet, qtySet, sheetName) {
+  const maxScan = Math.min(data.length, 15);
+  let hdr = -1, hdrBest = 0;
+  for (let i = 0; i < maxScan; i++) {
+    const cells = (data[i] || []).map(h => String(h || '').replace(/[\s\n\r]/g, ''));
+    const n = cells.filter(h => /项目名称|清单名称|^名称$|项目特征|特征描述|计量单位|^单位$|^工程量$|^数量$|^序号$|^行号$/.test(h)).length;
+    if (n > hdrBest) { hdrBest = n; hdr = i; }
+  }
+  if (hdrBest < 1) hdr = -1;                       // 没有像样的表头 → 整表当数据区
+  const hdrCells = hdr >= 0 ? (data[hdr] || []).map(h => String(h || '').replace(/[\s\n\r]/g, '')) : [];
+  const body = data.slice(hdr >= 0 ? hdr + 1 : 0);
+  const width = data.reduce((w, r) => Math.max(w, (r || []).length), 0);
+
+  const prof = [];
+  for (let c = 0; c < width; c++) {
+    const p = {col:c, header:String(hdrCells[c] || '').trim(), nFill:0, nNum:0, nName:0, nUnit:0, nQty:0, sample:[]};
+    body.forEach(row => {
+      const s = String((row || [])[c] == null ? '' : (row || [])[c]).trim();
+      if (!s) return;
+      p.nFill++;
+      const numS = s.replace(/[,¥￥元\s]/g, '');
+      const isNum = /^-?\d+(\.\d+)?$/.test(numS);
+      if (isNum) { p.nNum++; if (p.sample.length < 3) p.sample.push(parseFloat(numS)); }
+      const nk = normKey(s);
+      if (!nk) return;
+      if (nameSet.has(nk)) p.nName++;
+      if (unitSet.has(nk)) p.nUnit++;
+      if (isNum && qtySet.has(parseFloat(numS).toFixed(4))) p.nQty++;
+    });
+    p.hScore = qHeaderScore(p.header);
+    p.score  = p.hScore + (p.nFill ? Math.round(50 * p.nNum / p.nFill) : 0);
+    prof.push(p);
+  }
+
+  // 语义列：优先认表头，认不出再用「列值与本清单数据比对」的结果兜底
+  const find = re => hdrCells.findIndex(h => re.test(h));
+  const byMax = f => { let b = -1, bv = 0; prof.forEach(p => { if (p[f] > bv) { bv = p[f]; b = p.col; } }); return bv > 0 ? b : -1; };
+  const cols = {
+    name: find(/项目名称|清单名称|^名称$|^项目$/),
+    spec: find(/项目特征|特征描述|^特征$|规格|型号/),
+    unit: find(/计量单位|^单位$/),
+    qty:  find(/工程量|^数量$/),
+  };
+  if (cols.name < 0) cols.name = byMax('nName');
+  if (cols.unit < 0) cols.unit = byMax('nUnit');
+  if (cols.qty  < 0) cols.qty  = byMax('nQty');
+
+  // 填价列候选：排除清单固有列（名称/单位/工程量——它们的值与原清单一致，不可能是新填的价）
+  const cands = prof.filter(p => p.nFill > 0 && p.score > 0 && p.col !== cols.name &&
+    !(p.nName / p.nFill > 0.5) && !(p.nUnit / p.nFill > 0.5) &&
+    !(p.nQty / p.nFill > 0.5 && p.nQty >= 2));
+  cands.sort((a, b) => b.score - a.score);
+
+  return {sheet:sheetName, data, hdr, prof, cols, body, cands};
+}
+
+function quoteColLabel(p) {
+  const tags = [];
+  if (p.nNum) tags.push(p.nNum + ' 格是数字');
+  if (p.nFill && p.nName / p.nFill > 0.5) tags.push('项目名称列');
+  if (p.nFill && p.nUnit / p.nFill > 0.5) tags.push('单位列');
+  if (p.nFill && p.nQty / p.nFill > 0.5 && p.nQty >= 2) tags.push('数值与原清单工程量一致');
+  if (p.hScore <= -150) tags.push('清单固有列/内部价');
+  return colLetter(p.col) + ' 列' + (p.header ? '「' + p.header + '」' : '（无表头）') + (tags.length ? ' — ' + tags.join('、') : '');
+}
+
+// ── ③ 匹配：多候选时用品类收敛，仍不唯一就交用户，绝不自作主张写入 ──
+function buildRowIndex(rows) {
+  const m = {};
+  rows.forEach(r => { const k = normKey(r.name); if (k) (m[k] = m[k] || []).push(r); });
+  return m;
+}
+// 清单行的文本命中该品类关键词的强度；返回 -1 表示品类未知、不做校验
+function rowCatScore(r, cat) {
+  const kws = MAT_CAT_KEYWORDS[cat];
+  if (!kws) return -1;
+  const t = normKey((r.name || '') + ' ' + (r.spec || '') + ' ' + (r.matName || ''));
+  let s = 0;
+  kws.forEach(k => { const nk = normKey(k); if (nk && t.indexOf(nk) >= 0) s += nk.length; });
+  return s;
+}
+// 优先级：① 名称+单位+工程量 全等 ② 名称+单位 ③ 仅名称（默认不勾选，需人工确认单位口径）
+function matchQuoteRow(it, rows, cat, idx) {
+  const nn = normKey(it.name);
+  if (!nn) return {row:null, how:'none'};
+  const byName = (idx && idx[nn]) || rows.filter(r => normKey(r.name) === nn);
+  if (!byName.length) return {row:null, how:'none'};
+  const uq = normKey(it.unit), qv = parseFloat(it.qty) || 0;
+  let cands = byName.filter(r => normKey(r.unit) === uq && Math.abs((parseFloat(r.qty) || 0) - qv) < 1e-6);
+  let how = 'exact';
+  if (!cands.length) { cands = byName.filter(r => normKey(r.unit) === uq); how = 'nameunit'; }
+  if (!cands.length) { cands = byName.slice(); how = 'nameonly'; }
+  if (cands.length > 1 && cat) {
+    const hit = cands.filter(r => rowCatScore(r, cat) > 0);
+    if (hit.length === 1) return {row:hit[0], how:'cat'};
+    if (hit.length > 1) cands = hit;
+  }
+  if (cands.length === 1) return {row:cands[0], how};
+  return {row:null, how:'ambiguous', cands};
+}
+
+let _quoteSheets = [];      // 各工作表解析结果（改列/改品类时重算匹配用）
+let _quoteProf = [];        // 主工作表列画像（下拉标签用）
 let _quoteItems = [];
-let _quoteFileName = '';
+let _quoteMatched = false;  // 用户是否已点「确认识别」
 
 function importSupplierQuote() {
-  if (!getAllRows().length) { toast('请先导入清单'); return; }
+  if (!getAllRows().length) { toast('请先导入清单，再导入供应商报价'); return; }
   document.getElementById('quoteFileIn').click();
 }
 
@@ -2568,109 +2728,230 @@ async function handleQuoteFile(e) {
   catch(err) { toast('文件解析失败：' + err.message); return; }
 
   const rows = getAllRows();
-  const items = [];
-  wb.SheetNames.forEach(sn => {
-    const data = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header:1, defval:''});
-    let hdr = -1, cm = {};
-    for (let i = 0; i < Math.min(data.length, 15); i++) {
-      const cells = (data[i] || []).map(h => String(h||'').replace(/[\s\n\r]/g,''));
-      const pi = cells.findIndex(h => /主材单价|材料单价|主材报价|材料报价/.test(h));
-      if (pi < 0) continue;
-      hdr = i; cm.price = pi;
-      cells.forEach((h, ci) => {
-        if (/^行号$|^行标识$/.test(h) && cm.code === undefined) cm.code = ci;
-        if (/项目名称|^名称$/.test(h) && cm.name === undefined) cm.name = ci;
-        if (/项目特征|特征描述/.test(h) && cm.spec === undefined) cm.spec = ci;
-        if (/计量单位|^单位$/.test(h) && cm.unit === undefined) cm.unit = ci;
-        if (/^工程量$|^数量$/.test(h) && cm.qty === undefined) cm.qty = ci;
-      });
-      break;
-    }
-    if (hdr < 0) return;
+  const nameSet = new Set(rows.map(r => normKey(r.name)).filter(Boolean));
+  const unitSet = new Set(rows.map(r => normKey(r.unit)).filter(Boolean));
+  const qtySet  = new Set(rows.map(r => (parseFloat(r.qty) || 0).toFixed(4)));
 
-    for (let i = hdr + 1; i < data.length; i++) {
-      const row = data[i] || [];
-      const code = cm.code !== undefined ? String(row[cm.code] || '').trim() : '';
-      const pv = parseQuotePrice(row[cm.price]);
-      if (!code && pv.kind === 'none') continue;   // 分部标题行 / 空行
-      const it = {
-        sheet: sn, code,
-        name: cm.name !== undefined ? String(row[cm.name] || '').trim() : '',
-        spec: cm.spec !== undefined ? String(row[cm.spec] || '').trim() : '',
-        unit: cm.unit !== undefined ? String(row[cm.unit] || '').trim() : '',
-        qty:  cm.qty  !== undefined ? row[cm.qty] : '',
-        price: pv.kind === 'num' ? pv.value : null,
-        kind: pv.kind,
-      };
-      it.match = (pv.kind === 'num') ? matchQuoteRow(it, rows) : {row:null, how:'none'};
-      it.checked = pv.kind === 'num' && !!it.match.row;
-      items.push(it);
-    }
-  });
+  _quoteSheets = wb.SheetNames.map(sn => analyzeQuoteSheet(
+    XLSX.utils.sheet_to_json(wb.Sheets[sn], {header:1, defval:''}), nameSet, unitSet, qtySet, sn));
 
-  if (!items.length) { toast('未识别到「主材单价」列，请使用「📤 询价单」导出的表格填写'); return; }
-  _quoteItems = items;
-  _quoteFileName = file.name;
-  document.getElementById('quoteFileInfo').textContent = '文件：' + file.name;
-  document.getElementById('quoteMod').classList.remove('hidden');
+  const withCol = _quoteSheets.filter(s => s.cands.length);
+  const pool = withCol.length ? withCol : _quoteSheets.slice();
+  const primary = pool.slice().sort((a, b) => b.body.length - a.body.length)[0];
+  _quoteProf = primary ? primary.prof : [];
+  if (!_quoteProf.length) { toast('文件里没读到数据，请检查文件内容'); return; }
+
+  // 品类识别：文件名/工作表名权重高，报价行文本兜底
+  const blob = _quoteSheets.map(s => s.body.map(r => (r || []).join(' ')).join(' ')).join(' ');
+  const det = detectQuoteCategory(file.name, wb.SheetNames, blob);
+  fillQuoteCatSelect(det, rows);
+  fillQuoteColSelect(primary.cands.length ? primary.cands[0].col : -1);
+
+  document.getElementById('quoteFileInfo').textContent =
+    '文件：' + file.name + '　·　' + wb.SheetNames.length + ' 个工作表，其中 ' +
+    withCol.length + ' 个认出填价列，共 ' + primary.body.length + ' 行数据';
+
+  resetQuoteModalStage();
+  const modal = document.getElementById('quoteMod');
+  modal.classList.remove('hidden');
+  modal.style.display = 'flex';
+}
+
+function fillQuoteCatSelect(det, rows) {
+  // 下拉用系统主材库的品类名（与成本口径一致），库里没有的用关键词表补齐
+  const cats = [...new Set(mainMatCache.map(m => m.category_name).filter(Boolean))];
+  Object.keys(MAT_CAT_KEYWORDS).forEach(c => { if (cats.indexOf(c) < 0) cats.push(c); });
+  cats.sort();
+  const sel = document.getElementById('qCat');
+  sel.innerHTML = '<option value="">— 不确定，不做品类校验 —</option>' +
+    cats.map(c => '<option value="' + esc(c) + '"' + (c === det.cat ? ' selected' : '') + '>' + esc(c) + '</option>').join('');
+  document.getElementById('qCatWhy').innerHTML = det.cat
+    ? '识别为「<b>' + esc(det.cat) + '</b>」 —— ' + esc(det.why) +
+      '<br>选了品类后，只有内容属于该类材料的清单行会被自动勾选；对不上的行标黄提示，由你人工决定。'
+    : '⚠️ ' + esc(det.why);
+}
+
+function fillQuoteColSelect(bestCol) {
+  const sel = document.getElementById('qPriceCol');
+  sel.innerHTML = _quoteProf.slice().sort((a, b) => b.score - a.score)
+    .map(p => '<option value="' + p.col + '"' + (p.col === bestCol ? ' selected' : '') + '>' +
+      esc(quoteColLabel(p)) + '</option>').join('');
+  updateQuoteColWhy();
+}
+
+function updateQuoteColWhy() {
+  const el = document.getElementById('qColWhy');
+  const risk = document.getElementById('quoteColRisk');
+  const col = parseInt(document.getElementById('qPriceCol').value, 10);
+  const p = _quoteProf.find(x => x.col === col);
+  if (risk) { risk.classList.add('hidden'); risk.textContent = ''; }
+  if (!p) { el.textContent = ''; return; }
+
+  const parts = ['该列 ' + p.nNum + ' 格填了数字' + (p.nFill ? '（共 ' + p.nFill + ' 格有内容）' : '')];
+  if (p.sample.length) parts.push('示例 ' + p.sample.map(v => fmt(v)).join(' / '));
+  if (p.hScore >= 60) parts.push('表头「' + p.header + '」就是主材价列');
+  else if (p.hScore > 0) parts.push('表头「' + p.header + '」含价格字样');
+  else if (!p.header) parts.push('该列没有表头，靠数字分布判断（供应商可能在末尾新加了一列）');
+  if (p.nFill && p.nQty / p.nFill > 0.5 && p.nQty >= 2) parts.push('⚠️ 数值与原清单工程量一致，多半不是填价列');
+  el.textContent = parts.join('　·　');
+
+  // 风险提示：这一列看着像劳务价/综合价，不是纯主材价 —— 写进去会把人工费当主材费，成本翻倍
+  if (!risk) return;
+  const risks = [];
+  if (/综合|全费用|包干/.test(p.header)) risks.push('表头含「' + p.header + '」，多半是含人工+辅材+管理费的综合价');
+  else if (/人工|工费|工时/.test(p.header)) risks.push('表头含「' + p.header + '」，是劳务价不是主材价');
+  if (/辅材/.test(p.header)) risks.push('表头含「辅材」');
+  if (p.nFill && p.nQty / p.nFill > 0.5 && p.nQty >= 2) risks.push('数值与原清单工程量一一相同');
+  if (risks.length) {
+    risk.innerHTML = '⚠️ 这一列可能不是主材价：' + risks.join('；') +
+      '。系统会照你选的列原样写入主材单价 —— 若选错会把人工/辅材费重复计入成本，请务必核对。';
+    risk.classList.remove('hidden');
+  }
+}
+
+function resetQuoteModalStage() {
+  _quoteMatched = false; _quoteItems = [];
+  document.getElementById('quoteStats').classList.add('hidden');
+  document.getElementById('quoteTblWrap').classList.add('hidden');
+  document.getElementById('quoteConfirmHint').classList.remove('hidden');
+  document.getElementById('quoteMatchBtn').style.display = '';
+  document.getElementById('quoteApplyBtn').style.display = 'none';
+  document.getElementById('quoteSelAll').style.display = 'none';
+  document.getElementById('quoteSelNone').style.display = 'none';
+  document.getElementById('quoteApplyInfo').textContent = '';
+  quoteTaxHint();
+}
+
+// 用户点「确认识别，开始匹配」后才真正跑匹配并展开预览
+function quoteConfirmDetect() {
+  _quoteMatched = true;
+  document.getElementById('quoteConfirmHint').classList.add('hidden');
+  document.getElementById('quoteStats').classList.remove('hidden');
+  document.getElementById('quoteTblWrap').classList.remove('hidden');
+  document.getElementById('quoteMatchBtn').style.display = 'none';
+  document.getElementById('quoteApplyBtn').style.display = '';
+  document.getElementById('quoteSelAll').style.display = '';
+  document.getElementById('quoteSelNone').style.display = '';
+  quoteReMatch();
+}
+
+// 改品类/改列后重算 —— 只读，不动清单
+function quoteReMatch() {
+  updateQuoteColWhy();
+  if (!_quoteMatched) return;
+  const cat = document.getElementById('qCat').value || '';
+  const col = parseInt(document.getElementById('qPriceCol').value, 10);
+  _quoteItems = (isNaN(col) || col < 0) ? [] : buildQuoteItems(cat, col);
   renderQuotePreview();
 }
 
+function buildQuoteItems(cat, priceCol) {
+  const rows = getAllRows();
+  const idx = buildRowIndex(rows);
+  const items = [];
+  _quoteSheets.forEach(s => {
+    const cm = s.cols;
+    s.body.forEach(row => {
+      const rr = row || [];
+      const pv = parseQuotePrice(rr[priceCol]);
+      if (pv.kind !== 'num' && pv.kind !== 'skip') return;   // 空行 / 未填价的行
+      const name = cm.name >= 0 ? String(rr[cm.name] || '').trim() : '';
+      if (!name) return;                                     // 分部标题行
+      const it = {
+        sheet: s.sheet, name,
+        spec: cm.spec >= 0 ? String(rr[cm.spec] || '').trim() : '',
+        unit: cm.unit >= 0 ? String(rr[cm.unit] || '').trim() : '',
+        qty:  cm.qty  >= 0 ? rr[cm.qty] : '',
+        price: pv.kind === 'num' ? pv.value : null,
+        kind: pv.kind, catWarn: false,
+      };
+      if (pv.kind === 'num') {
+        it.match = matchQuoteRow(it, rows, cat, idx);
+        if (it.match.row && cat && rowCatScore(it.match.row, cat) === 0) it.catWarn = true;
+        // 默认只勾「可靠匹配」且不属于「疑非本类」的行；其余留给人判断
+        it.checked = !!it.match.row && !it.catWarn && ['exact','nameunit','cat'].indexOf(it.match.how) >= 0;
+      } else {
+        it.match = {row:null, how:'none'};
+        it.checked = false;
+      }
+      items.push(it);
+    });
+  });
+  return items;
+}
+
 function closeQuoteModal() {
-  document.getElementById('quoteMod').classList.add('hidden');
-  _quoteItems = [];
+  const modal = document.getElementById('quoteMod');
+  modal.classList.add('hidden');
+  modal.style.display = 'none';
+  _quoteItems = []; _quoteSheets = []; _quoteProf = [];
+  resetQuoteModalStage();
 }
 
 const QUOTE_HOW = {
-  code:      {t:'✅ 行号匹配', c:'var(--grn)'},
-  exact:     {t:'✅ 精确匹配', c:'var(--grn)'},
-  ambiguous: {t:'⚠️ 多候选',   c:'var(--yel)'},
-  none:      {t:'❌ 未匹配',   c:'var(--red)'},
+  exact:     {t:'✅ 精确匹配',      c:'var(--grn)'},
+  nameunit:  {t:'✅ 名称+单位匹配', c:'var(--grn)'},
+  cat:       {t:'✅ 品类收敛匹配',  c:'var(--grn)'},
+  nameonly:  {t:'🔸 仅名称匹配',    c:'var(--yel)'},
+  ambiguous: {t:'⚠️ 多候选',        c:'var(--yel)'},
+  none:      {t:'❌ 未匹配',        c:'var(--red)'},
 };
 
 function renderQuotePreview() {
-  const st = {code:0, exact:0, ambiguous:0, none:0, skip:0, blank:0};
+  // 三分类必须与「默认是否勾选」一致：✅可靠 = 已自动勾选，⚠️需确认 = 有匹配但没勾，❌未匹配 = 找不到对应清单行
+  const st = {exact:0, nameunit:0, cat:0, nameonly:0, ambiguous:0, none:0, catWarn:0, skip:0};
+  let ok = 0, warn = 0;
   _quoteItems.forEach(it => {
-    if (it.kind === 'num') {
-      const h = it.match.how;
-      if (h === 'code') st.code++; else if (h === 'exact') st.exact++;
-      else if (h === 'ambiguous') st.ambiguous++; else st.none++;
-    } else if (it.kind === 'skip') st.skip++; else st.blank++;
+    if (it.kind !== 'num') { st.skip++; return; }
+    const h = it.match.how;
+    st[h] = (st[h] || 0) + 1;
+    if (h === 'none') return;                       // ❌ 未匹配
+    if (h === 'ambiguous') { warn++; return; }      // ⚠️ 多候选（无 match.row）
+    if (it.catWarn) { st.catWarn++; warn++; return; }  // ⚠️ 疑非本类
+    if (h === 'nameonly') { warn++; return; }       // ⚠️ 只对上名称
+    ok++;                                           // ✅ 可靠匹配
   });
+  const cat = document.getElementById('qCat').value || '';
 
   document.getElementById('quoteStats').innerHTML =
-    '<span style="color:var(--grn);font-weight:600">✅ 可导入 ' + (st.code + st.exact) + '</span>' +
-    '　<span style="color:var(--yel);font-weight:600">⚠️ 待确认 ' + st.ambiguous + '</span>' +
+    '<span style="color:var(--grn);font-weight:600">✅ 可靠匹配 ' + ok + '</span>' +
+    '　<span style="color:var(--yel);font-weight:600">⚠️ 需确认 ' + warn + '</span>' +
     '　<span style="color:var(--red);font-weight:600">❌ 未匹配 ' + st.none + '</span>' +
-    '　<span style="color:var(--tx3)">明确不供 ' + st.skip + ' · 未报价 ' + st.blank + '</span>' +
-    (st.none || st.ambiguous
-      ? '<div style="margin-top:6px;font-size:11px;color:var(--tx3)">未匹配/多候选的行不会自动写入 —— 请人工核对后手工录入，避免串价。</div>'
-      : '');
+    '　<span style="color:var(--tx3)">供应商标注不报价 ' + st.skip + ' 行</span>' +
+    '<div style="margin-top:6px;font-size:11px;color:var(--tx3);line-height:1.7">' +
+      '「需确认」的行默认<b>不勾选</b>、不会写入 —— 多候选请在下方下拉里点选正确的清单行，再手工勾上。' +
+      (st.nameonly ? '<br>🔸 ' + st.nameonly + ' 行只对上了名称，单位或工程量与原清单不一致，请核对单位口径（如 ㎡ / m）后决定。' : '') +
+      (st.catWarn ? '<br>⚠️ ' + st.catWarn + ' 行虽匹配上清单，但内容不像' + (cat ? '「' + esc(cat) + '」' : '本') + '类材料，请确认是不是串价。' : '') +
+      (st.none ? '<br>❌ ' + st.none + ' 行在原清单里找不到对应项目 —— 可能是供应商自行增项，需人工判断。' : '') +
+    '</div>';
 
   const list = _quoteItems.filter(it => it.kind === 'num');
   let html = '<thead><tr style="background:var(--bg3);position:sticky;top:0">' +
     '<th style="padding:6px 4px;width:34px"></th>' +
-    '<th style="text-align:left;padding:6px 8px">项目名称</th>' +
-    '<th style="text-align:left;padding:6px 8px;width:70px">单位</th>' +
-    '<th style="text-align:right;padding:6px 8px;width:80px">工程量</th>' +
-    '<th style="text-align:right;padding:6px 8px;width:90px">报价</th>' +
-    '<th style="text-align:left;padding:6px 8px;width:130px">匹配状态</th>' +
+    '<th style="text-align:left;padding:6px 8px">报价行（来自文件）</th>' +
+    '<th style="text-align:left;padding:6px 8px;width:60px">单位</th>' +
+    '<th style="text-align:right;padding:6px 8px;width:74px">工程量</th>' +
+    '<th style="text-align:right;padding:6px 8px;width:84px">报价</th>' +
+    '<th style="text-align:left;padding:6px 8px;width:152px">匹配到清单</th>' +
     '<th style="text-align:right;padding:6px 8px;width:80px">原值</th></tr></thead><tbody>';
 
   list.forEach(it => {
+    const i = _quoteItems.indexOf(it);
     const how = QUOTE_HOW[it.match.how] || QUOTE_HOW.none;
     const old = it.match.row ? effRowMatPrice(it.match.row) : 0;
     let stCell = '<span style="color:' + how.c + '">' + how.t + '</span>';
+    if (it.catWarn) stCell += '<br><span style="color:var(--yel);font-size:10px">⚠️ 内容不像本类材料</span>';
     if (it.match.how === 'ambiguous') {
-      stCell += '<br><select onchange="quotePickCandidate(' + _quoteItems.indexOf(it) + ',this.value)" style="margin-top:3px;font-size:10px;max-width:120px">' +
+      stCell += '<br><select onchange="quotePickCandidate(' + i + ',this.value)" style="margin-top:3px;font-size:10px;max-width:140px">' +
         '<option value="">请选择…</option>' +
         it.match.cands.map(c => '<option value="' + c.id + '">' + esc(c.name) + '（' + esc(c.unit) + ' ' + (parseFloat(c.qty)||0) + '）</option>').join('') +
         '</select>';
     }
     html += '<tr style="border-bottom:1px solid var(--border)' + (it.match.how === 'none' ? ';opacity:.6' : '') + '">' +
       '<td style="padding:5px 4px;text-align:center"><input type="checkbox" ' + (it.checked ? 'checked' : '') +
-        (it.match.row ? '' : ' disabled') + ' onchange="_quoteItems[' + _quoteItems.indexOf(it) + '].checked=this.checked;renderQuotePreview()"></td>' +
-      '<td style="padding:5px 8px">' + esc(it.name || '（无名称）') + '<div style="font-size:10px;color:var(--tx3)">' + esc(it.sheet) + (it.code ? ' · ' + esc(it.code) : '') + '</div></td>' +
+        (it.match.row ? '' : ' disabled') + ' onchange="_quoteItems[' + i + '].checked=this.checked;renderQuotePreview()"></td>' +
+      '<td style="padding:5px 8px">' + esc(it.name || '（无名称）') +
+        '<div style="font-size:10px;color:var(--tx3)">' + esc(it.sheet) + (it.spec ? ' · ' + esc(it.spec.substring(0, 36)) : '') + '</div></td>' +
       '<td style="padding:5px 8px">' + esc(it.unit) + '</td>' +
       '<td style="padding:5px 8px;text-align:right">' + (parseFloat(it.qty) || 0) + '</td>' +
       '<td style="padding:5px 8px;text-align:right;font-weight:600">' + fmt(it.price) + '</td>' +
@@ -2696,7 +2977,8 @@ function quoteTaxHint() {
 
 function quotePickCandidate(idx, rid) {
   const it = _quoteItems[idx];
-  if (!it || !rid) { if (it) { it.checked = false; } renderQuotePreview(); return; }
+  if (!it) return;
+  if (!rid) { it.checked = false; renderQuotePreview(); return; }
   const row = getAllRows().find(r => r.id === parseInt(rid, 10));
   if (!row) return;
   it.match = {row, how:'exact'};
@@ -2705,31 +2987,36 @@ function quotePickCandidate(idx, rid) {
 }
 
 function quoteToggleAll(v) {
-  _quoteItems.forEach(it => { if (it.match.row) it.checked = v; });
+  _quoteItems.forEach(it => { if (it.kind === 'num' && it.match.row) it.checked = v; });
   renderQuotePreview();
 }
 
 function applyQuoteImport() {
   const mode = document.querySelector('input[name="qMode"]:checked')?.value || 'fill';
   const tax  = document.querySelector('input[name="qTax"]:checked')?.value || 'ex';
+  const cat  = document.getElementById('qCat').value || '';
   if (tax === 'in' && !confirm('您选择的是「含税」报价，但系统主材为不含税口径。\n\n系统不会自动换算（缺税率），含税价直接写入会让成本偏高。\n建议选「不含税」，或在 Excel 中换算后再导入。\n\n仍要继续吗？')) return;
 
   const targets = _quoteItems.filter(it => it.checked && it.match.row);
   if (!targets.length) { toast('没有勾选可导入的行'); return; }
 
-  let written = 0, skipped = 0;
+  let written = 0, skipped = 0, dup = 0;
+  const done = {};
   targets.forEach(it => {
     const r = it.match.row;
+    if (done[r.id]) { dup++; return; }                        // 同一清单行被多行报价命中 → 只取第一条
     if (mode === 'fill' && (parseFloat(r.matPrice) || 0) > 0) { skipped++; return; }
     r.matPrice = it.price;
+    if (cat && !(r.matName || '').trim()) r.matName = cat;    // 仅补空，不覆盖人工输入的主材名
     syncRowMat(r.id);          // 唯一子目自动分配；多子目标记待分配
+    done[r.id] = 1;
     written++;
   });
 
   renderBoq(); updateSum();
   if (typeof updateInternalCostPanel === 'function') updateInternalCostPanel();
   closeQuoteModal();
-  toast('✓ 已导入 ' + written + ' 条主材价' + (skipped ? '（跳过已有价 ' + skipped + ' 条）' : ''));
+  toast('✓ 已导入 ' + written + ' 条主材价' + (skipped ? '（跳过已有价 ' + skipped + '）' : '') + (dup ? '（同行重复报价 ' + dup + '）' : ''));
 }
 
 // ═══════════ 方式二：模板导出 ═══════════
