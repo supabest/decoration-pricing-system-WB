@@ -1126,6 +1126,26 @@ function rowMatPending(r) {
   if(!rowPrice||subs.length<2) return false;
   return !subs.some(s=>(parseFloat(s.matPrice)||0)>0);
 }
+// 损耗率紧凑显示：子目行输入框里存的是原始值（5 / 3.5 / 0），清单行也照这个口径显示，
+// 不用 fmt() 的 "5.00"，免得同一个数在两行长得不一样
+function fmtRate(v) { const n=Math.round((parseFloat(v)||0)*100)/100; return String(n); }
+// 清单行主材损耗率：同一行各子目损耗率可能不同，用一个「等效损耗率」表示，
+// 使 主材单价 ×(1+率) = 主材费 在行上恒成立（与 rowMatCost 同源），数字之间能对得上账。
+// 尚未填主材价时无法反推等效值 → 各子目一致就用该值，不一致则返回 null（行上显示 —）。
+function rowWasteInfo(r) {
+  const subs=r.subs||[]; if(!subs.length) return null;
+  const prices=subs.reduce((s,x)=>s+(parseFloat(x.matPrice)||0),0);
+  const rates=subs.map(x=>parseFloat(x.wasteRate)||0);
+  const same=rates.every(v=>Math.abs(v-rates[0])<1e-9);
+  const eff=prices>0 ? (rowMatCost(r)/prices-1)*100 : (same?rates[0]:null);
+  return {eff, same, rates, n:subs.length, prices};
+}
+// 主材损耗率（导出/展示口径）：与 effRowMatPrice / rowMatCost 同源。
+// 注意：行级 r.wasteRate 从来没有任何界面写入过（只有子目级 sub.wasteRate 可编辑），
+// 导出若直接读它必然恒为 0 —— 于是「主材单价 100 / 损耗率 0 / 主材费 105」自相矛盾。
+// 必须取整：等效值是「主材费÷主材单价−1」反推出来的，浮点误差会给到 5.000000000000004，
+// 显示层有 fmtRate 挡着，导出走的是原值，不取整就会把长小数写进 Excel
+function effRowWaste(r) { const w=rowWasteInfo(r); return (w&&w.eff!==null)?Math.round(w.eff*100)/100:0; }
 // 主材单价（导出/展示口径）：已套价 → Σ子目主材价；未套价 → 行级暂存价。
 // 与 rowMatCost() 同源，避免「导出显示有价、成本却为 0」的口径不一致
 function effRowMatPrice(r) {
@@ -1619,6 +1639,22 @@ function renderBoq() {
             (n.note?'<span style="font-size:10px;color:var(--tx3);margin-left:4px">'+esc(n.note.substring(0,40))+'</span>':'');
         }
         const matCost=rowMatCost(r);
+        // 行级损耗率格：显示能对上主材费的等效损耗率（子目行里才是可编辑的原始值）
+        const wrI = rowWasteInfo(r);
+        let wrCell;
+        if (!wrI || wrI.eff === null) {
+          wrCell = '<td class="r" style="color:var(--tx3);font-size:10px" title="本行多个子目的损耗率不同，展开子目行可看到各自的值">—</td>';
+        } else {
+          // 有主材价却没损耗 → 主材费=主材单价，容易被当成「损耗没生效」，标黄并在提示里说清怎么办
+          const zero = wrI.prices>0 && wrI.eff<=0;
+          const detail = wrI.rates.map((v,i)=>'子目'+(i+1)+' '+fmtRate(v)+'%').join('　');
+          const tip = (wrI.same
+            ? '主材损耗率 '+fmtRate(wrI.eff)+'%（本行 '+wrI.n+' 个子目一致）　主材费 = 主材单价 ×(1+'+fmtRate(wrI.eff)+'%)'
+            : '本行 '+wrI.n+' 个子目损耗率各不相同，此处显示等效值 '+fmtRate(wrI.eff)+'%（= 主材费 ÷ 主材单价 − 1）　'+detail) +
+            (zero ? '　⚠ 本行损耗率为 0，主材费等于主材单价；若该材料需要计损耗，请展开子目行手工填写损耗率' : '');
+          wrCell = '<td class="r" title="'+esc(tip)+'" style="font-variant-numeric:tabular-nums'+(zero?';color:var(--yel);font-weight:600':'')+'">' +
+            fmtRate(wrI.eff) + (zero?' ⚠':'') + '</td>';
+        }
         // 行级暂存主材价未分配到子目 → 必须提示，否则主材费漏算（供应商报价白填）
         const matPend = rowMatPending(r);
         const matPendBadge = matPend
@@ -1649,7 +1685,7 @@ function renderBoq() {
               ? (matPend?'<span style="color:var(--yel);font-size:10px;font-weight:600" title="本行有多个子目，请指定该主材价属于哪个子目">待分配</span>':fmt(effRowMatPrice(r)))
               : '<input class="cof-i" style="width:60px;font-size:10px" type="text" inputmode="decimal" value="'+(parseFloat(r.matPrice)||0)+'" placeholder="0" onchange="updRowMat('+r.id+',this.value)" title="主材单价（尚无可挂子目时为行级录入；套价后自动分配到子目）">') +
           '</td>' +
-          '<td class="r" style="color:var(--tx3);font-size:10px">—</td>' +
+          wrCell +
           '<td class="r">'+fmt(matCost)+'</td>' +
           '<td class="r"><span style="color:var(--tx2);font-variant-numeric:tabular-nums">'+fmt(r.auxCost)+'</span></td>' +
           '<td class="r">'+fmt((up||0)*(globalMgmtRate/100))+'</td>' +
@@ -2080,7 +2116,7 @@ const EXP_COLS = [
   {key:'lab',  label:'人工单价',    get:r=>rowUnitPrice(r)||0,   num:true, wide:10, def:false, preset:{client:false,internal:true, labor:true}},
   {key:'mat_price',label:'主材单价', get:r=>effRowMatPrice(r), num:true, wide:10, def:true, preset:{client:true, internal:true, labor:false}},
   {key:'mat',  label:'主材费',     get:r=>rowMatCost(r)||0, num:true, wide:10, def:true, preset:{client:true, internal:true, labor:false}},
-  {key:'waste',label:'主材损耗率',  get:r=>parseFloat(r.wasteRate)||0, num:true, wide:8, def:false, preset:{client:true, internal:true, labor:false}},
+  {key:'waste',label:'主材损耗率',  get:r=>effRowWaste(r), num:true, wide:8, def:false, preset:{client:true, internal:true, labor:false}},
   {key:'aux',  label:'辅材费',     get:r=>parseFloat(r.auxCost)||0,   num:true, wide:10, def:false, preset:{client:false,internal:true, labor:false}},
   {key:'mgmt', label:'管理费',     get:r=>(rowUnitPrice(r)||0)*(globalMgmtRate/100), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
   {key:'profit',label:'利润',      get:r=>(rowUnitPrice(r)||0)*(globalProfitRate/100), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
@@ -2275,7 +2311,7 @@ function collectExportData() {
             qty: parseFloat(r.qty) || 0,
             remark: exportRemark(r),
             mat_price: effRowMatPrice(r),
-            waste_rate: parseFloat(r.wasteRate) || 0,
+            waste_rate: effRowWaste(r),   // 同 mat_price 一样取行级等效值，保证两者相乘等于该行主材费
             aux_cost: parseFloat(r.auxCost) || 0,
             labor_price: labor,
             subs: (r.subs || []).map(mapSubForExport).filter(s => s.name),
