@@ -259,7 +259,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
   <div style="display:flex;align-items:center;gap:5px;flex-wrap:nowrap">
     <button class="btn btn-sm" onclick="importBoq()">📂 导入清单</button>
     <button class="btn btn-sm" onclick="addBoqRow()">＋ 新增清单行</button>
-    <button class="btn btn-sm" id="aiBtn" onclick="startAiPricing()" style="background:linear-gradient(135deg,#2b5ea7,#1d6fa5);color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:inherit">✨ AI 一键套价</button> <span id="aiEngineBadge" style="font-size:10px;padding:2px 6px;border-radius:3px;background:#f0f0f0;color:#888">⏳</span>
+    <button class="btn btn-sm" id="aiBtn" onclick="startAiPricing()" style="background:linear-gradient(135deg,#2b5ea7,#1d6fa5);color:#fff;border:none;padding:5px 12px;border-radius:6px;font-size:12px;cursor:pointer;white-space:nowrap;font-family:inherit">✨ AI 一键套价</button> <span id="aiEngineBadge" style="font-size:10px;padding:2px 6px;border-radius:3px;background:#f0f0f0;color:#888">⏳</span><span id="flowSteps" class="hidden"></span>
     <button class="btn btn-sm" onclick="showExportModal()" style="background:var(--grn-d);border-color:var(--grn);color:var(--grn);font-weight:600">⬇ 导出套价表</button>
 
     <button class="btn btn-sm hidden" id="kbBtn" onclick="openKnowledgeViewer()">🧠 知识库</button>
@@ -333,7 +333,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <button class="btn btn-sm" onclick="openHistory()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)">📂 历史方案</button>
       <button class="btn btn-sm" id="pricePanelBtn" onclick="togglePricePanel()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="辅材材料价格">💰 辅材价格</button>
       <button class="btn btn-sm" onclick="openMainMatPanel()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="查询系统主材价格">📦 主材价格</button>
-      <button class="btn btn-sm" onclick="importSupplierQuote()" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="上传供应商填好的主材询价单，系统自动识别材料品类与填价列，确认后回填主材价">📥 导入主材询价</button>
+      <button class="btn btn-sm" onclick="importSupplierQuote()" id="quoteImportBtn" style="padding:3px 8px;font-size:11px;border:1.5px solid var(--border);border-radius:6px;cursor:pointer;background:transparent;color:var(--tx2)" title="上传供应商填好的主材询价单，系统自动识别材料品类与填价列，确认后回填主材价">📥 导入主材询价</button>
     </div>
     <!-- 💰 辅材价格面板（浮动可拖拽） -->
     <div id="pricePanel" class="price-panel hidden" style="position:fixed;top:80px;right:20px;width:420px;max-height:70vh;background:var(--bg2);border:2px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.2);z-index:999;overflow:hidden;font-size:12px">
@@ -606,6 +606,28 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 
 <input type="file" id="quoteFileIn" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleQuoteFile(event)">
 
+<!-- 🧭 顺序引导：还没套价就想导入主材询价 -->
+<div class="modal-ov hidden" id="flowGuardMod">
+  <div class="modal" style="width:540px">
+    <div class="modal-hdr">
+      <span class="modal-ttl">🧭 建议先完成套价</span>
+      <button class="modal-x" onclick="closeFlowGuard()">×</button>
+    </div>
+    <div style="padding:16px 18px 4px;font-size:12.5px;color:var(--tx2);line-height:1.9">
+      <div style="padding:9px 12px;background:var(--bg3);border-radius:7px;margin-bottom:12px;font-weight:600;color:var(--tx1);text-align:center;letter-spacing:.4px">
+        ① 导入清单　→　② ✨ AI 一键套价　→　③ 📥 导入主材询价
+      </div>
+      主材询价里填的是<b>子目</b>的主材单价，所以要先把清单套上价。<br>
+      当前 <b id="flowGuardN" style="color:var(--yel)">0</b> 行清单还没有一行套价 —— 这时导入，价格只会先<b>暂存在清单行</b>上，
+      不计入主材费，看起来就像「导进去了没反应」。套价后系统会自动把它分配到子目。
+    </div>
+    <div style="padding:0 18px 16px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-sm" onclick="flowGuardForceImport()" style="color:var(--tx2);border:1.5px solid var(--border);background:transparent;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px">仍然导入</button>
+      <button class="btn btn-sm" onclick="flowGuardGoPricing()" style="background:linear-gradient(135deg,#2b5ea7,#1d6fa5);color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:12px;font-weight:600">先去套价 →</button>
+    </div>
+  </div>
+</div>
+
 <!-- 📥 供应商报价导入：识别确认 + 匹配预览弹窗 -->
 <div class="modal-ov hidden" id="quoteMod">
   <div class="modal" style="width:900px;max-height:88vh;display:flex;flex-direction:column">
@@ -617,6 +639,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
     <!-- ① 识别确认区（始终可见，未确认前不写入任何数据） -->
     <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
       <div id="quoteFileInfo" style="font-size:11px;color:var(--tx3);margin-bottom:9px"></div>
+      <div id="quoteFlowTip" class="hidden"></div>
       <div style="font-size:12px;font-weight:600;color:var(--tx1);margin-bottom:9px">请确认系统识别结果</div>
 
       <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:9px">
@@ -1126,6 +1149,9 @@ function rowMatPending(r) {
   if(!rowPrice||subs.length<2) return false;
   return !subs.some(s=>(parseFloat(s.matPrice)||0)>0);
 }
+// 有行级暂存价、但一个子目都还没有 → 说明第②步「套价」还没做，这笔价暂时不进主材费。
+// 与 rowMatPending 分开：那个只在「已套价但多子目」时提示，这个是「压根还没套价」。
+function rowMatStaged(r) { return (parseFloat(r.matPrice)||0)>0 && !(r.subs||[]).length; }
 // 损耗率紧凑显示：子目行输入框里存的是原始值（5 / 3.5 / 0），清单行也照这个口径显示，
 // 不用 fmt() 的 "5.00"，免得同一个数在两行长得不一样
 function fmtRate(v) { const n=Math.round((parseFloat(v)||0)*100)/100; return String(n); }
@@ -1657,6 +1683,7 @@ function renderBoq() {
         }
         // 行级暂存主材价未分配到子目 → 必须提示，否则主材费漏算（供应商报价白填）
         const matPend = rowMatPending(r);
+        const matStaged = rowMatStaged(r);
         const matPendBadge = matPend
           ? ' <span class="conf-mid" title="本行已录入主材价，但挂了多个子目，需指定该主材价属于哪个子目">⚠️ 主材价待分配</span>'
           : '';
@@ -1686,7 +1713,9 @@ function renderBoq() {
               : '<input class="cof-i" style="width:60px;font-size:10px" type="text" inputmode="decimal" value="'+(parseFloat(r.matPrice)||0)+'" placeholder="0" onchange="updRowMat('+r.id+',this.value)" title="主材单价（尚无可挂子目时为行级录入；套价后自动分配到子目）">') +
           '</td>' +
           wrCell +
-          '<td class="r">'+fmt(matCost)+'</td>' +
+          '<td class="r">'+fmt(matCost)+(matStaged
+            ? ' <span class="conf-mid" title="本行已录入主材价，但尚未套价，这笔价暂时不计入主材费。请先点「✨ AI 一键套价」，套价后系统会自动把价格分配到子目（唯一子目自动分配，多个子目需手工指定）">⚠️ 待套价</span>'
+            : '')+'</td>' +
           '<td class="r"><span style="color:var(--tx2);font-variant-numeric:tabular-nums">'+fmt(r.auxCost)+'</span></td>' +
           '<td class="r">'+fmt((up||0)*(globalMgmtRate/100))+'</td>' +
           '<td class="r">'+fmt((up||0)*(globalProfitRate/100))+'</td>' +
@@ -2751,8 +2780,66 @@ let _quoteProf = [];        // 主工作表列画像（下拉标签用）
 let _quoteItems = [];
 let _quoteMatched = false;  // 用户是否已点「确认识别」
 
+// ═══════════ 🧭 顺序引导：① 导入清单 → ② AI 一键套价 → ③ 导入主材询价 ═══════════
+// 主材询价填的是「子目」的主材单价。没套价就导入，价格只能落在清单行的暂存区、不进成本
+// （见 syncRowMat / rowMatStaged），用户会以为"导入没生效"。所以把这三步做成常驻状态，
+// 随时告诉用户下一步该点哪；未套价时点导入先拦一道，但留「仍然导入」的出口，不硬堵。
+function flowCounts() {
+  const all = getAllRows();
+  return { total: all.length, priced: all.filter(r => (r.subs||[]).length > 0).length };
+}
+function updateFlowSteps() {
+  const el = document.getElementById('flowSteps'); if (!el) return;
+  const {total, priced} = flowCounts();
+  const btn = document.getElementById('quoteImportBtn');
+  if (!total) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');                     // 清空后重新导入清单要能把徽章显示回来
+  const locked = priced === 0;                       // 一行都没套价 → 还没轮到第③步
+  if (btn) {
+    btn.style.opacity = locked ? '.55' : '';
+    btn.title = locked
+      ? '建议先完成「✨ AI 一键套价」：主材询价填的是子目单价，未套价时导入只会暂存在清单行上，不计入主材费'
+      : '上传供应商填好的主材询价单，系统自动识别材料品类与填价列，确认后回填主材价';
+  }
+  let txt, fg, bg, act = '';
+  if (locked) { txt = '② 待套价 ' + total + ' 行'; fg = '#8a6100'; bg = 'var(--yel-d)'; act = 'startAiPricing()'; }
+  else if (priced < total) { txt = '② 已套价 ' + priced + '/' + total + ' · ③ 可导入主材询价'; fg = '#1d6fa5'; bg = '#e8f1fb'; }
+  else { txt = '✓ 已全部套价 · ③ 可导入主材询价'; fg = '#0a7a3d'; bg = 'var(--grn-d)'; }
+  const css = 'display:inline-block;margin-left:2px;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;white-space:nowrap;background:' +
+    bg + ';color:' + fg + ';border:1px solid ' + (act ? fg : 'transparent') + (act ? ';cursor:pointer' : '');
+  const tip = '标准顺序：① 导入清单 → ② ✨ AI 一键套价 → ③ 📥 导入主材询价' +
+    (locked ? '（当前停在第②步，点这里去套价）' : '');
+  el.innerHTML = '<span' + (act ? ' onclick="' + act + '"' : '') + ' title="' + tip + '" style="' + css + '">' + txt + '</span>';
+}
+function openFlowGuard(n) {
+  const el = document.getElementById('flowGuardN'); if (el) el.textContent = n;
+  document.getElementById('flowGuardMod').classList.remove('hidden');
+}
+function closeFlowGuard() { document.getElementById('flowGuardMod').classList.add('hidden'); }
+function flowGuardGoPricing() { closeFlowGuard(); startAiPricing(); }
+function flowGuardForceImport() { closeFlowGuard(); document.getElementById('quoteFileIn').click(); }
+// 导入弹窗内的套价状态条：部分行未套价时，这些行导入的价格只会暂存，必须说清楚
+function fillQuoteFlowTip() {
+  const el = document.getElementById('quoteFlowTip'); if (!el) return;
+  const {total, priced} = flowCounts();
+  const pending = total - priced;
+  const base = 'margin-bottom:9px;padding:6px 10px;border-radius:5px;font-size:11px;line-height:1.7';
+  if (pending <= 0) {
+    el.setAttribute('style', base + ';background:var(--grn-d);border:1px solid var(--grn);color:var(--grn)');
+    el.innerHTML = '✓ 清单 ' + total + ' 行已全部套价 —— 导入的主材价会直接写进对应子目。';
+  } else {
+    el.setAttribute('style', base + ';background:#e8f1fb;border:1px solid #9cc3e8;color:#1d6fa5');
+    el.innerHTML = '⚠ 还有 <b>' + pending + '</b> 行未套价（已套价 ' + priced + '/' + total + '）。' +
+      '这些行导入的主材价只会<b>暂存</b>在清单行上，套价后才计入主材费 —— 已在清单行标「⚠️ 待套价」。';
+  }
+  el.classList.remove('hidden');
+}
+
 function importSupplierQuote() {
-  if (!getAllRows().length) { toast('请先导入清单，再导入供应商报价'); return; }
+  const rows = getAllRows();
+  if (!rows.length) { toast('请先导入清单，再导入主材询价'); return; }
+  // 顺序引导：一行都没套价就导入，价格只会暂存在清单行、不进主材费
+  if (!rows.some(r => (r.subs||[]).length)) { openFlowGuard(rows.length); return; }
   document.getElementById('quoteFileIn').click();
 }
 
@@ -2786,6 +2873,7 @@ async function handleQuoteFile(e) {
   document.getElementById('quoteFileInfo').textContent =
     '文件：' + file.name + '　·　' + wb.SheetNames.length + ' 个工作表，其中 ' +
     withCol.length + ' 个认出填价列，共 ' + primary.body.length + ' 行数据';
+  fillQuoteFlowTip();   // 套价状态：未套价的行导入后只会暂存，先讲清楚
 
   resetQuoteModalStage();
   const modal = document.getElementById('quoteMod');
@@ -3217,6 +3305,7 @@ function updateSum() {
   document.getElementById('s-subs').textContent=nsubs;
   document.getElementById('s-total').textContent='¥ '+fmt(laborOnly);
   document.getElementById('s-grand').textContent='¥ '+fmt(total);
+  updateFlowSteps();   // ①②③ 步骤徽章跟着清单/套价状态走
   scheduleAutoSave();
 }
 
@@ -3470,7 +3559,8 @@ async function startAiPricing() {
   } catch(e) { console.warn('失败上报跳过', e); }
 
   toast('✨ AI套价完成'+(aiStop?'（已停止）':'')+
-    '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条');
+    '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条'+
+    (getAllRows().some(r=>(r.subs||[]).length) ? '　·　下一步：📥 导入主材询价' : ''));
 }
 function stopAi() { aiStop=true; toast('正在停止…'); }
 
@@ -3599,7 +3689,7 @@ function toast(msg) {
   const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
   document.body.appendChild(t); toastTm=setTimeout(()=>t.remove(),3200);
 }
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closePicker();closeCoefModal();} });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closePicker();closeCoefModal();closeFlowGuard();} });
 
 // ═══════════ 云端自动保存（草稿，is_draft=true）═══════
 let _autoSaveTimer = null;
