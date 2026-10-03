@@ -617,9 +617,9 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <div style="padding:9px 12px;background:var(--bg3);border-radius:7px;margin-bottom:12px;font-weight:600;color:var(--tx1);text-align:center;letter-spacing:.4px">
         ① 导入清单　→　② ✨ AI 一键套价　→　③ 📥 导入主材询价
       </div>
-      主材询价里填的是<b>子目</b>的主材单价，所以要先把清单套上价。<br>
+      主材询价填的是<b>子目</b>的主材单价，<b>套价后再导入更准确</b> —— 价格能直接落到对应子目参与成本计算。<br>
       当前 <b id="flowGuardN" style="color:var(--yel)">0</b> 行清单还没有一行套价 —— 这时导入，价格只会先<b>暂存在清单行</b>上，
-      不计入主材费，看起来就像「导进去了没反应」。套价后系统会自动把它分配到子目。
+      等套价挂上子目后再自动继承（看起来像「导进去没反应」，其实已暂存）。仍可点「仍然导入」，不影响后续套价。
     </div>
     <div style="padding:0 18px 16px;display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-sm" onclick="flowGuardForceImport()" style="color:var(--tx2);border:1.5px solid var(--border);background:transparent;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px">仍然导入</button>
@@ -1128,19 +1128,60 @@ function rowUnitPrice(r) {
   return r.subs.reduce((s,sub)=>s+effPrice(sub),0);
 }
 function compUnitPrice(r) { const lab=rowUnitPrice(r)||0; const mat=rowMatCost(r); const aux=parseFloat(r.auxCost)||0; const mgmt=lab*(globalMgmtRate/100); const profit=lab*(globalProfitRate/100); return lab+mat+aux+mgmt+profit; }
-function rowMatCost(r) { if(!r.subs||!r.subs.length) return 0; return r.subs.reduce((sum,sub)=>{const smp=parseFloat(sub.matPrice)||0;const swr=parseFloat(sub.wasteRate)||0;return sum+smp*(1+swr/100);},0); }
+// 行主材费（单价级，含损耗+单位换算）：Σ 子目[matPrice×(1+损耗率)×coef×conv]。
+// coef=含量系数、conv=子目单位↔清单行单位换算；乘上后「行主材单价×行工程量 = Σ(子目主材费×子目工程量)」恒成立。
+function rowMatCost(r) { if(!r.subs||!r.subs.length) return 0; return r.subs.reduce((sum,sub)=>{const smp=parseFloat(sub.matPrice)||0;const swr=parseFloat(sub.wasteRate)||0;const cf=parseFloat(sub.coef)||1.0;const cv=parseFloat(sub.conv)||1.0;return sum+smp*(1+swr/100)*cf*cv;},0); }
 // ═══════════ 主材价：行级暂存 → 子目分配 ═══════════
 // 口径：成本计算只认子目级 sub.matPrice（rowMatCost）；行级 r.matPrice 是「暂存区」，
 // 存放供应商对整条清单报的主材价，套价后需分配到子目，本身不直接参与计算。
 // （若挂子目时无脑继承行级价，一行 N 个子目就会把主材费算成 N 倍）
-function syncRowMat(rid) {
+function syncRowMat(rid, catArg) {
   const r=findRow(rid); if(!r) return;
   const rowPrice=parseFloat(r.matPrice)||0;
-  const subs=r.subs||[];
-  if(!rowPrice||!subs.length) return;
-  if(subs.some(s=>(parseFloat(s.matPrice)||0)>0)) return;  // 已有子目价（手工填/已分配），不覆盖
-  if(subs.length===1) subs[0].matPrice=rowPrice;           // 唯一子目：无歧义，直接分配
-  // 多子目：不猜，保持待分配状态，由 rowMatPending 提示用户指定
+  if(!rowPrice||!(r.subs||[]).length) return;   // 无暂存价 or 还没套价 → 不处理
+  // 套价继承：用行上记录的主材名（品类）作落点提示，mode=fill 不覆盖已填子目价
+  routeRowMat(r, rowPrice, catArg || (r.matName||'').trim(), 'fill');
+}
+// 子目是否属于某品类：拿基准价子目名（+子目自带主材名）去命中品类关键词
+function subCategoryScore(sub, cat) {
+  const kws = MAT_CAT_KEYWORDS[cat]; if(!kws) return 0;
+  const it = getBench(sub.bid, sub.bsh);
+  const t = normKey(((it&&it.name)||'') + ' ' + (sub.matName||''));
+  let s = 0; kws.forEach(k => { const nk = normKey(k); if(nk && t.indexOf(nk) >= 0) s += nk.length; });
+  return s;
+}
+// 把一条主材报价落到清单行。未套价→行级暂存；已套价→按品类落到「同品类且空缺」的子目。
+// 返回落点状态：staged 暂存 / assigned 已套入子目 / pending 多子目待人工分配 / kept 原值保留未动
+function routeRowMat(r, price, cat, mode) {
+  const subs = r.subs || [];
+  const over = mode === 'over';
+  if (!subs.length) {                                   // 还没套价 → 暂存在行上，套价时继承
+    if (!over && (parseFloat(r.matPrice)||0) > 0) return 'kept';
+    r.matPrice = price;
+    if (cat && !(r.matName||'').trim()) r.matName = cat;
+    return 'staged';
+  }
+  if (cat && MAT_CAT_KEYWORDS[cat]) {                   // 认出品类 → 优先落到同品类子目
+    const cands = subs.map(s => ({s, sc: subCategoryScore(s, cat)})).filter(x => x.sc > 0);
+    if (cands.length) {
+      const priced = cands.find(x => (parseFloat(x.s.matPrice)||0) > 0);
+      if (priced && !over) return 'kept';               // 同品类已有价 → 原套价不动
+      const empty = cands.find(x => (parseFloat(x.s.matPrice)||0) === 0);
+      const target = empty || (over ? cands[0] : null);
+      if (target) { target.s.matPrice = price; if (!(r.matName||'').trim()) r.matName = cat; return 'assigned'; }
+      return 'kept';
+    }
+    // 行内无同品类子目 → 退到通用逻辑
+  }
+  if (subs.length === 1) {                              // 唯一子目：无歧义
+    if (!over && (parseFloat(subs[0].matPrice)||0) > 0) return 'kept';
+    subs[0].matPrice = price; return 'assigned';
+  }
+  // 多子目且认不出品类 → 不猜，暂存行上等人工分配（rowMatPending 会提示）
+  if (!over && (parseFloat(r.matPrice)||0) > 0) return 'kept';
+  r.matPrice = price;
+  if (cat && !(r.matName||'').trim()) r.matName = cat;
+  return 'pending';
 }
 // 行级有暂存价但多子目尚未分配 → 提示用户（避免主材费漏算）
 function rowMatPending(r) {
@@ -1160,7 +1201,8 @@ function fmtRate(v) { const n=Math.round((parseFloat(v)||0)*100)/100; return Str
 // 尚未填主材价时无法反推等效值 → 各子目一致就用该值，不一致则返回 null（行上显示 —）。
 function rowWasteInfo(r) {
   const subs=r.subs||[]; if(!subs.length) return null;
-  const prices=subs.reduce((s,x)=>s+(parseFloat(x.matPrice)||0),0);
+  // 净料基准同样含 coef×conv，使 eff = 行主材费/行主材单价 − 1 = 按含量加权的综合损耗率
+  const prices=subs.reduce((s,x)=>s+(parseFloat(x.matPrice)||0)*(parseFloat(x.coef)||1.0)*(parseFloat(x.conv)||1.0),0);
   const rates=subs.map(x=>parseFloat(x.wasteRate)||0);
   const same=rates.every(v=>Math.abs(v-rates[0])<1e-9);
   const eff=prices>0 ? (rowMatCost(r)/prices-1)*100 : (same?rates[0]:null);
@@ -1176,7 +1218,7 @@ function effRowWaste(r) { const w=rowWasteInfo(r); return (w&&w.eff!==null)?Math
 // 与 rowMatCost() 同源，避免「导出显示有价、成本却为 0」的口径不一致
 function effRowMatPrice(r) {
   const subs=r.subs||[];
-  if(subs.length) return subs.reduce((s,x)=>s+(parseFloat(x.matPrice)||0),0);
+  if(subs.length) return subs.reduce((s,x)=>s+(parseFloat(x.matPrice)||0)*(parseFloat(x.coef)||1.0)*(parseFloat(x.conv)||1.0),0);  // 净料×含量×换算，与 rowMatCost 同基
   return parseFloat(r.matPrice)||0;
 }
 function rowAuxCost(r) { return parseFloat(r.auxCost)||0; }
@@ -2755,17 +2797,11 @@ function rowCatScore(r, cat) {
   kws.forEach(k => { const nk = normKey(k); if (nk && t.indexOf(nk) >= 0) s += nk.length; });
   return s;
 }
-// 优先级：① 名称+单位+工程量 全等 ② 名称+单位 ③ 仅名称（默认不勾选，需人工确认单位口径）
-function matchQuoteRow(it, rows, cat, idx) {
-  const nn = normKey(it.name);
-  if (!nn) return {row:null, how:'none'};
-  const byName = (idx && idx[nn]) || rows.filter(r => normKey(r.name) === nn);
-  if (!byName.length) return {row:null, how:'none'};
-  const uq = normKey(it.unit), qv = parseFloat(it.qty) || 0;
-  let cands = byName.filter(r => normKey(r.unit) === uq && Math.abs((parseFloat(r.qty) || 0) - qv) < 1e-6);
-  let how = 'exact';
-  if (!cands.length) { cands = byName.filter(r => normKey(r.unit) === uq); how = 'nameunit'; }
-  if (!cands.length) { cands = byName.slice(); how = 'nameonly'; }
+// 2-gram Jaccard 相似度（去空格后字符二元组），用于名称/特征模糊兜底
+function bigrams(s){ s=String(s||''); const g=new Set(); for(let i=0;i<s.length-1;i++) g.add(s.substr(i,2)); if(s.length===1) g.add(s); return g; }
+function jaccard(a,b){ const A=bigrams(normKey(a)), B=bigrams(normKey(b)); if(!A.size||!B.size) return 0; let inter=0; A.forEach(x=>{ if(B.has(x)) inter++; }); return inter/(A.size+B.size-inter); }
+// 多候选先用品类收敛；仍不唯一 → 交用户点选（ambiguous）。how 透传匹配等级
+function catConverge(cands, cat, how) {
   if (cands.length > 1 && cat) {
     const hit = cands.filter(r => rowCatScore(r, cat) > 0);
     if (hit.length === 1) return {row:hit[0], how:'cat'};
@@ -2773,6 +2809,28 @@ function matchQuoteRow(it, rows, cat, idx) {
   }
   if (cands.length === 1) return {row:cands[0], how};
   return {row:null, how:'ambiguous', cands};
+}
+// 匹配优先级：① 名称+特征+单位 全等 ② 名称+单位 ③ 仅名称 ④ 名称+特征 相似度兜底（≥ 0.6）
+// ①②③ 唯一即落定，多候选走 catConverge；④ 属「相似匹配」，默认不勾选，需人工确认
+function matchQuoteRow(it, rows, cat, idx) {
+  const nn = normKey(it.name);
+  if (!nn) return {row:null, how:'none'};
+  const nsp = normKey(it.spec), uq = normKey(it.unit);
+  let hit = rows.filter(r => normKey(r.name)===nn && normKey(r.spec)===nsp && normKey(r.unit)===uq);
+  if (hit.length) return hit.length===1 ? {row:hit[0], how:'exact'} : catConverge(hit, cat, 'exact');
+  hit = rows.filter(r => normKey(r.name)===nn && normKey(r.unit)===uq);
+  if (hit.length) return hit.length===1 ? {row:hit[0], how:'nameunit'} : catConverge(hit, cat, 'nameunit');
+  hit = rows.filter(r => normKey(r.name)===nn);
+  if (hit.length) return hit.length===1 ? {row:hit[0], how:'nameonly'} : catConverge(hit, cat, 'nameonly');
+  // 相似度兜底：名称+特征最相似且 ≥ 0.6；同分时优先单位一致者
+  let best=null, bestScore=0;
+  rows.forEach(r => {
+    const sim = jaccard(it.name+it.spec, r.name+r.spec);
+    const tieU = (sim===bestScore && best && normKey(r.unit)===uq && normKey(best.unit)!==uq) ? 1 : 0;
+    if (sim>bestScore || tieU) { bestScore=sim; best=r; }
+  });
+  if (best && bestScore>=0.6) return {row:best, how:'similar', sim:Math.round(bestScore*100)};
+  return {row:null, how:'none'};
 }
 
 let _quoteSheets = [];      // 各工作表解析结果（改列/改品类时重算匹配用）
@@ -2830,7 +2888,7 @@ function fillQuoteFlowTip() {
   } else {
     el.setAttribute('style', base + ';background:#e8f1fb;border:1px solid #9cc3e8;color:#1d6fa5');
     el.innerHTML = '⚠ 还有 <b>' + pending + '</b> 行未套价（已套价 ' + priced + '/' + total + '）。' +
-      '这些行导入的主材价只会<b>暂存</b>在清单行上，套价后才计入主材费 —— 已在清单行标「⚠️ 待套价」。';
+      '套价后导入更准确：这些行现在导入的主材价只会<b>暂存</b>在清单行上，等 AI 套价挂上子目后再自动继承到对应子目。';
   }
   el.classList.remove('hidden');
 }
@@ -3016,6 +3074,7 @@ const QUOTE_HOW = {
   exact:     {t:'✅ 精确匹配',      c:'var(--grn)'},
   nameunit:  {t:'✅ 名称+单位匹配', c:'var(--grn)'},
   cat:       {t:'✅ 品类收敛匹配',  c:'var(--grn)'},
+  similar:   {t:'🔶 相似匹配',      c:'var(--yel)'},
   nameonly:  {t:'🔸 仅名称匹配',    c:'var(--yel)'},
   ambiguous: {t:'⚠️ 多候选',        c:'var(--yel)'},
   none:      {t:'❌ 未匹配',        c:'var(--red)'},
@@ -3023,7 +3082,7 @@ const QUOTE_HOW = {
 
 function renderQuotePreview() {
   // 三分类必须与「默认是否勾选」一致：✅可靠 = 已自动勾选，⚠️需确认 = 有匹配但没勾，❌未匹配 = 找不到对应清单行
-  const st = {exact:0, nameunit:0, cat:0, nameonly:0, ambiguous:0, none:0, catWarn:0, skip:0};
+  const st = {exact:0, nameunit:0, cat:0, similar:0, nameonly:0, ambiguous:0, none:0, catWarn:0, skip:0};
   let ok = 0, warn = 0;
   _quoteItems.forEach(it => {
     if (it.kind !== 'num') { st.skip++; return; }
@@ -3032,19 +3091,20 @@ function renderQuotePreview() {
     if (h === 'none') return;                       // ❌ 未匹配
     if (h === 'ambiguous') { warn++; return; }      // ⚠️ 多候选（无 match.row）
     if (it.catWarn) { st.catWarn++; warn++; return; }  // ⚠️ 疑非本类
-    if (h === 'nameonly') { warn++; return; }       // ⚠️ 只对上名称
-    ok++;                                           // ✅ 可靠匹配
+    if (h === 'nameonly' || h === 'similar') { warn++; return; }  // ⚠️ 仅名称 / 相似匹配，需人工确认
+    ok++;                                           // ✅ 自动匹配
   });
   const cat = document.getElementById('qCat').value || '';
 
   document.getElementById('quoteStats').innerHTML =
-    '<span style="color:var(--grn);font-weight:600">✅ 可靠匹配 ' + ok + '</span>' +
-    '　<span style="color:var(--yel);font-weight:600">⚠️ 需确认 ' + warn + '</span>' +
+    '<span style="color:var(--grn);font-weight:600">✅ 自动匹配 ' + ok + '</span>' +
+    '　<span style="color:var(--yel);font-weight:600">⚠️ 待确认 ' + warn + '</span>' +
     '　<span style="color:var(--red);font-weight:600">❌ 未匹配 ' + st.none + '</span>' +
     '　<span style="color:var(--tx3)">供应商标注不报价 ' + st.skip + ' 行</span>' +
     '<div style="margin-top:6px;font-size:11px;color:var(--tx3);line-height:1.7">' +
-      '「需确认」的行默认<b>不勾选</b>、不会写入 —— 多候选请在下方下拉里点选正确的清单行，再手工勾上。' +
-      (st.nameonly ? '<br>🔸 ' + st.nameonly + ' 行只对上了名称，单位或工程量与原清单不一致，请核对单位口径（如 ㎡ / m）后决定。' : '') +
+      '「待确认」的行默认<b>不勾选</b>、不会写入 —— 多候选请在下方下拉里点选正确的清单行，再手工勾上。' +
+      (st.similar ? '<br>🔶 ' + st.similar + ' 行是按名称+特征<b>相似度</b>对上的（非精确），请核对是否同一项目再勾选。' : '') +
+      (st.nameonly ? '<br>🔸 ' + st.nameonly + ' 行只对上了名称，单位与原清单不一致，请核对单位口径（如 ㎡ / m）后决定。' : '') +
       (st.catWarn ? '<br>⚠️ ' + st.catWarn + ' 行虽匹配上清单，但内容不像' + (cat ? '「' + esc(cat) + '」' : '本') + '类材料，请确认是不是串价。' : '') +
       (st.none ? '<br>❌ ' + st.none + ' 行在原清单里找不到对应项目 —— 可能是供应商自行增项，需人工判断。' : '') +
     '</div>';
@@ -3057,13 +3117,16 @@ function renderQuotePreview() {
     '<th style="text-align:right;padding:6px 8px;width:74px">工程量</th>' +
     '<th style="text-align:right;padding:6px 8px;width:84px">报价</th>' +
     '<th style="text-align:left;padding:6px 8px;width:152px">匹配到清单</th>' +
-    '<th style="text-align:right;padding:6px 8px;width:80px">原值</th></tr></thead><tbody>';
+    '<th style="text-align:right;padding:6px 8px;width:130px">旧价 → 新价</th></tr></thead><tbody>';
 
   list.forEach(it => {
     const i = _quoteItems.indexOf(it);
     const how = QUOTE_HOW[it.match.how] || QUOTE_HOW.none;
     const old = it.match.row ? effRowMatPrice(it.match.row) : 0;
-    let stCell = '<span style="color:' + how.c + '">' + how.t + '</span>';
+    const ru = it.match.row ? normKey(it.match.row.unit) : '';
+    const unitDiff = it.match.row && normKey(it.unit) && ru && normKey(it.unit) !== ru;
+    let stCell = '<span style="color:' + how.c + '">' + how.t + (it.match.how === 'similar' && it.match.sim ? ' ' + it.match.sim + '%' : '') + '</span>';
+    if (unitDiff) stCell += '<br><span style="color:var(--red);font-size:10px">⚠️ 单位不一致（' + esc(it.unit) + ' ↔ ' + esc(it.match.row.unit) + '）</span>';
     if (it.catWarn) stCell += '<br><span style="color:var(--yel);font-size:10px">⚠️ 内容不像本类材料</span>';
     if (it.match.how === 'ambiguous') {
       stCell += '<br><select onchange="quotePickCandidate(' + i + ',this.value)" style="margin-top:3px;font-size:10px;max-width:140px">' +
@@ -3080,7 +3143,11 @@ function renderQuotePreview() {
       '<td style="padding:5px 8px;text-align:right">' + (parseFloat(it.qty) || 0) + '</td>' +
       '<td style="padding:5px 8px;text-align:right;font-weight:600">' + fmt(it.price) + '</td>' +
       '<td style="padding:5px 8px">' + stCell + '</td>' +
-      '<td style="padding:5px 8px;text-align:right;color:var(--tx3)">' + fmt(old) + '</td></tr>';
+      '<td style="padding:5px 8px;text-align:right;white-space:nowrap">' +
+        '<span style="color:var(--tx3)">' + fmt(old) + '</span>' +
+        ' <span style="color:var(--tx3)">→</span> ' +
+        '<span style="font-weight:600;color:' + (old>0 && Math.abs(old-it.price)>1e-6 ? 'var(--accent)' : 'var(--tx2)') + '">' + fmt(it.price) + '</span>' +
+      '</td></tr>';
   });
   html += '</tbody>';
   document.getElementById('quoteTbl').innerHTML = html;
@@ -3124,23 +3191,27 @@ function applyQuoteImport() {
   const targets = _quoteItems.filter(it => it.checked && it.match.row);
   if (!targets.length) { toast('没有勾选可导入的行'); return; }
 
-  let written = 0, skipped = 0, dup = 0;
+  let assigned = 0, staged = 0, pending = 0, kept = 0, dup = 0;
   const done = {};
   targets.forEach(it => {
     const r = it.match.row;
     if (done[r.id]) { dup++; return; }                        // 同一清单行被多行报价命中 → 只取第一条
-    if (mode === 'fill' && (parseFloat(r.matPrice) || 0) > 0) { skipped++; return; }
-    r.matPrice = it.price;
-    if (cat && !(r.matName || '').trim()) r.matName = cat;    // 仅补空，不覆盖人工输入的主材名
-    syncRowMat(r.id);          // 唯一子目自动分配；多子目标记待分配
     done[r.id] = 1;
-    written++;
+    const st = routeRowMat(r, it.price, cat, mode);           // 按品类落子目；未套价则暂存
+    if (st === 'assigned') assigned++;
+    else if (st === 'staged') staged++;
+    else if (st === 'pending') pending++;
+    else kept++;                                              // 原值保留（同品类已有价 / 仅填空缺遇已有价）
   });
 
   renderBoq(); updateSum();
   if (typeof updateInternalCostPanel === 'function') updateInternalCostPanel();
   closeQuoteModal();
-  toast('✓ 已导入 ' + written + ' 条主材价' + (skipped ? '（跳过已有价 ' + skipped + '）' : '') + (dup ? '（同行重复报价 ' + dup + '）' : ''));
+  toast('✓ 主材价导入：套入子目 ' + assigned +
+    (staged   ? '、暂存待套价 ' + staged   : '') +
+    (pending  ? '、多子目待分配 ' + pending : '') +
+    (kept     ? '、原值未动 ' + kept       : '') +
+    (dup      ? '、同行重复 ' + dup        : ''));
 }
 
 // ═══════════ 方式二：模板导出 ═══════════
