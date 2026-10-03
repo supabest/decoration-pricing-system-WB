@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **默认在 `dev` 分支进行所有开发工作，禁止直接在 `main` 分支修改代码。**
 
-- **`main`** — 稳定版 v1.3.0，生产环境，Render + Cloudflare Pages 自动部署。**只接受 merge，禁止直接提交。**
+- **`main`** — 稳定版 v1.4.0，生产环境，Render + Cloudflare Pages 自动部署。**只接受 merge，禁止直接提交。**
 - **`dev`** — 日常开发分支。**所有代码修改、新功能、bug 修复都在此分支进行。** 稳定后 merge 到 main 上线。
 - 每次开始工作前执行 `git branch` 确认当前在 `dev` 分支，如果在 `main` 则执行 `git checkout dev`。
 
@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **前端**: React + TypeScript + Vite（Cloudflare Pages 部署）
 - **核心工具**: `docs/tool.html`（~2600行纯 HTML/CSS/JS 单页应用）
 - **生产**: https://decoration-pricing-system.pages.dev（Pages）+ https://decoration-pricing-system.onrender.com（Render）
-- **版本**: V1.3.0
+- **版本**: V1.4.0
 - **仓库**: 私有（GitHub）
 
 ## 本地开发

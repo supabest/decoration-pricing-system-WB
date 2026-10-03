@@ -7,7 +7,7 @@ from datetime import datetime
 # ═══════════ 请求模型 ═══════════
 
 class ReleaseCreate(BaseModel):
-    version: str = Field(..., min_length=1, max_length=32, description="版本号，如 V1.3.0")
+    version: str = Field(..., min_length=1, max_length=32, description="版本号，如 V1.4.0")
     title: str = Field(..., min_length=1, max_length=256)
     summary: str = Field(default="", max_length=1024)
     content: str = Field(default="", max_length=65536)
