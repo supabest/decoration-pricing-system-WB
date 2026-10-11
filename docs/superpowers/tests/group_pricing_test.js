@@ -12,7 +12,7 @@
  * 覆盖 Task 6 契约：buildGroupSummary（T02 四部分汇总勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1
  *   · 绿安/baogan 基数只含分部分项人工+机械 · coordFee=null≠0 · 费率全取 GROUP_RATES 不硬编码 · perSqm 除零守护）
  *   collectGroupSummaryPayload（后端请求体：raw 14 字段 items · 不下发前端 h · rates/manual_fees 顶层键）
- *   评审修复回归：M-1 面积/手工费负值钳到 ≥0 不倒扣 part3 · M-6 payload.rates 浅拷贝不共享 GROUP_RATES 活引用
+ *   评审修复回归：M-1 面积/手工费负值钳到 ≥0 不倒扣 part3 · M-1b 采集点（汇总 opts / 后端 payload / 持久化列）同源下钳 · M-6 payload.rates 浅拷贝不共享 GROUP_RATES 活引用
  * 运行：node docs/superpowers/tests/group_pricing_test.js
  */
 const fs = require('fs');
@@ -120,7 +120,7 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   // ── T5：派生聚合 / 挂载面板 / gtype 隔离护栏 ──
   'rowGroupSubs', 'rowGroupAgg', 'rowGroupPending', 'groupExportFee', 'groupSubCells', 'groupSubRowHtml', 'updGroupMat',
   // ── T6：T02 四部分汇总预览计算 + 导出 payload 收集 ──
-  'buildGroupSummary', 'collectGroupSummaryPayload', 'collectGroupManualFees',
+  'buildGroupSummary', 'collectGroupSummaryPayload', 'collectGroupManualFees', 'getGroupSummaryOpts',
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
   'delSub', 'addSub', 'syncRowMat', 'routeRowMat', 'subCategoryScore', 'normKey', 'rowMatPending', 'fmt', 'esc'];
@@ -1017,6 +1017,36 @@ ok('M1 负面积钳到 0 → coordAmount 不为负（按 0 面积计=0，不产�
 ok('M1b 负手工费逐项钳到 ≥0 → manualFees 汇总为 0（不被负数拉低）', run('SUMNEG.manualFees') === 0, 'manualFees=' + run('SUMNEG.manualFees'));
 near('M1c part3 不被倒扣：负面积+负手工费下 part3 = 纯预算包干费', run('SUMNEG.part3'), run('SUMNEG.laborMechBase * GROUP_RATES.baogan'), 0.01);
 run(RATE_RESET);
+
+console.log('\n  · 采集点下钳（M-1b）：负值在进汇总 opts / 后端 payload / 持久化列之前钳 0');
+run('document.getElementById("fitoutAreaInp").value="-50"; document.getElementById("manualFeeOvertimeInp").value="-1000"; document.getElementById("manualFeeChangeInp").value="-500"; document.getElementById("manualFeeInflationInp").value="-200";');
+const PLNEG = run('collectGroupSummaryPayload();');
+ok('M1d 负面积/负手工费 → payload fitout_area 与 manual_fees 三键全为 0（Task 7 后端重算拿不到负数）',
+  PLNEG.fitout_area === 0 && PLNEG.manual_fees.overtime_fee === 0 && PLNEG.manual_fees.contract_change_fee === 0 && PLNEG.manual_fees.inflation_fee === 0,
+  JSON.stringify([PLNEG.fitout_area, PLNEG.manual_fees]));
+ok('M1e 钳制只改值不改键：负值 payload 顶层键集/manual_fees 键集 = 正值 payload（items 14 键契约不受影响）',
+  JSON.stringify(Object.keys(PLNEG).sort()) === JSON.stringify(Object.keys(PL).sort()) &&
+  JSON.stringify(Object.keys(PLNEG.manual_fees).sort()) === JSON.stringify(Object.keys(PL.manual_fees).sort()),
+  JSON.stringify([Object.keys(PLNEG), Object.keys(PLNEG.manual_fees)]));
+ok('M1f getGroupSummaryOpts 同源下钳（面板输入 → 汇总 opts 与 collect 不分叉）',
+  run('getGroupSummaryOpts().fitoutArea') === 0 && run('getGroupSummaryOpts().manualFees.overtime_fee') === 0,
+  JSON.stringify(run('getGroupSummaryOpts()')));
+run('document.getElementById("fitoutAreaInp").value="120.5"; document.getElementById("manualFeeOvertimeInp").value="800";');
+ok('M1g 正值路径逐字不变：120.5 / 800 原样透传（Math.max 不裁剪正数）',
+  run('getGroupSummaryOpts().fitoutArea') === 120.5 && run('getGroupSummaryOpts().manualFees.overtime_fee') === 800,
+  JSON.stringify(run('getGroupSummaryOpts()')));
+const SAVE_START = TOOL.indexOf('async function doAutoSave');
+const RESTORE_START = TOOL.indexOf('async function restoreProject');
+const SAVEBLK = TOOL.slice(SAVE_START, RESTORE_START);          // doAutoSave 草稿 + saveProject 正式
+const RESTOREBLK = TOOL.slice(RESTORE_START, TOOL.indexOf('async function deleteProject'));   // 写回侧
+const CLAMPED = (SAVEBLK.match(/Math\.max\(0, parseFloat\(document\.getElementById\('(fitoutAreaInp|manualFeeOvertimeInp|manualFeeChangeInp|manualFeeInflationInp)'\)\?\.value\) \|\| 0\)/g) || []).length;
+ok('M1h 两处保存 payload（doAutoSave 草稿 + saveProject 正式）的 4 个新列读值全部已下钳（源码级 8/8）',
+  CLAMPED === 8, 'clamped=' + CLAMPED);
+ok('M1hb 恢复写回侧保持 != null ? x : \'\' 回落（不进钳制，旧快照缺列回落空串→计算 0）',
+  (RESTOREBLK.match(/snap\.(fitout_area|overtime_fee|contract_change_fee|inflation_fee) != null \? snap\.\1 : ''/g) || []).length === 4
+  && RESTOREBLK.indexOf('Math.max(0, parseFloat(snap.') < 0,
+  'restore_lines=' + (RESTOREBLK.match(/snap\.(fitout_area|overtime_fee|contract_change_fee|inflation_fee) != null/g) || []).length);
+run('document.getElementById("fitoutAreaInp").value=""; document.getElementById("manualFeeOvertimeInp").value=""; document.getElementById("manualFeeChangeInp").value=""; document.getElementById("manualFeeInflationInp").value="";');
 
 console.log('\n  · payload.rates 浅拷贝（M-6）：不共享 GROUP_RATES 活引用，费率补写不回溯漂移已构造 payload');
 run('document.getElementById("projName").value="拷贝测试"; document.getElementById("fitoutAreaInp").value="100";');

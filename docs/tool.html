@@ -2853,15 +2853,16 @@ function buildGroupSummary(rows, opts) {
 }
 
 // 从项目表单/汇总面板内的手工输入收集 buildGroupSummary 所需的 opts（费率仍走 GROUP_RATES，不在此）
+// M-1b：采集点即下钳 ≥0（负值不进汇总 opts，也不进后端 payload/持久化列）；正值路径逐字不变
 function getGroupSummaryOpts() {
   const areaEl = document.getElementById('fitoutAreaInp');
   return {
-    fitoutArea: areaEl ? (parseFloat(areaEl.value) || 0) : 0,
+    fitoutArea: areaEl ? Math.max(0, parseFloat(areaEl.value) || 0) : 0,
     manualFees: collectGroupManualFees(),
   };
 }
 function collectGroupManualFees() {
-  const fee = id => { const e = document.getElementById(id); return e ? (parseFloat(e.value) || 0) : 0; };
+  const fee = id => { const e = document.getElementById(id); return e ? Math.max(0, parseFloat(e.value) || 0) : 0; };
   return { overtime_fee: fee('manualFeeOvertimeInp'), contract_change_fee: fee('manualFeeChangeInp'), inflation_fee: fee('manualFeeInflationInp') };
 }
 
@@ -2897,7 +2898,7 @@ function collectGroupSummaryPayload() {
   });
   return {
     project_name: projEl ? (projEl.value || '套价表') : '套价表',
-    fitout_area: areaEl ? (parseFloat(areaEl.value) || 0) : 0,
+    fitout_area: areaEl ? Math.max(0, parseFloat(areaEl.value) || 0) : 0,   // M-1b：采集点下钳，后端拿不到负面积
     rates: { ...GROUP_RATES },   // M-6：浅拷贝，避免下发 GROUP_RATES 活引用被后续懒加载补写费率而漂移
     manual_fees: collectGroupManualFees(),
     items: items,
@@ -4416,10 +4417,11 @@ async function doAutoSave() {
       proj_team: document.getElementById('projTeam')?.value || '',
       proj_date: document.getElementById('projDate')?.value || '',
       hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
-      fitout_area: parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0,
-      overtime_fee: parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0,
-      contract_change_fee: parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0,
-      inflation_fee: parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0,
+      // M-1b：面积/手工费在写入持久化列前下钳 ≥0（负值不进 projects）
+      fitout_area: Math.max(0, parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0),
+      overtime_fee: Math.max(0, parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0),
+      contract_change_fee: Math.max(0, parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0),
+      inflation_fee: Math.max(0, parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0),
       groups_json: JSON.parse(JSON.stringify(groups)),
       price_overrides: JSON.parse(JSON.stringify(userPriceOverrides || {})),
       mgmt_rate: globalMgmtRate,
@@ -4488,10 +4490,11 @@ async function saveProject() {
     proj_team: document.getElementById('projTeam').value,
     proj_date: document.getElementById('projDate').value,
     hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
-    fitout_area: parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0,
-    overtime_fee: parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0,
-    contract_change_fee: parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0,
-    inflation_fee: parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0,
+    // M-1b：面积/手工费在写入持久化列前下钳 ≥0（负值不进 projects）
+    fitout_area: Math.max(0, parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0),
+    overtime_fee: Math.max(0, parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0),
+    contract_change_fee: Math.max(0, parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0),
+    inflation_fee: Math.max(0, parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0),
     groups_json: JSON.parse(JSON.stringify(groups)),
     price_overrides: JSON.parse(JSON.stringify(userPriceOverrides)),
     mgmt_rate: globalMgmtRate,
