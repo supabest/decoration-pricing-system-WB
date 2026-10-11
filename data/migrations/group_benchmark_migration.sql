@@ -5,6 +5,8 @@
 -- 幂等：可重复执行（CREATE TABLE IF NOT EXISTS / ON CONFLICT DO NOTHING /
 --        DROP POLICY IF EXISTS）
 -- 执行方式：Supabase Dashboard → SQL Editor（本仓库脚本不直连 Supabase DDL）
+-- 执行后冒烟 SQL（供执行者顺手跑）：
+--   select id, is_admin from public.profiles where id = auth.uid();
 -- ============================================================
 
 -- ============================================================
@@ -62,6 +64,8 @@ ON CONFLICT (key) DO NOTHING;
 --    依据：supabase-profile-insert-policy.sql:9 (auth.uid() = id) +
 --          admin.html:446 / tool.html:744 / CLAUDE.md:116 (profiles.is_admin boolean)
 -- ============================================================
+-- 依赖：public.profiles 存在且 authenticated 可读自身行（own-row SELECT policy）；
+--       否则写策略静默拒绝。
 ALTER TABLE public.group_benchmark_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.group_pricing_rules  ENABLE ROW LEVEL SECURITY;
 
@@ -70,13 +74,13 @@ CREATE POLICY gbi_read_auth ON public.group_benchmark_items FOR SELECT TO authen
 
 DROP POLICY IF EXISTS gbi_write_admin ON public.group_benchmark_items;
 CREATE POLICY gbi_write_admin ON public.group_benchmark_items FOR ALL TO authenticated
-    USING ((SELECT true FROM public.profiles WHERE id = auth.uid() AND is_admin))
-    WITH CHECK ((SELECT true FROM public.profiles WHERE id = auth.uid() AND is_admin));
+    USING (EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin))
+    WITH CHECK (EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin));
 
 DROP POLICY IF EXISTS gpr_read_auth ON public.group_pricing_rules;
 CREATE POLICY gpr_read_auth ON public.group_pricing_rules FOR SELECT TO authenticated USING (true);
 
 DROP POLICY IF EXISTS gpr_write_admin ON public.group_pricing_rules;
 CREATE POLICY gpr_write_admin ON public.group_pricing_rules FOR ALL TO authenticated
-    USING ((SELECT true FROM public.profiles WHERE id = auth.uid() AND is_admin))
-    WITH CHECK ((SELECT true FROM public.profiles WHERE id = auth.uid() AND is_admin));
+    USING (EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin))
+    WITH CHECK (EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin));
