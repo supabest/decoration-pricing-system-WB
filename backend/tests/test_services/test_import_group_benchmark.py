@@ -17,8 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import scripts.import_group_benchmark as mod  # noqa: E402  (I1/I2: 运行时取新符号，避免导入期红)
 from scripts.import_group_benchmark import (  # noqa: E402
-    parse_workbook, recalc_h, XLSX_DEFAULT, KNOWN_ANOMALIES,
+    parse_workbook, recalc_h, XLSX_DEFAULT, KNOWN_ANOMALIES, classify_anomalies,
 )
 
 HAS_XLSX = os.path.exists(XLSX_DEFAULT)
@@ -93,12 +94,81 @@ def test_dash_placeholder_not_treated_as_material():
                for m in a069['mats']), a069['mats']
 
 
+# ── I1/I2：闸门与解析护栏（均不依赖 xlsx）──────────────────────────────────
+def _mk_item(code, lab=100.0, raw=0.0):
+    """构造一条 |Δ|>0.01 的子目：recalc_h≈129 vs raw=0 → 必判偏差。
+
+    仅用于喂 classify_anomalies / main，不经真实解析。
+    """
+    return {'code': code, 'discipline': 'A', 'section_name': 'sec', 'name': 'n',
+            'spec': '', 'unit': 'm2', 'work_type': 'w', 'lab_price': lab,
+            'mats': [], 'aux_cost': 0.0, 'mech_cost': 0.0,
+            'is_owner_supply': False, 'raw_composite': raw, 'source_row': 1}
+
+
+def test_classify_anomalies_detects_both_directions():
+    """I1(a)：注入含 1 个未登记码 + 缺 1 个登记码，断言 unknown/missing 双向都识别。"""
+    registered = set(KNOWN_ANOMALIES)
+    dropped = sorted(registered)[0]                     # 本次未复现的登记码（→ missing）
+    injected = 'ZS02-A-999'                             # 未登记的偏差码（→ unknown）
+    bad = (registered - {dropped}) | {injected}
+    unknown, missing = classify_anomalies(bad)
+    assert unknown == [injected]
+    assert missing == [dropped]
+
+
+def test_main_unknown_anomaly_exits_1_and_skips_write(monkeypatch, tmp_path):
+    """I1(b)：注入 1 条未登记偏差，main(['--dry-run']) 返回 1 且 write_supabase 未被调用。"""
+    items = [_mk_item(c) for c in KNOWN_ANOMALIES] + [_mk_item('ZS02-A-999')]
+    monkeypatch.setattr(mod, 'parse_workbook', lambda p: items, raising=False)
+    monkeypatch.setattr(mod, 'PARSE_FAILURES', [], raising=False)
+    calls = {'write': 0}
+
+    def _spy(*a, **k):
+        calls['write'] += 1
+
+    monkeypatch.setattr(mod, 'write_supabase', _spy, raising=False)
+    rc = mod.main(['--xlsx', str(tmp_path), '--dry-run'])
+    assert rc == 1
+    assert calls['write'] == 0
+
+
+def test_write_supabase_missing_key_raises_not_sys_exit(monkeypatch):
+    """I1(c) + M5：缺 SUPABASE_SERVICE_KEY 时 write_supabase 抛 RuntimeError（不再 sys.exit），
+    退出码统一由 main() 决定。"""
+    monkeypatch.delenv('SUPABASE_SERVICE_KEY', raising=False)
+    with pytest.raises(RuntimeError):
+        mod.write_supabase([_mk_item('ZS02-A-001')])
+
+
+def test_num_records_unparseable_cell(monkeypatch):
+    """I2：非 BLANK 且 float() 失败的串必须记录到 PARSE_FAILURES；BLANK 占位符不记录。"""
+    monkeypatch.setattr(mod, 'PARSE_FAILURES', [], raising=False)
+    assert mod._num('5%', col=5) is None               # 仍回落 default
+    assert len(mod.PARSE_FAILURES) == 1
+    assert mod.PARSE_FAILURES[0][-1] == '5%'           # 原值入档
+    mod.PARSE_FAILURES.clear()
+    assert mod._num('——', col=7) is None               # BLANK_TOKENS → 不记录
+    assert mod.PARSE_FAILURES == []
+
+
+def test_main_exits_1_on_unparsed_cells(monkeypatch, tmp_path):
+    """I2：审计本可过（8 条全命中登记表），但 PARSE_FAILURES 非空 → 视为审计未过 exit 1。"""
+    items = [_mk_item(c) for c in KNOWN_ANOMALIES]     # unknown/missing 皆空
+    monkeypatch.setattr(mod, 'parse_workbook', lambda p: items, raising=False)
+    monkeypatch.setattr(mod, 'PARSE_FAILURES', [('col5', '5%')], raising=False)
+    rc = mod.main(['--xlsx', str(tmp_path), '--dry-run'])
+    assert rc == 1
+
+
 if __name__ == '__main__':
-    # 无 pytest 环境下的降级入口（CLAUDE.md:94 惯例）
+    # 无 pytest 环境下的降级入口（CLAUDE.md:94 惯例）；monkeypatch 类用例依赖
+    # pytest fixture，仅在 pytest 下跑，故这里只跑无 fixture 的纯函数用例。
     _tests = [
         test_recalc_h_owner_supply_zero_mat,
         test_recalc_h_with_mat_price,
         test_known_anomalies_registry_is_exactly_8,
+        test_classify_anomalies_detects_both_directions,
         test_full_audit_296_items,
         test_dash_placeholder_not_treated_as_material,
     ]

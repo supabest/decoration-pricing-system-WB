@@ -21,7 +21,8 @@ Excel 列位（sheet A/B/C/D 相同，0-based）：
     backend/venv311/bin/python scripts/import_group_benchmark.py --dry-run
     SUPABASE_SERVICE_KEY=... backend/venv311/bin/python scripts/import_group_benchmark.py --write
 
-风格参照 scripts/import_benchmark_prices.py（argparse / --dry-run / 进度打印）。
+CLI 契约（--dry-run/--write、SUPABASE_SERVICE_KEY 环境变量、退出码语义）来自 brief；
+输出风格（argparse / 进度打印 / 📥✅❌ 前缀）参照 scripts/import_benchmark_prices.py。
 """
 import argparse
 import json
@@ -54,6 +55,10 @@ SEC_RE = re.compile(r'^([一二三四五六七八九十]+|（[一二三四五六
 
 # 源表数字列里的「杂质」写法：全角破折号（=该项无金额）、长破折号、半角横线、斜杠、空串
 BLANK_TOKENS = ('', '——', '—', '－', '-', '–', '/', '无')
+
+# I2：不可解析（非 BLANK 且 float() 失败）的数字单元格记录 (列位, 原值)；
+#     main 据其长度决定是否放行（>0 → 审计未过 exit 1，与阈值同级护栏）。
+PARSE_FAILURES = []
 
 # 表列顺序（与 data/migrations/group_benchmark_migration.sql 一致）
 COLUMNS = ['code', 'discipline', 'section_name', 'name', 'spec', 'unit', 'work_type',
@@ -92,10 +97,12 @@ def _flat(x):
     return _txt(x).replace('\n', '').replace('\r', '')
 
 
-def _num(x, default=None):
+def _num(x, default=None, col=None):
     """数字单元格容错取数。
 
     None / '' / '——' 等占位写法 → default；数字字符串（'108.46'）→ float。
+    非 BLANK 且 float() 失败（如 '5%'）→ 记录 (col, 原值) 到 PARSE_FAILURES 后
+    回落 default；此类静默数据丢失由 main 的审计闸门拦截（I2）。
     """
     if x is None:
         return default
@@ -109,6 +116,7 @@ def _num(x, default=None):
     try:
         return float(s)
     except ValueError:
+        PARSE_FAILURES.append((col, str(x)))
         return default
 
 
@@ -126,9 +134,9 @@ def _mk_mat(row):
     """
     return {
         'name': _flat(row[6]),
-        'price': _num(row[7]),                      # '——'/''/None → None（未定价）
+        'price': _num(row[7], col=7),                   # '——'/''/None → None（未定价）
         'unit': _flat(row[8]),
-        'consumption': _num(row[9], default=0),     # '——'/None → 0
+        'consumption': _num(row[9], default=0, col=9),  # '——'/None → 0
     }
 
 
@@ -145,13 +153,13 @@ def _mk_item(disc, section, ri, row):
         'spec': spec,
         'unit': c[3].replace('\n', ''),
         'work_type': c[4].replace('\n', ''),
-        'lab_price': _num(row[5], default=0),        # A 人工，'——' → 0
+        'lab_price': _num(row[5], default=0, col=5),    # A 人工，'——' → 0
         # B×C；'——'/'-'/'—' 等非主材名不入库（R2），只有占位主材的子目 mats==[]；续行追加
         'mats': [first_mat] if _is_real_mat_name(first_mat['name']) else [],
-        'aux_cost': _num(row[10], default=0),        # D 辅材
-        'mech_cost': _num(row[11], default=0),       # E 机械
+        'aux_cost': _num(row[10], default=0, col=10),   # D 辅材
+        'mech_cost': _num(row[11], default=0, col=11),  # E 机械
         'is_owner_supply': '甲供' in spec,
-        'raw_composite': _num(row[14], default=0),   # Excel 原 H（校验锚点）
+        'raw_composite': _num(row[14], default=0, col=14),  # Excel 原 H（校验锚点）
         'source_row': ri,
     }
 
@@ -173,6 +181,7 @@ def parse_workbook(path):
                     items.append(cur)
                 elif SEC_RE.match(c[0]) and c[1]:
                     section = c[1]                   # 分部标题行
+                    cur = None                       # M-sec：分部切换，续行不得跨分部挂靠
                 elif cur and not c[0] and _is_real_mat_name(_flat(row[6])):
                     cur['mats'].append(_mk_mat(row))   # 多主材续行（如 A-009 的干硬性砂浆）；'——' 不算主材
     finally:
@@ -216,7 +225,7 @@ def classify_anomalies(bad_codes):
     return unknown, missing
 
 
-def print_audit(items, rates=None, threshold=DELTA_THRESHOLD, show_all=True):
+def print_audit(items, rates=None, threshold=DELTA_THRESHOLD):
     """打印审计表 + 摘要 + 超阈值明细（登记条目列为 WARN 并打 reason）。
     返回 (bad, unknown, missing)。"""
     rows = audit(items, rates)
@@ -228,20 +237,16 @@ def print_audit(items, rates=None, threshold=DELTA_THRESHOLD, show_all=True):
     print('ZS02 附录2 综合单价 H 重算审计  阈值 |Δ| ≤ {}  '
           '（引擎口径：T01 公式重算；raw_composite 存 Excel 原值仅作对账留档）'.format(threshold))
     print('=' * 78)
-    if show_all:
-        print('{:<12} {:>12} {:>12} {:>10} {}'.format('code', '重算H', '原H', 'Δ', '判定'))
-        for code, h, raw, delta, _ in rows:
-            if abs(delta) <= threshold:
-                flag = 'ok'
-            elif code in KNOWN_ANOMALIES:
-                flag = '⚠️ WARN(已登记)'
-            else:
-                flag = '❌ 未登记偏差'
-            print(_fmt_row(code, h, raw, delta, flag))
-        print('-' * 78)
-    else:
-        for code, h, raw, delta, _ in bad:
-            print(_fmt_row(code, h, raw, delta, '⚠️' if code in KNOWN_ANOMALIES else '❌'))
+    print('{:<12} {:>12} {:>12} {:>10} {}'.format('code', '重算H', '原H', 'Δ', '判定'))
+    for code, h, raw, delta, _ in rows:
+        if abs(delta) <= threshold:
+            flag = 'ok'
+        elif code in KNOWN_ANOMALIES:
+            flag = '⚠️ WARN(已登记)'
+        else:
+            flag = '❌ 未登记偏差'
+        print(_fmt_row(code, h, raw, delta, flag))
+    print('-' * 78)
 
     by_disc = {}
     for it in items:
@@ -306,9 +311,9 @@ def write_supabase(items, batch_size=100):
     """POST {SUPABASE_URL}/rest/v1/group_benchmark_items，Prefer: resolution=merge-duplicates。"""
     service_key = os.environ.get('SUPABASE_SERVICE_KEY')
     if not service_key:
-        print('❌ 缺少环境变量 SUPABASE_SERVICE_KEY（service role key），无法写库')
-        print('   用法：SUPABASE_SERVICE_KEY=... python scripts/import_group_benchmark.py --write')
-        sys.exit(1)
+        raise RuntimeError(
+            '缺少环境变量 SUPABASE_SERVICE_KEY（service role key），无法写库；'
+            '用法：SUPABASE_SERVICE_KEY=... python scripts/import_group_benchmark.py --write')
     base = os.environ.get('SUPABASE_URL', SUPABASE_URL_DEFAULT).rstrip('/')
     url = '{}/rest/v1/{}'.format(base, TABLE)
     ctx = ssl.create_default_context()
@@ -327,12 +332,10 @@ def write_supabase(items, batch_size=100):
                 resp.read()
                 print('  ✅ 批次 {}-{} → HTTP {}'.format(start + 1, start + len(chunk), resp.status))
         except urllib.error.HTTPError as e:
-            print('  ❌ 批次 {}-{} → HTTP {} {}'.format(
+            raise RuntimeError('批次 {}-{} → HTTP {} {}'.format(
                 start + 1, start + len(chunk), e.code, e.read().decode('utf-8', 'replace')[:500]))
-            sys.exit(1)
         except urllib.error.URLError as e:
-            print('  ❌ 网络错误：{}'.format(e.reason))
-            sys.exit(1)
+            raise RuntimeError('网络错误：{}'.format(e.reason))
         total += len(chunk)
     print('✅ upsert 完成：{} 条 → {}'.format(total, url))
     return total
@@ -361,6 +364,15 @@ def main(argv=None):
     print('   解析得 {} 条子目'.format(len(items)))
 
     bad, unknown, missing = print_audit(items)
+
+    # I2 解析护栏：任何非 BLANK 却无法解析的数字单元格，视为审计未过（与阈值同级）。
+    n_unparsed = len(PARSE_FAILURES)
+    print('未能解析的数字单元格: {} 个'.format(n_unparsed))
+    if n_unparsed:
+        print('❌ 审计闸门未过：{} 个数字单元格无法解析（口径性数据丢失，不写库）：{}'.format(
+            n_unparsed, PARSE_FAILURES[:10]))
+        return 1
+
     # R1 审计闸门：|Δ|>0.01 必须全部命中登记表且仅这 8 条；否则 exit 1。
     if unknown:
         print('❌ 审计闸门未过：{} 条 |Δ|>{} 未命中登记表：{}（不写库）'.format(
@@ -376,7 +388,11 @@ def main(argv=None):
 
     if args.write:
         print('📤 写库（Supabase REST upsert，code 为主键冲突列）')
-        write_supabase(items, batch_size=args.batch_size)
+        try:
+            write_supabase(items, batch_size=args.batch_size)
+        except RuntimeError as e:
+            print('❌ 写库失败：{}'.format(e))
+            return 1
     else:
         print('ℹ️ --dry-run：未写库。写库请执行 '
               'SUPABASE_SERVICE_KEY=... python scripts/import_group_benchmark.py --write')
