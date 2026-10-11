@@ -82,6 +82,8 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px
 /* 顶栏参数分区徽标：对外报价 / 对内核算，统一样式突出显示 */
 .zone-badge{background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;
   padding:3px 9px;border-radius:5px;font-weight:700;white-space:nowrap}
+/* 计价模式徽标：切入「对甲报价·集团基准价」时转蓝色，与对内成本态区分 */
+.zone-badge.grp{background:var(--acc-d);border-color:var(--acc);color:var(--acc)}
 /* 对甲合同金额：隐藏数字输入的上下箭头（金额较大，步进无意义） */
 #contractAmtInp::-webkit-outer-spin-button,#contractAmtInp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 #contractAmtInp{-moz-appearance:textfield;appearance:textfield}
@@ -307,6 +309,11 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <button class="btn btn-sm hidden" id="aiStopBtn" style="color:var(--red);border-color:var(--red)" onclick="stopAi()">⏹ 停止</button>
     </div>
     <div class="proj-bar" style="background:var(--bg3);border-bottom:1px solid var(--border);padding:6px 14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+      <div class="pf" style="gap:8px;padding-right:12px;border-right:1px solid var(--border)" title="对内成本（默认）：现状引擎——人工×系数 + 辅材 + 主材，管理费/利润自定义手填。对甲报价·集团基准价：按 ZS02 清单套价，管理费/利润取 group_pricing_rules（17%/12%，基数=人工+机械）">
+        <span class="zone-badge" id="pricingModeBadge">对内成本</span>
+        <label style="font-size:11px;color:var(--tx2);font-weight:500;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="pricingModeRadio" id="modeInternalInp" value="internal" checked onchange="setPricingMode(this.value)">对内成本</label>
+        <label style="font-size:11px;color:var(--tx2);font-weight:500;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="pricingModeRadio" id="modeGroupInp" value="group" onchange="setPricingMode(this.value)">对甲报价·集团基准价</label>
+      </div>
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">项目名称</span><input class="pi" id="projName" type="text" placeholder="请输入项目名称" style="min-width:160px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--border);font-size:12px;outline:none"></div>
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">人工系数</span><span class="coef-badge" id="coefBadge" onclick="openCoefModal()" style="background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;padding:3px 9px;border-radius:5px;font-family:var(--mono);cursor:pointer;font-weight:700">×1.00</span></div>
       <div style="display:flex;align-items:center;gap:8px;padding-left:12px;border-left:1px solid var(--border)" title="对外报价口径：管理费/利润为报价加成，计入综合单价，随对外报价导出">
@@ -831,6 +838,47 @@ async function loadFromSupabase() {
   return false;
 }
 
+// ═══════════ GROUP BENCHMARK DATA（对甲报价·集团基准价 ZS02 + 集团取费参数）═══════════
+// 上游契约：data/migrations/group_benchmark_migration.sql（T1 建表+9 行费率种子）
+//          scripts/import_group_benchmark.py（T2 灌 296 条 ZS02 清单）
+// 懒加载：内部模式的启动路径零改动——这两张表只在首次切入 group 模式时由
+//          setPricingMode → ensureGroupData 请求；本机未建表时优雅降级（toast + 可重试）。
+async function loadGroupBenchmark() {
+  const rows = await _get('group_benchmark_items', { order: { col: 'code', asc: true } }).catch(() => []);
+  if (!rows || !rows.length) { toast('⚠️ 集团基准价库（group_benchmark_items）无数据：请确认迁移与导入脚本已执行'); return false; }
+  // PostgREST 一般已把 JSONB 解成数组；文本回传时兜底解析，坏值置空数组而不是拖垮整库
+  rows.forEach(r => {
+    if (!r) return;
+    if (typeof r.mats === 'string') { try { r.mats = JSON.parse(r.mats); } catch (e) { r.mats = []; } }
+    else if (r.mats == null) { r.mats = []; }
+  });
+  rebuildGroupBenchMap(rows);
+  return true;
+}
+async function loadGroupPricingRules() {
+  const rows = await _get('group_pricing_rules', { order: { col: 'key', asc: true } }).catch(() => []);
+  if (!rows || !rows.length) { toast('⚠️ 集团费率库（group_pricing_rules）无数据：保持 T01 标准费率'); return false; }
+  let hit = 0;
+  rows.forEach(r => {
+    if (!r) return;
+    // 赶工费/变更费/涨幅费等手工金额行不在映射表内 → 直接忽略（不进 GROUP_RATES）
+    const k = Object.prototype.hasOwnProperty.call(GROUP_RULE_KEY_MAP, r.key) ? GROUP_RULE_KEY_MAP[r.key] : null;
+    if (!k) return;
+    const v = (r.value === null || r.value === undefined || r.value === '') ? null : parseFloat(r.value);
+    GROUP_RATES[k] = (v === null || isNaN(v)) ? null : v;   // fee 类 NULL 记为「未填」而不是 0
+    if (GROUP_RATES[k] !== null) hit++;
+  });
+  if (!hit) { toast('⚠️ 集团费率库无有效费率值：保持 T01 标准费率'); return false; }
+  return true;
+}
+async function loadGroupDataOnce() {
+  if (!groupBenchLoaded) groupBenchLoaded = await loadGroupBenchmark();
+  if (!groupRulesLoaded) groupRulesLoaded = await loadGroupPricingRules();
+  groupDataLoaded = groupBenchLoaded && groupRulesLoaded;   // 有一组失败 → 保持 false，下次切入可重试
+  if (groupDataLoaded) toast('✅ 对甲报价数据就绪：集团基准价 ' + groupBenchRows.length + ' 条 · 管理费 ' + groupRateLabel(GROUP_RATES.mgmt) + ' / 利润 ' + groupRateLabel(GROUP_RATES.profit));
+  return groupDataLoaded;
+}
+
 // ═══════════ STATE ═══════════
 // groups[]: {id, sheetName, open, sections[]: {id, name, open, rows[]: ROW}}
 // ROW: {id, name, spec, unit, qty, remark, open, subs[], aiNote}
@@ -843,6 +891,49 @@ function onGlobalRateChange() {
   globalMgmtRate = parseInt(document.getElementById('mgmtRateInp').value) || 0;
   globalProfitRate = parseInt(document.getElementById('profitRateInp').value) || 0;
   _deb('rate',renderBoq,150);
+}
+
+// ═══════════ 计价模式开关（第二计价引擎的数据基座；公式本体在 T4 接入）═══════════
+let pricingMode = 'internal';   // 对内成本（现状引擎，零改动）
+let groupBenchMap = {};          // key=code，value=group_benchmark_items 行原样（不改字段名，T4 直读 lab_price/mats/aux_cost/mech_cost）
+let groupBenchRows = [];         // 原样有序数组（map 丢序，分部小计与汇总导出按此顺序）
+let GROUP_RATES = {mgmt:0.17, profit:0.12, green:0.13, baogan:0.03, tax:0.09, coordFee:null};  // 集团费率（小数）：初值即 T01 标准费率，加载成功后被库值覆盖
+const GROUP_RULE_KEY_MAP = {mgmt_rate:'mgmt', profit_rate:'profit', green_safety_rate:'green', lump_sum_rate:'baogan', tax_rate:'tax', fitout_coordination_fee:'coordFee'};  // 表 key → GROUP_RATES 短键
+let groupDataLoaded = false;    // 懒加载幂等标志：两组数据都成功后置 true
+let groupBenchLoaded = false;   // 分项标志：哪组没成就只重试哪组
+let groupRulesLoaded = false;
+let _groupLoading = null;       // 进行中的加载 Promise：同一轮连点开关只发一组请求
+
+function rebuildGroupBenchMap(rows) {
+  groupBenchRows = (rows || []).filter(r => r && r.code);
+  groupBenchMap = {};
+  groupBenchRows.forEach(r => { groupBenchMap[r.code] = r; });
+  return groupBenchMap;
+}
+function getGroupBench(code) { return groupBenchMap[code] || null; }
+function groupRateLabel(v) { return (v === null || v === undefined || isNaN(parseFloat(v))) ? '—' : (Math.round(parseFloat(v) * 10000) / 100) + '%'; }
+function ensureGroupData() {   // 只在 group 模式下被调用；失败返回 false 且不置幂等标志
+  if (groupDataLoaded) return Promise.resolve(true);
+  if (!_groupLoading) _groupLoading = loadGroupDataOnce().then(
+    v => { _groupLoading = null; return v; },
+    e => { _groupLoading = null; toast('❌ 集团数据加载异常：' + (e && e.message ? e.message : e)); return false; });
+  return _groupLoading;
+}
+function setPricingMode(mode) {
+  const isGroup = (mode === 'group');   // 其余值（含脏值）一律归一到 internal
+  pricingMode = isGroup ? 'group' : 'internal';
+  const gi = document.getElementById('modeGroupInp'), ii = document.getElementById('modeInternalInp');
+  if (gi) gi.checked = isGroup;
+  if (ii) ii.checked = !isGroup;
+  const badge = document.getElementById('pricingModeBadge');
+  if (badge) { badge.textContent = isGroup ? '对甲报价·集团基准价' : '对内成本'; badge.className = isGroup ? 'zone-badge grp' : 'zone-badge'; }
+  // 管理费/利润：集团口径写死取 group_pricing_rules（基数=人工+机械）→ 置灰；两框的数值与 globalMgmtRate/globalProfitRate 一律不动
+  const mi = document.getElementById('mgmtRateInp'), pi = document.getElementById('profitRateInp');
+  if (mi) { mi.disabled = isGroup; mi.title = isGroup ? '对甲报价：管理费取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.mgmt) + '），基数=人工+机械，不可手填' : '管理费 = 人工单价 × 管理费率%'; }
+  if (pi) { pi.disabled = isGroup; pi.title = isGroup ? '对甲报价：利润取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.profit) + '），基数=人工+机械，不可手填' : '利润 = 人工单价 × 利润率%'; }
+  if (isGroup) ensureGroupData();   // 懒加载入口
+  renderBoq();
+  updateSum();
 }
 
 // ═══════════ 对内成本测算（与对外报价口径严格分离，不进入任何导出）═══════════
