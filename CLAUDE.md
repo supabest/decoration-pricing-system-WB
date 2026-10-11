@@ -73,6 +73,9 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 | `backend/app/services/similarity_checker.py` | 相似清单一致性校验 — 2-gram Jaccard + 子目差异检测 |
 | `backend/app/services/excel_export.py` | 方式一导出引擎 — openpyxl 生成 Excel（公式、折叠、自动行高） |
 | `backend/app/services/template_export.py` | 方式二导出引擎 — 读入用户模板，填入数据+插入子目行 |
+| `scripts/import_group_benchmark.py` | **集团基准价导入** — 解析附录2 xlsx 296 条 ZS02 子目 → Supabase；内置 H 值重算审计闸门（全部偏差必须命中 `KNOWN_ANOMALIES` 8 码登记，否则 exit 1）；`--dry-run`/`--write` |
+| `backend/app/services/group_summary_export.py` | **集团汇总表导出** — ZS02 明细 sheet + T02 四部分汇总 sheet，后端重算 h（与前端公式同源） |
+| `docs/superpowers/tests/group_pricing_test.js` | 集团计价引擎沙箱回归（node 直跑，A-H 段 300+ 断言，含跨端黄金值钉） |
 | `frontend/src/` | React 页面（登录、工作台、基准价查询、辅材规则等） |
 
 ### AI 模型配置（DeepSeek + 智谱）
@@ -145,6 +148,25 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 合价     = 综合单价 × 工程量
 ```
 
+### 双计价引擎（集团基准价 · 对甲报价，2026-10 新增）
+
+`tool.html` 顶部有「对内成本 / 对甲报价（集团）」模式开关（`pricingMode`），两套公式**严格并存、互不改动**：
+
+```
+集团综合单价 h = 人工A + Σ(主材单价×消耗量Ci) + 辅材D + 机械E + 管理费F + 利润G
+管理费 F = (A+E) × 17%      ← 费率写死于集团规定，取费基数 = 人工+机械（非人工单价）
+利润   G = (A+E) × 12%
+```
+
+- **主材消耗量口径**：损耗已含于 Ci（如瓷砖 1.4469 m²/m²），与内部公式的 `×(1+损耗率)` 不同，勿混用
+- **数据源**：Supabase `group_benchmark_items`（296 条 = A精装146+B水电106+C拆除33+D措施11，`scripts/import_group_benchmark.py --write` 导入）+ `group_pricing_rules`（费率种子：mgmt .17 / profit .12 / green .13 / baogan .03 / tax .09 / coordFee 默认 NULL）。前端懒加载进 `GROUP_RATES`，**费率禁止硬编码进 JS/Python 逻辑**
+- **待询价拦截**：集团子目任一主材 `price===null` → 该行不入汇总、导出被 400 拦截（`detail.pending=[codes]`）；`price===0` 与「甲供按 0 计」合法，NULL 才拦截——**null≠0 是集团端全局判据**（coordFee 同理：NULL=未配置不静默当 0，前端标注「参数未配置」，后端导出 400）
+- **T02 四部分汇总**：一 分部分项（**D 类不进**）→ 二 措施（=ΣD类合价 + 绿安费，绿安/包干基数只含分部分项行的 人工+机械）→ 三 其他（包干费 + 赶工/变更/涨幅手工费 + 精装修配合费=费率×面积；**暂列金额=0，集团规定不予计取**）→ 四 税金=(一+二+三)×9% → 五 总造价+单方造价(÷装修面积)
+- **导出**：`POST /api/v1/export/group-summary`（payload 下发 raw 值、后端重算，前端 h 不被信任）；黄金值锚点：ZS02-D-003 h=4.0779、A-009 补价100 h=230.6085
+- **模式隔离**：集团子目 `gtype:'group'` 挂在既有 subs 契约上（向后兼容 m.html）；group 模式下内部导出链（方式一/二、splitByTrade 对账）入口被 `groupModeBlock()` 拦截
+- 迁移：`data/migrations/group_benchmark_migration.sql` + `data/migrations/projects_fitout_fees_migration.sql`（后者补 `projects.fitout_area/overtime_fee/contract_change_fee/inflation_fee` 四列——**缺列会使草稿自动保存静默失败**，须在 Dashboard 执行）
+- 源表已知异常：A-069/070 的 Excel H 公式漏算续行主材、B-100~106 手填费率隐含 15/10——引擎一律以 T01 公式（17/12）重算为准，`raw_composite` 仅留档供集团对账
+
 ### 对内成本测算（与对外报价严格分离，不进入任何导出）
 
 ```
@@ -172,6 +194,10 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 ### 方式二：模板导出 `POST /api/v1/export/template`
 
 前端解析模板识别表头 + 自动映射列 → 后端读入原模板，`insert_rows()` 动态插入子目行，`_copy_row_style()` 复制样式。
+
+### 集团汇总导出 `POST /api/v1/export/group-summary`（对甲报价模式专用）
+
+`collectGroupSummaryPayload()` → `GroupSummaryExporter`：sheet1 清单明细（ZS02 A~H 分解）、sheet2 T02 汇总表（合计行用 Excel 公式）。校验：面积≤0 / 待询价 / coordFee 未配置 → 400 带结构化 detail。group 模式下方式一/二入口被前端拦截，不可误用内部口径。
 
 ### 关键 schema
 
