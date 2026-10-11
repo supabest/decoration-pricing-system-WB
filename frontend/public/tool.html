@@ -2805,7 +2805,7 @@ function collectExportData() {
 //   · 待询价行（有集团子目但未套齐价）不进任何部分，计入 unpriced；无集团子目的内部行一律忽略
 function buildGroupSummary(rows, opts) {
   const o = opts || {};
-  const area = parseFloat(o.fitoutArea) || 0;
+  const area = Math.max(0, parseFloat(o.fitoutArea) || 0);   // M-1：手输负面积钳到 ≥0，避免 coordAmount 负值倒扣 part3
   const manualFees = o.manualFees || {};
   const R = GROUP_RATES;
   const list = Array.isArray(rows) ? rows : [];
@@ -2838,7 +2838,7 @@ function buildGroupSummary(rows, opts) {
   const coordFeeNum = parseFloat(R.coordFee);
   const coordConfigured = (R.coordFee !== null && R.coordFee !== undefined && !isNaN(coordFeeNum));  // null≠0：未配置与 0 元不同义
   const coordAmount = coordConfigured ? (coordFeeNum * area) : 0;
-  const manualSum = Object.keys(manualFees).reduce((s, kk) => s + (parseFloat(manualFees[kk]) || 0), 0);
+  const manualSum = Object.keys(manualFees).reduce((s, kk) => s + Math.max(0, parseFloat(manualFees[kk]) || 0), 0);   // M-1：手工费逐项钳到 ≥0
   const part3 = baogan + manualSum + coordAmount;
   const part4 = (part1 + part2 + part3) * R.tax;
   const total = part1 + part2 + part3 + part4;
@@ -2898,7 +2898,7 @@ function collectGroupSummaryPayload() {
   return {
     project_name: projEl ? (projEl.value || '套价表') : '套价表',
     fitout_area: areaEl ? (parseFloat(areaEl.value) || 0) : 0,
-    rates: GROUP_RATES,
+    rates: { ...GROUP_RATES },   // M-6：浅拷贝，避免下发 GROUP_RATES 活引用被后续懒加载补写费率而漂移
     manual_fees: collectGroupManualFees(),
     items: items,
   };
@@ -2919,7 +2919,7 @@ function renderGroupSummaryPanel() {
   html += '<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px">';
   html += '<span>一 · 分部分项工程费 <b style="font-family:var(--mono)">' + money(s.part1) + '</b></span>' + (rowsHtml || '');
   html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
-  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) : '—') + '；暂列=0 不取）</span></span>';
+  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) : '—') + '；暂列金额集团规定不予计取）</span></span>';
   if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费：参数未配置（GROUP_RATES.coordFee=null），未计入第三部分</span>';
   html += '<span>四 · 税金 <b style="font-family:var(--mono)">' + money(s.part4) + '</b><span style="color:var(--tx3)">（(一+二+三)×' + groupRateLabel(GROUP_RATES.tax) + '）</span></span>';
   html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
@@ -4416,6 +4416,10 @@ async function doAutoSave() {
       proj_team: document.getElementById('projTeam')?.value || '',
       proj_date: document.getElementById('projDate')?.value || '',
       hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
+      fitout_area: parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0,
+      overtime_fee: parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0,
+      contract_change_fee: parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0,
+      inflation_fee: parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0,
       groups_json: JSON.parse(JSON.stringify(groups)),
       price_overrides: JSON.parse(JSON.stringify(userPriceOverrides || {})),
       mgmt_rate: globalMgmtRate,
@@ -4484,6 +4488,10 @@ async function saveProject() {
     proj_team: document.getElementById('projTeam').value,
     proj_date: document.getElementById('projDate').value,
     hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
+    fitout_area: parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0,
+    overtime_fee: parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0,
+    contract_change_fee: parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0,
+    inflation_fee: parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0,
     groups_json: JSON.parse(JSON.stringify(groups)),
     price_overrides: JSON.parse(JSON.stringify(userPriceOverrides)),
     mgmt_rate: globalMgmtRate,
@@ -4561,6 +4569,10 @@ async function restoreProject(id) {
   document.getElementById('projDate').value = snap.proj_date || '';
   document.getElementById('coefBadge').textContent = '×' + globalCoef.toFixed(2);
   if (snap.hourly_rate) { const inp = document.getElementById('hourlyRateInput'); if(inp) inp.value = snap.hourly_rate; }
+  { const el = document.getElementById('fitoutAreaInp'); if(el) el.value = snap.fitout_area != null ? snap.fitout_area : ''; }
+  { const el = document.getElementById('manualFeeOvertimeInp'); if(el) el.value = snap.overtime_fee != null ? snap.overtime_fee : ''; }
+  { const el = document.getElementById('manualFeeChangeInp'); if(el) el.value = snap.contract_change_fee != null ? snap.contract_change_fee : ''; }
+  { const el = document.getElementById('manualFeeInflationInp'); if(el) el.value = snap.inflation_fee != null ? snap.inflation_fee : ''; }
   if (snap.price_overrides) { userPriceOverrides = snap.price_overrides; recomputeAllAux(); }
   if (snap.mgmt_rate !== undefined) { globalMgmtRate = Math.round(parseFloat(snap.mgmt_rate)||0); document.getElementById('mgmtRateInp').value = globalMgmtRate; }
   if (snap.profit_rate !== undefined) { globalProfitRate = Math.round(parseFloat(snap.profit_rate)||0); document.getElementById('profitRateInp').value = globalProfitRate; }

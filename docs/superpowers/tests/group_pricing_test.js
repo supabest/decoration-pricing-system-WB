@@ -12,6 +12,7 @@
  * 覆盖 Task 6 契约：buildGroupSummary（T02 四部分汇总勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1
  *   · 绿安/baogan 基数只含分部分项人工+机械 · coordFee=null≠0 · 费率全取 GROUP_RATES 不硬编码 · perSqm 除零守护）
  *   collectGroupSummaryPayload（后端请求体：raw 14 字段 items · 不下发前端 h · rates/manual_fees 顶层键）
+ *   评审修复回归：M-1 面积/手工费负值钳到 ≥0 不倒扣 part3 · M-6 payload.rates 浅拷贝不共享 GROUP_RATES 活引用
  * 运行：node docs/superpowers/tests/group_pricing_test.js
  */
 const fs = require('fs');
@@ -1007,6 +1008,21 @@ run('_mkSumRows(); document.getElementById("fitoutAreaInp").value=""; document.g
 const PL0 = run('collectGroupSummaryPayload();');
 ok('H17 无集团子目的行不产出 item（内部行零影响）', PL0.items.length === 0, JSON.stringify(PL0.items));
 ok('H17b fitout_area 空输入 → 数值 0（不抛、不 NaN）', PL0.fitout_area === 0, String(PL0.fitout_area));
+
+console.log('\n  · 负值钳制（M-1）：负面积/负手工费不得倒扣 part3');
+run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003"); addGroupSub(202,"ZS02-A-009");');
+run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+run('GROUP_RATES.coordFee = 50; var SUMNEG = buildGroupSummary(getAllRows(), {fitoutArea:-100, manualFees:{overtime_fee:-1000, contract_change_fee:-500, inflation_fee:-200}});');
+ok('M1 负面积钳到 0 → coordAmount 不为负（按 0 面积计=0，不产生负配合费）', run('SUMNEG.coordFee') === 0 && run('SUMNEG.coordFee') >= 0, 'coordFee=' + run('SUMNEG.coordFee'));
+ok('M1b 负手工费逐项钳到 ≥0 → manualFees 汇总为 0（不被负数拉低）', run('SUMNEG.manualFees') === 0, 'manualFees=' + run('SUMNEG.manualFees'));
+near('M1c part3 不被倒扣：负面积+负手工费下 part3 = 纯预算包干费', run('SUMNEG.part3'), run('SUMNEG.laborMechBase * GROUP_RATES.baogan'), 0.01);
+run(RATE_RESET);
+
+console.log('\n  · payload.rates 浅拷贝（M-6）：不共享 GROUP_RATES 活引用，费率补写不回溯漂移已构造 payload');
+run('document.getElementById("projName").value="拷贝测试"; document.getElementById("fitoutAreaInp").value="100";');
+ok('M6 payload.rates 与 GROUP_RATES 非同一引用（!==）', run('collectGroupSummaryPayload().rates !== GROUP_RATES') === true);
+ok('M6b payload.rates 六键值与 GROUP_RATES 逐一相等（拷贝不失真）', run('(function(){var r=collectGroupSummaryPayload().rates;return Object.keys(GROUP_RATES).every(function(k){return r[k]===GROUP_RATES[k];}) && Object.keys(r).length===Object.keys(GROUP_RATES).length;})()') === true);
+ok('M6c 构造后改 GROUP_RATES.tax 不回写已生成 payload.rates（活引用漂移被切断）', run('(function(){var p=collectGroupSummaryPayload();var before=p.rates.tax;GROUP_RATES.tax=0.99;var drifted=(p.rates.tax!==before);GROUP_RATES.tax=before;return drifted===false;})()') === true);
 run(RATE_RESET + ' pricingMode = "internal";');
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
