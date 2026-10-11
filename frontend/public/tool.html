@@ -141,6 +141,26 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px
 .pr:hover{background:var(--bg4)}.pr.drop-hi td{background:rgba(29,111,165,.08)!important}
 .pr td{padding:8px 10px;vertical-align:middle}
 .pr:nth-child(even){background:var(--bg3)}
+/* T5 对甲报价「待询价」态：行内有甲供未定价的集团子目 → 整行黄底 + 徽标。
+   规则排在 .pr/.pr:nth-child(even) 之后，依 CSS 靠后者优先的级联覆盖偶数行条纹（不改动既有两条规则）。 */
+.pr.grp-pend,.pr.grp-pend:hover,.pr.grp-pend:nth-child(even),.sub-r.grp-pend{background:var(--yel-d)}
+.sub-r.grp-pend{border-left:2px solid var(--yel)}
+/* .zone-badge 家族只加 modifier，不动基类：虚线框与顶栏常态徽标区分开 */
+.zone-badge.pend{border-style:dashed;font-weight:700}
+.grp-pend-txt{color:var(--yel);font-size:10px;font-weight:700;white-space:nowrap}
+.grp-cell-lbl{font-size:9px;color:var(--tx3);margin-right:2px}
+.cof-i.pend{border-color:var(--yel);background:var(--yel-d)}
+.addsub-btn.grp{border-color:var(--acc);color:var(--acc);background:var(--acc-d)}
+/* ZS02 挂载面板候选表（只新增类，不改 .boq-table） */
+.gpick-tbl{width:100%;border-collapse:collapse;table-layout:auto}
+.gpick-tbl th{padding:6px 8px;font-size:10px;font-weight:700;color:var(--tx2);text-align:left;
+  border-bottom:2px solid var(--border);background:var(--bg3);position:sticky;top:0;white-space:nowrap}
+.gpick-tbl td{padding:7px 8px;border-bottom:1px solid var(--border);font-size:11px;vertical-align:top}
+.gpick-tbl th.r,.gpick-tbl td.r{text-align:right;white-space:nowrap;font-family:var(--mono);font-size:11px}
+.gpick-tbl th.c,.gpick-tbl td.c{text-align:center;white-space:nowrap}
+.gpick-tr{cursor:pointer;transition:background .1s}.gpick-tr:hover{background:var(--bg4)}
+.gpick-code{font-family:var(--mono);font-size:10px;color:var(--acc);font-weight:700;white-space:nowrap}
+.gpick-un{font-family:var(--mono);font-size:11px;color:var(--tx3)}
 .rno{font-family:var(--mono);font-size:11px;color:var(--tx3);text-align:center}
 .rnm{display:flex;align-items:flex-start;gap:5px}
 .xbtn{background:none;border:1.5px solid var(--border);border-radius:4px;width:16px;height:16px;
@@ -497,6 +517,14 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
     <div class="modal-hdr"><span class="modal-ttl">挂子目 — 选择基准价子目</span><button class="modal-x" onclick="closePicker()">×</button></div>
     <div class="modal-srch"><input id="pkSrch" type="text" placeholder="搜索子目名称、编号…" oninput="_deb('pk',renderPicker,200)"></div>
     <div class="modal-list" id="pkList" style="max-height:calc(78vh - 110px)"></div>
+  </div>
+</div>
+<!-- 对甲报价（T5）：ZS02 集团基准价挂载面板——与内部 picker 同一套弹窗基建，数据源不同 -->
+<div class="modal-ov hidden" id="groupPickerMod">
+  <div class="modal" style="width:760px;max-height:80vh">
+    <div class="modal-hdr"><span class="modal-ttl">挂载集团基准价子目 — ZS02（对甲报价）</span><button class="modal-x" onclick="closeGroupPicker()">×</button></div>
+    <div class="modal-srch"><input id="gpSrch" type="text" placeholder="搜索名称 / 特征 / 编码…" oninput="_deb('gp',renderGroupPicker,200)"></div>
+    <div class="modal-list" id="gpList" style="max-height:calc(80vh - 118px)"></div>
   </div>
 </div>
 <div class="modal-ov hidden" id="coefMod">
@@ -1013,6 +1041,8 @@ function updateInternalCostPanel() {
 let hourlyRate = 350;  // 时工单价（元/工日），可调整
 let drag = null;
 let pickerRowId = null;
+// ZS02 挂载面板的目标行 id（与 pickerRowId 各自独立，两个面板可先后打开互不串写）
+let groupPickerRowId = null;
 let pendingBatch = null;  // 批量套用的清单项 ID 列表
 let batchMode = false;    // 批量套用时抑制单条 toast/render
 let aiRunning = false, aiStop = false;
@@ -1275,6 +1305,11 @@ function rowMatCost(r) { if(!r.subs||!r.subs.length) return 0; return r.subs.red
 // （若挂子目时无脑继承行级价，一行 N 个子目就会把主材费算成 N 倍）
 function syncRowMat(rid, catArg) {
   const r=findRow(rid); if(!r) return;
+  // T5 gtype 隔离护栏：行内只要有任一条集团子目，就整行跳过主材分配。
+  // routeRowMat 会按「唯一子目/同品类」把行级暂存价写进子目 matPrice——那条唯一子目若是集团的，
+  // 八字段契约（无 matPrice）被破坏，且内部 rowMatCost 会把集团主材费重复计入成本。
+  // 集团口径的主材价只存 mats[].price（见 updGroupMat），行级暂存价对它无任何意义。
+  if ((r.subs||[]).some(s => s && s.gtype === 'group')) return;
   const rowPrice=parseFloat(r.matPrice)||0;
   if(!rowPrice||!(r.subs||[]).length) return;   // 无暂存价 or 还没套价 → 不处理
   // 套价继承：用行上记录的主材名（品类）作落点提示，mode=fill 不覆盖已填子目价
@@ -1299,6 +1334,9 @@ function routeRowMat(r, price, cat, mode) {
     if (cat && !(r.matName||'').trim()) r.matName = cat;
     return 'staged';
   }
+  // T5 gtype 隔离护栏（续）：主材价导入 applyQuoteImport 直接调本函数，不经过 syncRowMat 那道入口闸。
+  // 行内只要有集团子目就整行不落点（集团主材价只认 mats[].price，行级价对它无意义），返回 kept = 行与子目一律不动。
+  if (subs.some(s => s && s.gtype === 'group')) return 'kept';
   if (cat && MAT_CAT_KEYWORDS[cat]) {                   // 认出品类 → 优先落到同品类子目
     const cands = subs.map(s => ({s, sc: subCategoryScore(s, cat)})).filter(x => x.sc > 0);
     if (cands.length) {
@@ -1414,6 +1452,70 @@ function updateGroupRateHint() {
   if (pricingMode !== 'group') { el.style.display = 'none'; return; }
   el.textContent = '对甲报价：管理' + groupRateLabel(GROUP_RATES.mgmt) + '/利润' + groupRateLabel(GROUP_RATES.profit) + '，基数=人工+机械（写死）';
   el.style.display = '';
+}
+
+// ═══════════ T5：集团行级派生聚合 + 子目行派生单元格（渲染层只取数，不算账）═══════════
+// 行内集团子目筛选：gtype==='group' 是唯一判据（内部子目无此字段，零影响）
+function rowGroupSubs(r) { return ((r && r.subs) || []).filter(s => s && s.gtype === 'group'); }
+// 行级集团聚合（渲染单元格与导出列唯一的集团取数入口）：Σ 子目分量 × coef × conv
+//   · 任一子目 pending（甲供未定价）→ ready:false、unit:null：行价不拼假值（与 groupRowUnitPrice 同判）
+//   · 行内无集团子目（纯内部子目 / 未套价）→ 也 ready:false、unit:null：
+//     集团口径下这行「压根还没套集团价」，显示 0.00 会被误读成真的报零，渲染层据 ready 显示「—」
+//   · pending 时分量仍按已知值累计：子目行需要各自的 A/D/E/F/G 可见，才能判断还差哪几条价
+function rowGroupAgg(r) {
+  const out = {lab:0, mat:0, aux:0, mech:0, mgmt:0, profit:0, unit:null, ready:false};
+  const subs = rowGroupSubs(r);
+  if (!subs.length) return out;
+  let sum = 0, pending = false;
+  subs.forEach(s => {
+    const p = groupSubPrice(s);
+    const k = (parseFloat(s.coef) || 1.0) * (parseFloat(s.conv) || 1.0);
+    if (p.pending) pending = true;
+    out.lab += p.lab * k; out.mat += p.mat * k; out.aux += p.aux * k;
+    out.mech += p.mech * k; out.mgmt += p.mgmt * k; out.profit += p.profit * k;
+    sum += p.h * k;
+  });
+  if (pending) return out;                 // 待询价：unit 保持 null，行价/合价一律不拼假值
+  out.unit = sum; out.ready = true;
+  return out;
+}
+// 整行待询价（有集团子目且此中存在甲供未定价）——渲染层用来挂 .grp-pend 黄底 +「待询价」徽标
+function rowGroupPending(r) { return rowGroupSubs(r).some(s => groupSubPrice(s).pending); }
+// 导出列专用：待询价行不放假值（与 rowTotal 的「pending → 0」同口径），未套集团价行给 0
+function groupExportFee(r, fld) { const a = rowGroupAgg(r); return a.ready ? a[fld] : 0; }
+// 集团子目 → 渲染所需的单元格集（名称/特征来自 getGroupBench，金额分全部来自 groupSubPrice）
+// mats 守卫：库行/旧快照可能回传 JSON 文本或缺字段（T3 遗留），一律 Array.isArray + || [] 兜底
+function groupSubCells(sub) {
+  const s = sub || {};
+  const it = getGroupBench(s.bid) || {};
+  const p = groupSubPrice(s);
+  const rawMats = Array.isArray(s.mats) ? s.mats : [];
+  const mats = rawMats.map((m, i) => {
+    const mat = m || {};
+    const price = (mat.price === null || mat.price === undefined || mat.price === '') ? null : parseFloat(mat.price);
+    const cons = parseFloat(mat.consumption) || 0;
+    return {idx: i, name: mat.name || ('主材' + (i + 1)), unit: mat.unit || '', consumption: cons,
+      price: price, pending: price === null, label: price === null ? '甲供待询价' : '',
+      cost: price === null ? 0 : price * cons};
+  });
+  return {code: s.bid, bsh: s.bsh || '', name: it.name || s.bid, spec: it.spec || '', unit: it.unit || '',
+    section: it.section_name || '', workType: s.workType || it.work_type || '',
+    coef: parseFloat(s.coef) || 1.0, conv: parseFloat(s.conv) || 1.0, mats: mats,
+    lab: p.lab, mat: p.mat, aux: p.aux, mech: p.mech, mgmt: p.mgmt, profit: p.profit, h: p.h, pending: p.pending};
+}
+// 甲供主材价录入：集团子目唯一的填价入口（updSubField 只能写平铺字段，够不到 mats[idx].price）
+// 清空/脏值 → null（回到待询价），不是 0：price=0 在集团口径里是有效报价（F12）
+function updGroupMat(rid, bid, bsh, idx, val) {
+  const r = findRow(rid);
+  const s = r && (r.subs || []).find(x => x && x.bid === bid && x.bsh === bsh && x.gtype === 'group');
+  if (!s || !Array.isArray(s.mats)) return false;
+  const m = s.mats[idx];
+  if (!m) return false;
+  const t = String(val === null || val === undefined ? '' : val).trim();
+  const v = parseFloat(t);
+  m.price = (t === '' || isNaN(v)) ? null : v;
+  updateSum(); renderBoq();
+  return true;
 }
 // ═══════════ AUXILIARY PRICE ENGINE ═══════════
 // 辅材计价引擎：从 benchmark_items 的 aux 配方 + material_prices 信息价实时计算
@@ -1849,6 +1951,60 @@ function secTotal(s) { return s.rows.reduce((a,r)=>a+(rowTotal(r)||0),0); }
 function grpTotal(g) { return g.sections.reduce((a,s)=>a+secTotal(s),0); }
 
 // ═══════════ RENDER ═══════════
+// 集团子目行（T5）：与主表 16 列对齐的派生单元格，值全部来自 groupSubCells（本函数不做任何算术）。
+// 绝不进 getBench 路径：内部基准价库里没有 ZS02 编码，走进去就会被打上「⚠️子目数据缺失」红底，
+// 而那个告警只对内部子目有意义（基准价行被删/改名），对集团子目是误报。
+// 列位安排：E 机械借「主材损耗率」列（集团按消耗量计价、损耗率恒不适用，该列本身已空出）并加小标签自说明。
+function groupSubRowHtml(r, sub) {
+  const c = groupSubCells(sub);
+  const ru = (r.unit || '').replace(/㎡/g, 'm2').replace(/㎥/g, 'm3').toLowerCase().trim();
+  const bu = (c.unit || '').replace(/㎡/g, 'm2').replace(/㎥/g, 'm3').toLowerCase().trim();
+  const mm = ru && bu && ru !== bu;
+  const subQty = (parseFloat(r.qty) || 0) * c.conv * c.coef;
+  const pend = '<span class="grp-pend-txt" title="甲供主材未定价：填齐本条子目的主材价后才计入行价">待询价</span>';
+  const idArg = '\'' + esc(c.code) + '\',\'' + esc(c.bsh) + '\'';
+  const dash = '<span style="color:var(--tx3);font-size:10px">—</span>';
+  const matLines = c.mats.length
+    ? c.mats.map(m => '<div style="display:flex;align-items:center;gap:3px;line-height:1.6">'
+        + '<span style="flex:1;min-width:0;font-size:10px;color:var(--tx2)" title="' + esc(m.name) + '（消耗量 ' + m.consumption + (m.unit || '') + '）">' + esc(m.name) + '×' + m.consumption + '</span>'
+        + '<input class="cof-i' + (m.pending ? ' pend' : '') + '" style="width:46px;font-size:10px" type="text" inputmode="decimal"'
+        + ' value="' + (m.pending ? '' : m.price) + '" placeholder="' + (m.pending ? '询价' : '0') + '"'
+        + ' title="' + esc(m.name) + (m.pending ? '：' + m.label + '，填入单价后才计入行价' : ' 单价（元/' + esc(m.unit || '') + '）') + '"'
+        + ' onchange="updGroupMat(' + r.id + ',' + idArg + ',' + m.idx + ',this.value)">'
+        + '<span style="width:52px;text-align:right;font-size:' + (m.pending ? '9' : '10') + 'px;color:' + (m.pending ? 'var(--yel)' : 'var(--tx3)') + ';font-weight:' + (m.pending ? '600' : '400') + '">'
+        + (m.pending ? m.label : fmt(m.cost)) + '</span>'
+        + '</div>').join('')
+    : dash;   // 无主材是合法常态（源表「——」已在导入阶段过滤），不是待询价
+  return '<tr class="sub-r' + (c.pending ? ' grp-pend' : '') + '"' + (c.pending ? '' : ' style="background:var(--bg4)"') + '>' +
+    '<td class="rno c" style="font-size:10px;color:var(--tx3)"></td>' +
+    '<td><div style="padding-left:12px">' +
+      '<span class="sid" style="font-size:10px">' + esc(c.code) + '</span> ' +
+      '<span class="zone-badge grp" style="font-size:9px;padding:1px 5px" title="对甲报价：集团基准价 ZS02 子目">集团</span> ' +
+      (c.pending ? '<span class="zone-badge pend" style="font-size:9px;padding:1px 5px">待询价</span> ' : '') +
+      '<span style="font-size:12px;font-weight:500">' + esc(c.name) + '</span>' +
+      '<div style="font-size:10px;color:var(--tx3);margin-top:1px">' +
+        (c.workType ? '工种 ' + esc(c.workType) + ' · ' : '') +
+        (c.section ? esc(c.section) + ' · ' : '') +
+        '子目系数: <input class="cof-i" type="number" step="0.01" min="0.01" value="' + c.coef.toFixed(2) + '" style="width:48px;font-size:10px" onchange="updCoef(' + r.id + ',' + idArg + ',this.value)">' +
+        ' · 换算: <input class="cof-i" type="number" step="0.001" min="0.001" value="' + c.conv.toFixed(3) + '" style="width:52px;font-size:10px' + (mm ? ';border-color:var(--red)' : '') + '" onchange="updConv(' + r.id + ',' + idArg + ',this.value)">' +
+        (mm ? ' <span style="color:var(--red);font-size:9px">⚠单位不匹配（集团 ' + esc(c.unit) + '）</span>' : '') +
+      '</div></div></td>' +
+    '<td><span style="font-size:10px;color:var(--tx2)">' + esc((c.spec || '').substring(0, 80)) + '</span></td>' +
+    '<td class="c">' + (mm ? '<span style="color:var(--red);font-weight:600">' + esc(c.unit) + '</span>' : esc(c.unit)) + '</td>' +
+    '<td class="r">' + fmt(subQty, 3) + '</td>' +
+    '<td class="r" title="A 人工（表行 lab_price，已含子目系数×换算前的单位值）">' + fmt(c.lab) + '</td>' +
+    '<td title="集团口径主材按消耗量计价：逐条单价×消耗量；黄底输入框 = 甲供未定价，需人工询价">' + matLines + '</td>' +
+    '<td class="r" title="集团口径不乘主材损耗率；本列位展示 E 机械">' + (c.mech ? '<span class="grp-cell-lbl">E机械</span>' : '') + fmt(c.mech) + '</td>' +
+    '<td class="r" title="Σ 主材单价×消耗量（不乘损耗率/含量系数）">' + (c.pending ? pend : fmt(c.mat)) + '</td>' +
+    '<td class="r" title="D 辅材">' + fmt(c.aux) + '</td>' +
+    '<td class="r" title="管理费 = (A人工+E机械)×' + groupRateLabel(GROUP_RATES.mgmt) + '">' + fmt(c.mgmt) + '</td>' +
+    '<td class="r" title="利润 = (A人工+E机械)×' + groupRateLabel(GROUP_RATES.profit) + '">' + fmt(c.profit) + '</td>' +
+    '<td class="r">' + (c.pending ? pend : fmt(c.h)) + '</td>' +
+    '<td class="r">' + (c.pending ? pend : fmt(c.h * subQty)) + '</td>' +
+    '<td></td>' +
+    '<td class="c"><button class="btn btn-del" style="font-size:10px" onclick="delSub(' + r.id + ',' + idArg + ')">✕</button></td>' +
+    '</tr>';
+}
 function renderBoq() {
   const main = document.getElementById('boqMain');
   updateInternalCostPanel();
@@ -1888,6 +2044,15 @@ function renderBoq() {
       s.rows.forEach(r => {
         globalIdx++;
         const up=rowUnitPrice(r), tot=rowTotal(r);
+        // 对甲报价（T5）：行级派生单元格唯一的集团取数入口 rowGroupAgg，渲染层不再乘 globalMgmtRate/globalProfitRate
+        //   ready → 分量出数；待询价 → 「待询价」；行内无集团子目 → 「—」（0.00 会被误读成真的报零）
+        const gMode = (pricingMode === 'group');
+        const gagg = gMode ? rowGroupAgg(r) : null;
+        const gPend = gMode && !gagg.ready && rowGroupPending(r);
+        const gDashCell = '<span style="color:var(--tx3);font-size:10px" title="本行尚未套集团基准价：展开行 →「＋ 集团子目（ZS02）」挂载后自动出数">—</span>';
+        const gPendCell = '<span class="grp-pend-txt" title="甲供主材未定价：展开子目行填入主材价后自动出数，在此之前行价/合价不计假值">待询价</span>';
+        const gNaCell = '<span style="color:var(--tx3);font-size:10px" title="集团口径不适用本列（主材按消耗量计价，明细见子目行）">—</span>';
+        const gCell = v => gagg.ready ? fmt(v) : (gPend ? gPendCell : gDashCell);
         // AI badge
         let aiBadge = '';
         if (r.aiNote) {
@@ -1921,7 +2086,7 @@ function renderBoq() {
         const matPendBadge = matPend
           ? ' <span class="conf-mid" title="本行已录入主材价，但挂了多个子目，需指定该主材价属于哪个子目">⚠️ 主材价待分配</span>'
           : '';
-        html += '<tr class="pr" data-rid="'+r.id+'"' +
+        html += '<tr class="pr'+(gPend?' grp-pend':'')+'" data-rid="'+r.id+'"' +
           ' ondragover="onRowDragover(event,'+r.id+')"' +
           ' ondragleave="document.querySelectorAll(\'.drop-hi\').forEach(e=>e.classList.remove(\'drop-hi\'))"' +
           ' ondrop="onRowDrop(event,'+r.id+')">' +
@@ -1936,25 +2101,30 @@ function renderBoq() {
                   : (r.subs.length?'<span class="sub-badge">📌 '+r.subs.length+' 个子目</span>':'<span class="nosub">← 拖入或挂子目</span>')) +
                 ' <button class="btn btn-ghost btn-sm" style="padding:1px 6px;font-size:10px" onclick="toggleHourlyMode('+r.id+')" title="无法套定额的零星工程，按时工日工资计算">'+(r.hourlyMode?'✕ 取消时工':'⏱ 按时工计算')+'</button>' +
                 aiBadge + matPendBadge +
+                (gPend ? ' <span class="zone-badge pend" title="本行含甲供未定价的集团子目：展开子目行填入主材价后自动计价">待询价</span>' : '') +
               '</div></div></div></td>' +
           '<td><input class="ri ri-sm" value="'+esc(r.spec)+'" placeholder="项目特征" onchange="updField('+r.id+',\'spec\',this.value)"></td>' +
           '<td class="c"><input class="ri ri-sm ri-c" style="width:100%" value="'+esc(r.unit)+'" placeholder="单位" onchange="updField('+r.id+',\'unit\',this.value)"></td>' +
           '<td class="r"><input class="qty-i" type="text" inputmode="decimal" value="'+r.qty+'" placeholder="0.00" oninput="updField('+r.id+',\'qty\',this.value)"></td>' +
-          '<td class="r-price r">'+fmt(up)+'</td>' +
+          '<td class="r-price r">'+(gMode?gCell(gagg.lab):fmt(up))+'</td>' +
           '<td class="r"'+(matPend?' style="background:var(--yel-d)"':'')+'>' +
-            ((r.subs&&r.subs.length)
+            (gMode
+              ? (gagg.ready ? gNaCell : (gPend ? gPendCell : gDashCell))
+              : ((r.subs&&r.subs.length)
               ? (matPend?'<span style="color:var(--yel);font-size:10px;font-weight:600" title="本行有多个子目，请指定该主材价属于哪个子目">待分配</span>':fmt(effRowMatPrice(r)))
-              : '<input class="cof-i" style="width:60px;font-size:10px" type="text" inputmode="decimal" value="'+(parseFloat(r.matPrice)||0)+'" placeholder="0" onchange="updRowMat('+r.id+',this.value)" title="主材单价（尚无可挂子目时为行级录入；套价后自动分配到子目）">') +
+              : '<input class="cof-i" style="width:60px;font-size:10px" type="text" inputmode="decimal" value="'+(parseFloat(r.matPrice)||0)+'" placeholder="0" onchange="updRowMat('+r.id+',this.value)" title="主材单价（尚无可挂子目时为行级录入；套价后自动分配到子目）">')) +
           '</td>' +
-          wrCell +
-          '<td class="r">'+fmt(matCost)+(matStaged
+          (gMode ? '<td class="r">'+(gagg.ready ? gNaCell : (gPend ? gPendCell : gDashCell))+'</td>' : wrCell) +
+          '<td class="r">'+(gMode
+            ? gCell(gagg.mat)
+            : fmt(matCost)+(matStaged
             ? ' <span class="conf-mid" title="本行已录入主材价，但尚未套价，这笔价暂时不计入主材费。请先点「✨ AI 一键套价」，套价后系统会自动把价格分配到子目（唯一子目自动分配，多个子目需手工指定）">⚠️ 待套价</span>'
-            : '')+'</td>' +
-          '<td class="r"><span style="color:var(--tx2);font-variant-numeric:tabular-nums">'+fmt(r.auxCost)+'</span></td>' +
-          '<td class="r">'+fmt((up||0)*(globalMgmtRate/100))+'</td>' +
-          '<td class="r">'+fmt((up||0)*(globalProfitRate/100))+'</td>' +
-          '<td class="r-total r">'+fmt(compUnitPrice(r))+'</td>' +
-          '<td class="r-total r">'+fmt(tot)+'</td>' +
+            : ''))+'</td>' +
+          '<td class="r"><span style="color:var(--tx2);font-variant-numeric:tabular-nums">'+(gMode?gCell(gagg.aux):fmt(r.auxCost))+'</span></td>' +
+          '<td class="r">'+(gMode?gCell(gagg.mgmt):fmt((up||0)*(globalMgmtRate/100)))+'</td>' +
+          '<td class="r">'+(gMode?gCell(gagg.profit):fmt((up||0)*(globalProfitRate/100)))+'</td>' +
+          '<td class="r-total r">'+(gMode?gCell(compUnitPrice(r)):fmt(compUnitPrice(r)))+'</td>' +
+          '<td class="r-total r">'+(gMode?gCell(tot):fmt(tot))+'</td>' +
           '<td><input class="ri ri-sm" value="'+esc(r.remark)+'" placeholder="备注" onchange="updField('+r.id+',\'remark\',this.value)"></td>' +
           '<td class="c"><button class="btn btn-del" onclick="delRow('+r.id+')">✕</button></td>' +
           '</tr>';
@@ -1963,6 +2133,9 @@ function renderBoq() {
           let auxInfo = computeAuxForRow(r); r.auxCost = auxInfo.total;
           // 子目行：与清单行列对齐，直接在主表格中渲染
           r.subs.forEach(sub => {
+            // T5 分流：集团子目一律走派生渲染，绝不进 getBench——内部基准价库里查不到 ZS02 编码，
+            // 落进下面的红底占位分支就是「⚠️子目数据缺失」误报（该告警只对内部子目有意义）
+            if (sub.gtype === 'group') { html += groupSubRowHtml(r, sub); return; }
             const it = getBench(sub.bid, sub.bsh);
             if (!it) {
               // 基准价缺失：红色占位行（不再静默跳过）
@@ -2010,6 +2183,8 @@ function renderBoq() {
           });
           html += '<tr class="addsub-tr"><td colspan="16">' +
             '<button class="addsub-btn" onclick="openPicker('+r.id+')">＋ 挂子目（从基准价库选择）</button>' +
+            // 集团子目按钮只在 group 模式出现：内部模式一行不少地保持原样（内部 UI 零变化）
+            (pricingMode === 'group' ? ' <button class="addsub-btn grp" onclick="openGroupPicker('+r.id+')">＋ 集团子目（ZS02 基准价）</button>' : '') +
             '</td></tr>';
         }
       });
@@ -2381,8 +2556,10 @@ const EXP_COLS = [
   {key:'mat',  label:'主材费',     get:r=>rowMatCost(r)||0, num:true, wide:10, def:true, preset:{client:true, internal:true, labor:false}},
   {key:'waste',label:'主材损耗率',  get:r=>effRowWaste(r), num:true, wide:8, def:false, preset:{client:true, internal:true, labor:false}},
   {key:'aux',  label:'辅材费',     get:r=>parseFloat(r.auxCost)||0,   num:true, wide:10, def:false, preset:{client:false,internal:true, labor:false}},
-  {key:'mgmt', label:'管理费',     get:r=>(rowUnitPrice(r)||0)*(globalMgmtRate/100), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
-  {key:'profit',label:'利润',      get:r=>(rowUnitPrice(r)||0)*(globalProfitRate/100), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
+  // 对甲报价（T5）：管理费/利润取集团口径 rowGroupAgg（基数=人工+机械，费率取 group_pricing_rules），
+  // 待询价 / 未套集团价的行给 0 —— 与 rowTotal 的「pending 不计假值」同口径，导出里不出现半成品金额
+  {key:'mgmt', label:'管理费',     get:r=>(pricingMode==='group'?groupExportFee(r,'mgmt'):(rowUnitPrice(r)||0)*(globalMgmtRate/100)), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
+  {key:'profit',label:'利润',      get:r=>(pricingMode==='group'?groupExportFee(r,'profit'):(rowUnitPrice(r)||0)*(globalProfitRate/100)), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
   {key:'usp',  label:'综合单价',    get:r=>compUnitPrice(r)||0,   num:true, wide:12, def:true,  preset:{client:true, internal:true, labor:false}},
   {key:'total',label:'合价',       get:r=>rowTotal(r)||0,        num:true, wide:14, def:true,  preset:{client:true, internal:true, labor:true}},
   {key:'remark',label:'备注',      get:r=>exportRemark(r),       num:false, wide:22, def:true,  preset:{client:true, internal:true, labor:true}},
@@ -3560,7 +3737,15 @@ async function doTemplateExport() {
 function updateSum() {
   const allRows=getAllRows();
   const total=allRows.reduce((s,r)=>s+(rowTotal(r)||0),0);
-  const laborOnly=allRows.reduce((s,r)=>{const up=rowUnitPrice(r)||0;const q=parseFloat(r.qty)||0;return s+up*q;},0);
+  // T5 对甲报价：底部「人工费合计」走集团口径的 A 人工（rowGroupAgg.lab，已含 coef×conv）。
+  // 若仍走 rowUnitPrice：它在 group 下返回全费用单价，直接乘 qty 会把人工费报大；
+  // 待询价行的 A 人工本身就是库里的已知值（只欠甲供主材价），照常计入，不抹零。
+  const gSMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  const laborOnly=allRows.reduce((s,r)=>{
+    const q=parseFloat(r.qty)||0;
+    if (gSMode) return s + rowGroupAgg(r).lab * q;
+    return s + (rowUnitPrice(r)||0) * q;
+  },0);
   const priced=allRows.filter(r=>r.subs.length>0).length;
   const nsubs=allRows.reduce((s,r)=>s+r.subs.length,0);
   document.getElementById('s-rows').textContent=allRows.length;
@@ -3615,6 +3800,86 @@ function batchApplySub(rowIds) {
   document.getElementById('pickerMod').classList.remove('hidden');
   renderPicker();
   setTimeout(() => document.getElementById('pkSrch').focus(), 50);
+}
+
+// ═══════════ ZS02 集团基准价挂载面板（T5，对甲报价专用；复用内部 picker 同一套 .modal-ov/.modal 基建）═══════════
+// 数据源 = groupBenchRows（ZS02 全量 296 条，随 ensureGroupData 懒加载到本地后一次性可用）
+// 搜索为纯本地模糊过滤（name+spec+code · 多关键词 AND · 大小写不敏感），不打后端、不分页
+function groupPickerItems(q) {
+  const rows = Array.isArray(groupBenchRows) ? groupBenchRows : [];   // 空库 → 空数组，不抛
+  const kw = String(q === null || q === undefined ? '' : q).trim().toLowerCase();
+  if (!kw) return rows.slice();
+  const words = kw.split(/\s+/);
+  return rows.filter(it => {
+    const hay = [it && it.name, it && it.spec, it && it.code].map(v => String(v || '').toLowerCase()).join(' ');
+    return words.every(w => hay.indexOf(w) >= 0);
+  });
+}
+// 甲供列判据：mats 存在未定价位（null/空/非数）→「待填价」；mats 非数组按「无主材」处理（T3 遗留守卫）
+function groupMatPending(it) {
+  const mats = (it && Array.isArray(it.mats)) ? it.mats : [];
+  return mats.some(m => { const p = m ? m.price : null; return p === null || p === undefined || p === '' || isNaN(parseFloat(p)); });
+}
+function openGroupPicker(rid) {
+  groupPickerRowId = rid;
+  const si = document.getElementById('gpSrch'); if (si) si.value = '';
+  const mod = document.getElementById('groupPickerMod'); if (mod) mod.classList.remove('hidden');
+  renderGroupPicker();
+  if (si && si.focus) setTimeout(() => si.focus(), 50);
+}
+function closeGroupPicker() {
+  const mod = document.getElementById('groupPickerMod'); if (mod) mod.classList.add('hidden');
+  groupPickerRowId = null;
+}
+function renderGroupPicker() {
+  const list = document.getElementById('gpList'); if (!list) return;
+  const si = document.getElementById('gpSrch');
+  const rows = Array.isArray(groupBenchRows) ? groupBenchRows : [];
+  // 空库（未建表 / 后端不可达 / 加载失败）：给重试入口，不让用户对着空白面板猜
+  if (!rows.length) {
+    list.innerHTML = '<div style="padding:22px;text-align:center;font-size:12px;color:var(--tx2)">' +
+      '<div style="color:var(--yel);font-weight:600">ZS02 库未加载</div>' +
+      '<div style="margin-top:4px;font-size:10px;color:var(--tx3)">集团基准价表读不到数据（后端不可用或表内无记录）</div>' +
+      '<div style="margin-top:10px"><button class="btn btn-sm" onclick="groupPickerRetry()">🔄 重试加载</button></div></div>';
+    return;
+  }
+  const items = groupPickerItems(si ? si.value : '');
+  if (!items.length) { list.innerHTML = '<div style="padding:20px;text-align:center;font-size:12px;color:var(--tx3)">未找到</div>'; return; }
+  list.innerHTML = '<table class="gpick-tbl"><thead><tr>' +
+    '<th style="width:88px">编号</th><th>项目名称 / 特征</th><th class="c" style="width:44px">单位</th>' +
+    '<th class="r" title="A 人工">A人工</th><th class="r" title="D 辅材">D辅材</th><th class="r" title="E 机械">E机械</th>' +
+    '<th class="c" style="width:64px" title="甲供主材是否有未定价位">甲供</th></tr></thead><tbody>' +
+    items.slice(0, 300).map(it => {
+      const pend = groupMatPending(it);
+      return '<tr class="gpick-tr" onclick="gpPick(\'' + esc(it.code) + '\')" title="点击挂到本清单行">' +
+        '<td class="gpick-code">' + esc(it.code) + '</td>' +
+        '<td><div style="font-size:11px">' + esc(it.name || '') + '</div>' +
+          '<div style="font-size:10px;color:var(--tx3);margin-top:1px">' + esc(it.section_name || '') +
+          (it.spec ? ' · ' + esc(String(it.spec).substring(0, 60)) : '') + '</div></td>' +
+        '<td class="c gpick-un">' + esc(it.unit || '') + '</td>' +
+        '<td class="r">' + fmt(parseFloat(it.lab_price) || 0) + '</td>' +
+        '<td class="r">' + fmt(parseFloat(it.aux_cost) || 0) + '</td>' +
+        '<td class="r">' + fmt(parseFloat(it.mech_cost) || 0) + '</td>' +
+        '<td class="c">' + (pend
+          ? '<span class="conf-mid" title="含甲供未定价主材：挂载后需逐条填价才计入行价">待填价</span>'
+          : '<span style="font-size:10px;color:var(--tx3)">已定价</span>') + '</td>' +
+        '</tr>';
+    }).join('') + '</tbody></table>' +
+    (items.length > 300 ? '<div style="padding:8px;font-size:10px;color:var(--tx3)">共 ' + items.length + ' 条命中，仅显示前 300 条，请缩小关键词</div>' : '');
+}
+// 面板内重试：只走 ensureGroupData 既有链路（幂等标志归 T3 管），不自发 fetch、不绕过懒加载状态机
+function groupPickerRetry() {
+  const list = document.getElementById('gpList');
+  if (list) list.innerHTML = '<div style="padding:20px;text-align:center;font-size:12px;color:var(--tx3)">加载中…</div>';
+  Promise.resolve(ensureGroupData()).then(() => renderGroupPicker());
+}
+// 点选挂载：addGroupSub 的契约（重复挂载 / 未知 code）拦截时面板保持开着，用户可换一条再点
+function gpPick(code) {
+  const rid = groupPickerRowId;
+  if (rid === null || rid === undefined) return false;
+  const added = addGroupSub(rid, code);
+  if (added) closeGroupPicker();
+  return added;
 }
 
 // ═══════════ COEF MODAL ═══════════
@@ -3952,7 +4217,7 @@ function toast(msg) {
   const t=document.createElement('div'); t.className='toast'; t.textContent=msg;
   document.body.appendChild(t); toastTm=setTimeout(()=>t.remove(),3200);
 }
-document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closePicker();closeCoefModal();closeFlowGuard();} });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closePicker();closeGroupPicker();closeCoefModal();closeFlowGuard();} });
 
 // ═══════════ 云端自动保存（草稿，is_draft=true）═══════
 let _autoSaveTimer = null;

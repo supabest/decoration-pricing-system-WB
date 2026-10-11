@@ -6,6 +6,9 @@
  * 覆盖 Task 4 契约：groupSubPrice / addGroupSub / groupRowUnitPrice / groupRowTotal /
  *   groupRowComp / rowUnitPrice·rowTotal·compUnitPrice 的 group 分支 / updateGroupRateHint
  *   （含内部公式回归双夹具：同数据 internal 模式下逐分不变）
+ * 覆盖 Task 5 契约：rowGroupAgg / rowGroupPending / rowGroupSubs / groupSubCells / updGroupMat /
+ *   groupPickerItems·openGroupPicker·renderGroupPicker·closeGroupPicker·gpPick·groupPickerRetry /
+ *   EXP_COLS 管理费利润列的 group 分支 / renderBoq 集团子目分流 / syncRowMat 的 gtype 隔离护栏
  * 运行：node docs/superpowers/tests/group_pricing_test.js
  */
 const fs = require('fs');
@@ -70,12 +73,19 @@ function grabLine(src, key) {
   return code;
 }
 
-/* ── DOM 打桩：getElementById 惰性建元素，宿主侧可直接读 disabled/checked/textContent ── */
+/* ── DOM 打桩：getElementById 惰性建元素，宿主侧可直接读 disabled/checked/textContent ──
+ * 弹窗类断言需要真实 classList（add/remove/contains）+ 操作流水（_clsOps），
+ * 否则「remove(\'hidden\') 到底有没有发生」在断言里不可见 ── */
 const els = {};
 const DOMCFG = { gone: false };   // 置 true 可模拟「元素不存在」的精简 DOM
 function mkEl(id) {
-  return { id, value: '', checked: false, disabled: false, textContent: '', title: '', className: '',
-    style: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } };
+  const cls = new Set();
+  const ops = { added: [], removed: [] };
+  return { id, value: '', checked: false, disabled: false, title: '', className: '', innerHTML: '', textContent: '',
+    style: {}, focus() {},
+    classList: { add(c) { cls.add(c); ops.added.push(c); }, remove(c) { cls.delete(c); ops.removed.push(c); },
+      toggle(c) { cls.has(c) ? cls.delete(c) : cls.add(c); }, contains(c) { return cls.has(c); } },
+    _cls: cls, _clsOps: ops };
 }
 const document = {
   getElementById: id => (DOMCFG.gone ? null : (els[id] || (els[id] = mkEl(id)))),
@@ -90,8 +100,10 @@ const TOASTS = [];  // toast 文案
 /* ── 沙箱：group 数据基座 + T4 公式层 + 内部计价引擎（回归双夹具要真跑原公式），
  *    内部模式的费率/系数状态一并声明用于污染检查 ── */
 const LINES = ['let pricingMode', 'let groupDataLoaded', 'let groupBenchLoaded', 'let groupRulesLoaded',
-  'let _groupLoading', 'let rowMap'];
-const DECLS = ['let GROUP_RATES', 'let groupBenchMap', 'let groupBenchRows', 'const GROUP_RULE_KEY_MAP'];
+  'let _groupLoading', 'let rowMap', 'let groupPickerRowId'];
+const DECLS = ['let GROUP_RATES', 'let groupBenchMap', 'let groupBenchRows', 'const GROUP_RULE_KEY_MAP',
+  'const MAT_CAT_KEYWORDS',   // T5 护栏测试要真跑 syncRowMat→routeRowMat 链（品类识别依赖）
+  'const EXP_COLS'];          // T5 契约：管理费/利润列的 group 分支直接取数验证
 const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGroupBenchmark',
   'loadGroupPricingRules', 'loadGroupDataOnce', 'ensureGroupData', 'setPricingMode',
   // ── T4：集团公式引擎 ──
@@ -100,7 +112,12 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'rebuildBenchMap', 'getBench', 'effPrice', 'rowMatCost', 'rowUnitPrice', 'compUnitPrice', 'rowTotal',
   'getAllRows', 'rebuildRowMap', 'findRow', 'makeRow',
   // ── 子目字段处理器（T4 契约：复用不改，bid+bsh 定位对集团子目同样有效）──
-  'updCoef', 'updConv', 'updSubField'];
+  'updCoef', 'updConv', 'updSubField',
+  // ── T5：派生聚合 / 挂载面板 / gtype 隔离护栏 ──
+  'rowGroupSubs', 'rowGroupAgg', 'rowGroupPending', 'groupExportFee', 'groupSubCells', 'groupSubRowHtml', 'updGroupMat',
+  'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
+  'groupPickerRetry', 'gpPick',
+  'delSub', 'addSub', 'syncRowMat', 'routeRowMat', 'subCategoryScore', 'normKey', 'rowMatPending', 'fmt', 'esc'];
 
 let ctx;
 const HEAD = [
@@ -118,6 +135,7 @@ function buildSandbox() {
   ctx = vm.createContext({
     console, JSON, Math, Number, parseFloat, parseInt, String, Object, Array, isNaN, Set, Map, Date, RegExp, Promise,
     document, GETS, TOASTS, DOMCFG,
+    setTimeout: () => 0,   // 弹窗聚焦等 UI 定时器在沙箱里不执行（只验接线，不验时序）
   });
   vm.runInContext(
     HEAD.join('\n') + '\n' +
@@ -606,8 +624,285 @@ ok('F61 库费率落地后提示条同步刷新（不停在 T01 默认值）',
   /管理16%/.test(els['groupRateHint'].textContent), els['groupRateHint'].textContent);
 run('setPricingMode("internal"); groupDataLoaded=false; groupBenchLoaded=false; groupRulesLoaded=false; _groupLoading=null; ' + RATE_RESET);
 
+/* ═══════════ G. Task 5：行渲染派生单元格 + 待询价态 + ZS02 挂载面板 + gtype 护栏 ═══════════ */
+console.log('\n── G. rowGroupAgg / groupSubCells / updGroupMat / groupPicker / EXP_COLS group 分支 / 护栏 ──');
+run(RATE_RESET + ' globalCoef=1.0; batchMode=false; hourlyRate=350;');
+run('rebuildGroupBenchMap([G009, D003]);');
+run('pricingMode = "group";');
+run('_mkRows(); addGroupSub(100, "ZS02-D-003"); addGroupSub(100, "ZS02-A-009");');   // 一行：已定价 + 甲供未定价
+
+/* ── G① rowGroupAgg：契约 + 待询价判定 ── */
+const AGG_KEYS = run('Object.keys(rowGroupAgg(findRow(100))).sort().join(",")');
+ok('G1 rowGroupAgg 返回八字段契约 {lab,mat,aux,mech,mgmt,profit,unit,ready}',
+  AGG_KEYS === 'aux,lab,mat,mech,mgmt,profit,ready,unit', AGG_KEYS);
+ok('G2 任一子目 pending → ready:false 且 unit:null（行不拼假值）',
+  run('(function(){var a=rowGroupAgg(findRow(100));return a.ready===false&&a.unit===null;})()') === true);
+ok('G2b rowGroupPending(r)===true（渲染层据此挂黄底 +「待询价」徽标）', run('rowGroupPending(findRow(100))') === true);
+near('G3 待询价时分量仍按已知值累计（子目行要显示各自的 A/D/E/F/G）：lab=1.51+61.65', run('rowGroupAgg(findRow(100)).lab'), 1.51 + 61.65);
+near('G3b mat 只含已定价部分（D-003：2×0.95）', run('rowGroupAgg(findRow(100)).mat'), 1.9);
+near('G3c aux=0.23+1.98', run('rowGroupAgg(findRow(100)).aux'), 0.23 + 1.98);
+
+console.log('\n  · 补齐甲供价后出数：各分量精确断言');
+run('findRow(100).subs[1].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+ok('G4 补齐甲供价 → ready:true', run('rowGroupAgg(findRow(100)).ready') === true);
+ok('G4b 待询价消除', run('rowGroupPending(findRow(100))') === false);
+near('G4c unit = Σ h×coef×conv（与 groupRowUnitPrice 同值）', run('rowGroupAgg(findRow(100)).unit'), run('groupRowUnitPrice(findRow(100))'), 1e-9);
+near('G4d lab = 1.51 + 61.65', run('rowGroupAgg(findRow(100)).lab'), 63.16, 1e-9);
+near('G4e mat = 2×0.95 + 100×1.4469 + 300×0.0147（消耗量口径）', run('rowGroupAgg(findRow(100)).mat'), 2 * 0.95 + 100 * 1.4469 + 300 * 0.0147, 1e-9);
+near('G4f aux = 0.23 + 1.98', run('rowGroupAgg(findRow(100)).aux'), 2.21, 1e-9);
+near('G4g mech = 0', run('rowGroupAgg(findRow(100)).mech'), 0, 1e-12);
+near('G4h mgmt = (Σlab+Σmech)×0.17', run('rowGroupAgg(findRow(100)).mgmt'), 63.16 * 0.17, 1e-9);
+near('G4i profit = (Σlab+Σmech)×0.12', run('rowGroupAgg(findRow(100)).profit'), 63.16 * 0.12, 1e-9);
+near('G4j 勾稽：unit = lab+mat+aux+mech+mgmt+profit',
+  run('(function(){var a=rowGroupAgg(findRow(100));return a.unit-(a.lab+a.mat+a.aux+a.mech+a.mgmt+a.profit);})()'), 0, 1e-9);
+
+run('_mkRows(); addGroupSub(101, "ZS02-D-003");');
+run('updCoef(101, "ZS02-D-003", "ZS02-D", "2"); updConv(101, "ZS02-D-003", "ZS02-D", "1.5");');
+near('G5 子目 coef×conv 参与聚合：lab = 1.51×3', run('rowGroupAgg(findRow(101)).lab'), 1.51 * 3, 1e-9);
+near('G5b mgmt = (1.51×0.17)×3', run('rowGroupAgg(findRow(101)).mgmt'), 1.51 * 0.17 * 3, 1e-9);
+near('G5c unit = 4.0779×3', run('rowGroupAgg(findRow(101)).unit'), 4.0779 * 3, 0.001);
+
+console.log('\n  · 「未套集团价」判定（group 模式不得显示 0.00 误导）');
+run('_mkRows();');
+ok('G6 纯内部子目行（subs 无 gtype）→ ready:false 且 unit:null',
+  run('(function(){var a=rowGroupAgg(findRow(105));return a.ready===false&&a.unit===null;})()') === true,
+  run('JSON.stringify(rowGroupAgg(findRow(105)))'));
+ok('G6b 且不算待询价（rowGroupPending false）——渲染层据此显示「—」而不是「待询价」', run('rowGroupPending(findRow(105))') === false);
+near('G6c 内部子目在集团口径无值可汇 → 分量 0', run('rowGroupAgg(findRow(105)).lab'), 0, 1e-12);
+ok('G6d 无子目行 → ready:false', run('rowGroupAgg(findRow(100)).ready') === false && run('rowGroupSubs(findRow(100)).length') === 0);
+run('_mkRows(); addGroupSub(105, "ZS02-D-003");');
+ok('G7 混合行（内部子目 + 集团子目）只聚合集团子目', run('(function(){var a=rowGroupAgg(findRow(105));return a.ready===true&&Math.abs(a.lab-1.51)<1e-12;})()') === true);
+near('G7b unit = 集团子目 h（内部子目不双计）', run('rowGroupAgg(findRow(105)).unit'), 4.0779, 0.001);
+run('GROUP_RATES.mgmt = 0.15;');
+near('G7c 费率驱动：改 GROUP_RATES 聚合随行（不硬编码 17%）', run('rowGroupAgg(findRow(105)).mgmt'), 1.51 * 0.15, 1e-9);
+run(RATE_RESET + ' _mkRows();');
+
+/* ── G② COLS（EXP_COLS）管理费/利润列：group 取 rowGroupAgg，internal 表达式原样 ── */
+console.log('\n  · EXP_COLS 管理费/利润列的模式分支');
+run('addGroupSub(105, "ZS02-D-003"); pricingMode="group"; globalMgmtRate=10; globalProfitRate=15;');
+near('G8 group 模式 mgmt 列 = rowGroupAgg(r).mgmt（不乘 globalMgmtRate）',
+  run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(105))'), 1.51 * 0.17, 1e-9);
+near('G8b group 模式 profit 列 = rowGroupAgg(r).profit',
+  run('EXP_COLS.find(function(c){return c.key==="profit"}).get(findRow(105))'), 1.51 * 0.12, 1e-9);
+run('_mkRows(); addGroupSub(100, "ZS02-A-009");');
+near('G8c 待询价行导出 mgmt = 0（ready:false 不放假值，与 rowTotal 同口径）',
+  run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(100))'), 0, 1e-12);
+near('G8d 未套集团价行导出 mgmt = 0', run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(101))'), 0, 1e-12);
+run('_mkRows(); pricingMode="internal";');
+near('G8e internal 模式表达式原样保留：(rowUnitPrice||0)×10%',
+  run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(105))'), 388 * 0.1, 1e-9);
+near('G8f internal profit 列同（×15%）', run('EXP_COLS.find(function(c){return c.key==="profit"}).get(findRow(105))'), 388 * 0.15, 1e-9);
+run('pricingMode="group";');
+
+/* ── G③ groupSubCells：集团子目派生单元格（name 来自 getGroupBench，不走 getBench） ── */
+console.log('\n  · groupSubCells：集团子目单元格派生值');
+run('_mkRows(); addGroupSub(100, "ZS02-A-009");');
+const CELLS = JSON.parse(run('JSON.stringify(groupSubCells(findRow(100).subs[0]))'));
+ok('G9 code/bsh 与 sub 一致（派生视图定位回子目靠 bid+bsh）', CELLS.code === 'ZS02-A-009' && CELLS.bsh === 'ZS02-A', JSON.stringify(CELLS));
+ok('G9b name/spec/unit/section 取自 getGroupBench 库行',
+  CELLS.name === '瓷砖地面' && CELLS.spec === 'SA级600×600' && CELLS.unit === 'm2' && CELLS.section === '楼地面工程');
+ok('G9c 工种取 sub.workType（源自表行 work_type）', CELLS.workType === '泥水', CELLS.workType);
+ok('G9d 主材逐条：name×consumption 原样，未定价位 pending + 文案「甲供待询价」',
+  CELLS.mats.length === 2 && CELLS.mats[0].consumption === 1.4469 && CELLS.mats[0].pending === true &&
+  CELLS.mats[0].label === '甲供待询价' && CELLS.mats[0].cost === 0, JSON.stringify(CELLS.mats));
+ok('G9e 整条 pending 且 h/lab/aux 分量齐备',
+  CELLS.pending === true && CELLS.lab === 61.65 && CELLS.aux === 1.98 && CELLS.mech === 0 && CELLS.h === 81.5085,
+  JSON.stringify([CELLS.lab, CELLS.h]));
+run('findRow(100).subs[0].mats[0].price = 100;');
+const CELLS2 = JSON.parse(run('JSON.stringify(groupSubCells(findRow(100).subs[0]))'));
+ok('G9f 已定价位：pending:false、price/cost 出数（100×1.4469）',
+  CELLS2.mats[0].pending === false && CELLS2.mats[0].price === 100 && Math.abs(CELLS2.mats[0].cost - 144.69) < 1e-9,
+  JSON.stringify(CELLS2.mats[0]));
+ok('G9g 其一未定价 → 整条 pending（不半套价）', CELLS2.pending === true);
+ok('G9h mats 非数组 / 缺字段 → 视图 [] 且不抛（T3 遗留守卫）',
+  run('(function(){try{return groupSubCells({gtype:"group",bid:"ZS02-X",mats:"坏字符串"}).mats.length===0 && groupSubCells({gtype:"group",bid:"ZS02-X"}).mats.length===0;}catch(e){return "throw:"+e.message;}})()') === true);
+ok('G9i rowGroupAgg 对 mats 非数组子目不抛（消费处同守卫）',
+  run('(function(){try{var r={id:9,subs:[{gtype:"group",bid:"ZS02-A-009",bsh:"ZS02-A",lab:1,aux:0,mech:0,mats:"坏字符串"}]};var a=rowGroupAgg(r);return a.ready===true&&a.lab===1;}catch(e){return "throw:"+e.message;}})()') === true);
+
+/* ── G④ updGroupMat：甲供待询价 → 填价 → 出数 ── */
+console.log('\n  · updGroupMat：待询价的唯一填价入口');
+run('_mkRows(); addGroupSub(100, "ZS02-A-009");');
+reset(); run('_render=0;');
+ok('G10 填入第 0 条主材价 → 数值写进 mats[0].price',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",0,"100"), findRow(100).subs[0].mats[0].price') === 100);
+ok('G10b 只填一条仍 pending（整条子目不许半套价）', run('rowGroupPending(findRow(100))') === true);
+run('_render=0;');
+ok('G10c updGroupMat 写值后重渲染（沿用 updSubField 同款刷新链路）',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",1,"300"), _render') === 1);
+ok('G10d 补齐 → rowGroupAgg.ready true', run('rowGroupAgg(findRow(100)).ready') === true);
+ok('G10e 清空回到待询价（空串 → null，而不是 0：0 是有效报价）',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",1,""), findRow(100).subs[0].mats[1].price') === null &&
+  run('rowGroupPending(findRow(100))') === true);
+ok('G10f 脏值（非数）同样落回 null，不产生 NaN 价',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",1,"abc"), findRow(100).subs[0].mats[1].price') === null);
+ok('G10g 库行不被反写（getGroupBench 仍为原值）', run('G009.mats[0].price') === null);
+ok('G10h 越界 idx / 非集团子目 → false 不抛',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",9,"1")') === false &&
+  run('updGroupMat(100,"NS-020","泥水班组",0,"1")') === false);
+
+/* ── G⑤ gtype 隔离护栏 ── */
+console.log('\n  · gtype 隔离护栏：含集团子目的行一律跳过 syncRowMat');
+run('_mkRows(); addGroupSub(101, "ZS02-D-003"); findRow(101).matPrice = 500; findRow(101).matName = "PVC膜";');
+run('syncRowMat(101);');
+ok('G11 唯一子目是集团子目：syncRowMat 不写 groupSub.matPrice（八字段契约不破）',
+  run("'matPrice' in findRow(101).subs[0]") === false);
+ok('G11b 契约字段集不变（护栏被绕过就会多出 matPrice）',
+  run('Object.keys(findRow(101).subs[0]).sort().join(",")') === 'aux,bid,bsh,coef,conv,gtype,lab,mats,mech,workType',
+  run('Object.keys(findRow(101).subs[0]).sort().join(",")'));
+near('G11c 行级暂存价保持（不被消耗/清空）', run('findRow(101).matPrice'), 500);
+ok('G11d 内部 rowMatCost 不被污染（集团子目无 matPrice → 0）', run('rowMatCost(findRow(101))') === 0);
+run('addSub(101, "NS-020", "泥水班组"); syncRowMat(101);');
+ok('G11e 混合行（集团 + 内部）同样跳过：内部子目 matPrice 保持 0，不猜落点',
+  run('findRow(101).subs[1].matPrice') === 0 && run("'matPrice' in findRow(101).subs[0]") === false);
+// 主材价导入（applyQuoteImport）直接调 routeRowMat，绕过 syncRowMat 入口闸 → 护栏必须在写入点前置
+run('_mkRows(); addGroupSub(101, "ZS02-D-003");');
+ok('G11f routeRowMat 直连路径（导入主材价）也被拦：唯一集团子目不落 matPrice、行也不暂存',
+  run('routeRowMat(findRow(101), 88, "", "over")') === 'kept' &&
+  run("'matPrice' in findRow(101).subs[0]") === false && run('(parseFloat(findRow(101).matPrice)||0)') === 0);
+run('_mkRows(); addGroupSub(100, "ZS02-D-003"); findRow(100).matPrice = 500; findRow(100).matName = "石材"; addSub(100, "NS-020", "泥水班组");');
+run('delSub(100, "NS-020", "泥水班组");');
+ok('G12 删掉行内一个内部子目后（delSub→syncRowMat）：group sub 上仍不出现 matPrice',
+  run("'matPrice' in findRow(100).subs[0]") === false && run('findRow(100).subs.length') === 1);
+near('G12b 删除路径不动行级暂存价', run('findRow(100).matPrice'), 500);
+run('delSub(100, "ZS02-D-003", "ZS02-D");');
+ok('G12c 集团子目本身可正常删除（bid+bsh 定位复用 delSub）', run('findRow(100).subs.length') === 0);
+run('_mkRows(); findRow(100).matPrice = 200; addSub(100, "NS-020", "泥水班组");');
+ok('G13 纯内部行 syncRowMat 正常分配（护栏不伤内部路径）', run('findRow(100).subs[0].matPrice') === 200);
+run('_mkRows(); pricingMode="internal"; findRow(100).matPrice = 200; addSub(100, "NS-020", "泥水班组");');
+ok('G13b internal 模式同样正常（护栏只看 gtype，不看模式）', run('findRow(100).subs[0].matPrice') === 200);
+run('pricingMode="group"; _mkRows();');
+
+/* ── G⑥ ZS02 挂载面板 ── */
+console.log('\n  · openGroupPicker：本地模糊过滤 + 空库守卫 + 点选挂载');
+ok('G14 openGroupPicker / groupPickerItems 为顶层函数',
+  run('typeof openGroupPicker') === 'function' && run('typeof groupPickerItems') === 'function');
+run('rebuildGroupBenchMap([G009, D003]);');
+ok('G14b 空查询返回全量（296 条本地过滤，不分页）', run('groupPickerItems("").length') === 2 && run('groupPickerItems("   ").length') === 2);
+ok('G14c 按名称模糊命中', run('groupPickerItems("瓷砖").map(function(x){return x.code}).join()') === 'ZS02-A-009');
+ok('G14d 大小写不敏感（PVC → 成品保护-PVC保护膜）', run('groupPickerItems("PVC").map(function(x){return x.code}).join()') === 'ZS02-D-003');
+ok('G14e 按特征 spec 命中', run('groupPickerItems("600×600").length') === 1);
+ok('G14f 按 code 命中', run('groupPickerItems("ZS02-D-003").length') === 1);
+ok('G14g 多关键词 AND（名称+特征）', run('groupPickerItems("瓷砖 600").length') === 1 && run('groupPickerItems("瓷砖 不存在").length') === 0);
+ok('G14h 未命中返回空数组（不是 undefined）',
+  run('Array.isArray(groupPickerItems("不存在zzz"))') === true && run('groupPickerItems("不存在zzz").length') === 0);
+ok('G14i 空库（未建表/加载失败）→ 空数组不抛',
+  run('(function(){var keep=groupBenchRows.slice(); rebuildGroupBenchMap([]); try{ return groupPickerItems("瓷砖").length===0; } finally { rebuildGroupBenchMap(keep); } })()') === true);
+run('openGroupPicker(101);');
+ok('G14j 弹窗打开：groupPickerMod 去掉 hidden', els['groupPickerMod']._clsOps.removed.indexOf('hidden') >= 0, JSON.stringify(els['groupPickerMod']._clsOps));
+ok('G14k 表头列齐 code/name/unit/A人工/D辅材/E机械/甲供',
+  /A人工/.test(els['gpList'].innerHTML) && /D辅材/.test(els['gpList'].innerHTML) &&
+  /E机械/.test(els['gpList'].innerHTML) && /甲供/.test(els['gpList'].innerHTML), String(els['gpList'].innerHTML).slice(0, 200));
+ok('G14l 候选行含 code 与 name，且甲供未定价位打「待填价」tag',
+  /ZS02-A-009/.test(els['gpList'].innerHTML) && /瓷砖地面/.test(els['gpList'].innerHTML) && /待填价/.test(els['gpList'].innerHTML));
+ok('G14m 已定价行不误标（D-003 那行无「待填价」）',
+  run('groupMatPending(getGroupBench("ZS02-D-003"))') === false && run('groupMatPending(getGroupBench("ZS02-A-009"))') === true);
+run('closeGroupPicker();');
+ok('G14n 关闭加回 hidden 并清空目标行',
+  els['groupPickerMod']._clsOps.added.indexOf('hidden') >= 0 && run('groupPickerRowId') === null);
+reset();
+run('rebuildGroupBenchMap([]); openGroupPicker(101);');
+ok('G14o 空库时 picker 显示「ZS02 库未加载」+ 重试按钮',
+  /ZS02 库未加载/.test(els['gpList'].innerHTML) && /groupPickerRetry\(/.test(els['gpList'].innerHTML),
+  String(els['gpList'].innerHTML).slice(0, 160));
+run('RESP = {group_benchmark_items:[G009,D003], group_pricing_rules:RULES_SEED}; ' + FLAG_RESET);
+run('groupPickerRetry();');
+await tick();   // loadGroupDataOnce 是两张表串行 await：等微任务排空才看得到两次 _get
+ok('G14p 重试走 ensureGroupData 链路（两张表各一次，不自发 fetch）', GETS.length === 2, JSON.stringify(GETS));
+await tick();
+ok('G14q 重试成功后库可查（picker 数据源恢复）', run('groupBenchRows.length') === 2);
+run('rebuildGroupBenchMap([G009, D003]); closeGroupPicker();');
+reset();
+run('_mkRows(); _render=0; openGroupPicker(101);');
+ok('G15 点选 → addGroupSub 挂载到目标行 + 关闭弹窗',
+  run('gpPick("ZS02-D-003")') === true && run('findRow(101).subs.length') === 1 &&
+  run('findRow(101).subs[0].gtype') === 'group' && els['groupPickerMod']._clsOps.added.indexOf('hidden') >= 0);
+// 弹窗流水是全测试累加的（els 不重置）：拿长度做基线，只判「本次失败有没有新增 close」
+run('openGroupPicker(101);');
+const CLS_ADDED0 = els['groupPickerMod']._clsOps.added.length;
+ok('G15b 重复挂载：addGroupSub 拦截 → 弹窗保持开着（用户可换一条）',
+  run('gpPick("ZS02-D-003")') === false && run('findRow(101).subs.length') === 1 &&
+  els['groupPickerMod']._clsOps.added.length === CLS_ADDED0);
+ok('G15c 未知 code 同样不写 sub', run('gpPick("ZS02-A-999")') === false && run('findRow(101).subs.length') === 1);
+run('closeGroupPicker();');
+ok('G15d 未指定行（rid=null）点选不抛',
+  run('(function(){try{return gpPick("ZS02-D-003")===false;}catch(e){return "throw:"+e.message;}})()') === true);
+DOMCFG.gone = true;
+ok('G15e 精简 DOM 下开关弹窗不抛',
+  run('(function(){try{openGroupPicker(101);closeGroupPicker();groupPickerRetry();renderGroupPicker();return true;}catch(e){return "throw:"+e.message;}})()') === true);
+DOMCFG.gone = false;
+run('closeGroupPicker(); _mkRows();');
+
+/* ── groupSubRowHtml：集团子目行渲染本体（浏览器冒烟不可用的代替：在沙箱里真跑一次拼接）── */
+console.log('\n  · groupSubRowHtml 实渲：列对齐 / 待询价态 / 甲供逐条 / 既有处理器接线');
+run('addGroupSub(100, "ZS02-A-009");');
+const GH = run('groupSubRowHtml(findRow(100), findRow(100).subs[0])');
+ok('G17a 待询价集团子目行输出单个 tr，单元格数 =16（与主表 16 列对齐）',
+  /^<tr class="sub-r grp-pend"/.test(GH) && (GH.match(/<td/g) || []).length === 16 && /<\/tr>$/.test(GH),
+  (GH.match(/<td/g) || []).length + ' 个 td');
+ok('G17b 行内同时挂「集团」+「待询价」两个徽标（.zone-badge 家族，只加 modifier）',
+  /zone-badge grp/.test(GH) && /zone-badge pend/.test(GH));
+ok('G17c 主材逐条 name×consumption，未定价位显「甲供待询价」黄底输入框',
+  /瓷砖×1\.4469/.test(GH) && /1:3干硬性水泥砂浆×0\.0147/.test(GH) &&
+  (GH.match(/甲供待询价<\/span>/g) || []).length === 2 && /cof-i pend/.test(GH),
+  '待询价文案标签命中 ' + (GH.match(/甲供待询价<\/span>/g) || []).length + ' 个');
+ok('G17d 填价入口逐条带 mats 下标（updGroupMat(rid,bid,bsh,idx,value)），不走内部 updSubField',
+  /updGroupMat\(100,'ZS02-A-009','ZS02-A',0,this\.value\)/.test(GH) &&
+  /updGroupMat\(100,'ZS02-A-009','ZS02-A',1,this\.value\)/.test(GH) && !/updSubField\(/.test(GH));
+ok('G17e 系数/换算/删除沿用既有处理器（bid+bsh 定位，零改动复用）',
+  /updCoef\(100,'ZS02-A-009','ZS02-A',this\.value\)/.test(GH) &&
+  /updConv\(100,'ZS02-A-009','ZS02-A',this\.value\)/.test(GH) &&
+  /delSub\(100,'ZS02-A-009','ZS02-A'\)/.test(GH));
+ok('G17f 名称/特征/工种取自 getGroupBench（不查内部基准价库 → 不会误报缺失）',
+  /瓷砖地面/.test(GH) && /SA级600×600/.test(GH) && /泥水/.test(GH) && !/子目数据缺失/.test(GH));
+ok('G17g 待询价时金额列显「待询价」文案而不是 0.00',
+  (GH.match(/grp-pend-txt/g) || []).length >= 3);
+run('updGroupMat(100,"ZS02-A-009","ZS02-A",0,"100"); updGroupMat(100,"ZS02-A-009","ZS02-A",1,"300");');
+const GH2 = run('groupSubRowHtml(findRow(100), findRow(100).subs[0])');
+ok('G17h 补齐甲供价后不再挂待询价态，主材费出实数 144.69（100×1.4469）',
+  !/grp-pend/.test(GH2) && !/zone-badge pend/.test(GH2) && !/甲供待询价/.test(GH2) && /144\.69/.test(GH2));
+ok('G17i 已定价位输入框回显原值（不被 fmt 千分位污染，避免回写脏数据）',
+  /value="100"/.test(GH2) && /value="300"/.test(GH2));
+run('_mkRows();');
+
+/* ── G⑦ renderBoq 源码结构：集团子目绝不走「子目数据缺失」红底 ── */
+console.log('\n  · renderBoq 分流与模式门控（源码结构断言，渲染本体不进沙箱）');
+const RB_START = TOOL.indexOf('function renderBoq() {');
+const RB_END = TOOL.indexOf('\nfunction importBoq()', RB_START);
+if (RB_START < 0 || RB_END < 0) throw new Error('未找到 renderBoq 边界锚点');
+const RB = TOOL.slice(RB_START, RB_END);
+// 锚到「代码串」本身（不按四个字的通用词找）：源码注释里也会引用「子目数据缺失」，按普通词定位会先 hit 注释而假阴
+const GT_IDX = RB.indexOf("gtype === 'group'");
+const MISS_IDX = RB.indexOf('⚠️ 子目数据缺失（编号');
+const GB_IDX = RB.indexOf('getBench(sub.bid, sub.bsh)');
+ok('G16 renderBoq 存在集团子目分流', GT_IDX >= 0);
+ok('G16b 分流先于 getBench→「⚠️子目数据缺失」红底路径（集团子目不得被打红底）',
+  GT_IDX >= 0 && GT_IDX < MISS_IDX && GT_IDX < GB_IDX, 'gtype@' + GT_IDX + ' / 红底@' + MISS_IDX + ' / getBench@' + GB_IDX);
+ok('G16c 红底路径本身保留（内部子目仍需缺失告警）', MISS_IDX >= 0 && /\u26a0\ufe0f 子目数据缺失/.test(RB) && GB_IDX >= 0);
+ok('G16d 集团子目行派生单元格交给 groupSubRowHtml（渲染层不内联公式）', /groupSubRowHtml\(/.test(RB));
+ok('G16e 待询价行挂 CSS 类（黄底 + 徽标由样式层承担，不在 JS 里拼颜色）', /grp-pend/.test(RB) && /zone-badge pend|badge pend/.test(RB));
+ok('G16f 「＋ 集团子目」按钮仅 group 模式渲染（内部 UI 零变化）',
+  /pricingMode === 'group'[\s\S]{0,240}openGroupPicker\(/.test(RB), RB.slice(RB.indexOf('addsub-tr'), RB.indexOf('addsub-tr') + 420));
+ok('G16g 既有内部 picker 按钮仍无条件保留（并排而非替换）', /openPicker\('\+r.id\+'\)/.test(RB) && /挂子目（从基准价库选择）/.test(RB));
+const GSRH = TOOL.indexOf('function groupSubRowHtml');
+const GSRH_END = TOOL.indexOf('function renderBoq()', GSRH);
+ok('G16h 集团子目行主材价录入走 updGroupMat（不是内部 updSubField matPrice）',
+  GSRH >= 0 && GSRH_END > GSRH && /updGroupMat\(/.test(TOOL.slice(GSRH, GSRH_END)) &&
+  !/updSubField\([^)]*'matPrice'/.test(TOOL.slice(GSRH, GSRH_END)));
+ok('G16i group 模式行级汇总列走既有分支函数（compUnitPrice/rowTotal）',
+  /compUnitPrice\(r\)/.test(RB) && /rowTotal\(r\)/.test(RB));
+
+/* ── G⑧ updateSum 底部合计：「人工费合计」在 group 下不得拿全费用单价乘 qty（真实函数依赖整页 DOM，同按结构断言）── */
+const US_START = TOOL.indexOf('function updateSum() {');
+const US_END = TOOL.indexOf('// ═══════════ PICKER', US_START);
+if (US_START < 0 || US_END < 0) throw new Error('未找到 updateSum 边界锚点');
+const US = TOOL.slice(US_START, US_END);
+ok('G18 updateSum 有 group 分支且人工费走 rowGroupAgg(r).lab（不拿全费用单价乘 qty）',
+  /pricingMode === 'group'/.test(US) && /rowGroupAgg\(r\)\.lab \* q/.test(US), US.slice(0, 200));
+ok('G18b internal 路径原样保留（rowUnitPrice×qty）', US.indexOf('rowUnitPrice(r)||0') >= 0 && /\* q;/.test(US));
+ok('G18c 合计仍走 rowTotal（group 下自动包含待询价行计 0 的口径）', /rowTotal\(r\)\|\|0/.test(US));
+
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
-console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎（17/12·人工+机械基数）与内部公式回归全部成立\n');
+console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
 process.exit(fail ? 1 : 0);
 
 })().catch(e => { console.error('\n💥 测试异常：' + (e && e.message ? e.message : e)); process.exit(1); });
