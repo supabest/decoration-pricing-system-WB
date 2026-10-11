@@ -2537,7 +2537,21 @@ function handleKnowledgeFile(e) {
   }
 }
 
+// ═══════════ T8 收尾：group 模式下旧导出入口门控 ═══════════
+// 评审裁定的处置=「入口门控」：方式一（配置导出）/方式二（模板导出）/辅材清单/按工种拆分对账，
+// 全部按内部口径算账（EXP_COLS lab/mat/aux/waste 列、rowUnitPrice、computeAuxForRow），与集团公式不同源；
+// 集团导出链 doGroupSummaryExport → collectGroupSummaryPayload → /export/group-summary 自成一路，
+// 不经 collectExportData / buildSplitExport（EXP_COLS 本体因此逐字不改）。
+// 内部模式 groupModeBlock 恒返回 false → 旧导出行为零变更。
+// 用法：入口函数首行 `if (groupModeBlock()) return;`（true = 已拦下并 toast）
+function groupModeBlock(msg) {
+  if (typeof pricingMode === 'undefined' || pricingMode !== 'group') return false;
+  toast(msg || '集团模式不适用，请使用「导出对甲报价汇总」');
+  return true;
+}
+
 function showExportModal() {
+  if (groupModeBlock()) return;
   if (!groups.length) { toast('暂无数据可导出'); return; }
   buildExpCols();
   document.getElementById('exportModal').classList.remove('hidden');
@@ -2920,7 +2934,7 @@ function renderGroupSummaryPanel() {
   html += '<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px">';
   html += '<span>一 · 分部分项工程费 <b style="font-family:var(--mono)">' + money(s.part1) + '</b></span>' + (rowsHtml || '');
   html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
-  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) : '—') + '；暂列金额集团规定不予计取）</span></span>';
+  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) + (s.needsArea ? '（暂按 0 计，待装修面积确认）' : '') : '—') + '；暂列金额集团规定不予计取）</span></span>';
   if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费：参数未配置（GROUP_RATES.coordFee=null），未计入第三部分</span>';
   html += '<span>四 · 税金 <b style="font-family:var(--mono)">' + money(s.part4) + '</b><span style="color:var(--tx3)">（(一+二+三)×' + groupRateLabel(GROUP_RATES.tax) + '）</span></span>';
   html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
@@ -2949,7 +2963,7 @@ async function doGroupSummaryExport() {
       return payload;
     }
     const blob = await r.blob();
-    const fname = payload.project_name ? (payload.project_name + '-集团汇总表.xlsx') : '集团汇总表.xlsx';
+    const fname = payload.project_name ? (payload.project_name + '_集团汇总表.xlsx') : '集团汇总表.xlsx';
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = fname;
@@ -2959,6 +2973,7 @@ async function doGroupSummaryExport() {
     URL.revokeObjectURL(a.href);
     toast('✓ 已导出：' + fname);
   } catch (e) {
+    console.error('集团导出失败', e);
     toast('⚠️ 后端不可达，已收集 ' + payload.items.length + ' 条 payload 供导出');
   }
   return payload;
@@ -2979,6 +2994,7 @@ function ensureInternalCostForRatio() {
 }
 
 async function doConfigExport() {
+  if (groupModeBlock()) return;   // 拆分对账弹窗（splitByTrade）在本函数内部，入口拦下即不可达
   if (!groups.length) { toast('暂无数据'); return; }
   const selected = EXP_COLS.filter(c => document.getElementById('expchk_'+c.key)?.checked);
   if (!selected.length) { toast('请至少勾选一列'); return; }
@@ -3105,6 +3121,7 @@ function buildAuxExport() {
 }
 
 async function doAuxExport(ev) {
+  if (groupModeBlock()) return;   // 辅材清单走内部辅材配方引擎 + 对账弹窗，集团口径无辅材配方概念
   if (!groups.length) { toast('暂无数据'); return; }
   const btn = ev?.target?.closest('button');
   if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
@@ -3870,6 +3887,7 @@ function renderTmplMapping() {
 }
 
 async function doTemplateExport() {
+  if (groupModeBlock()) return;   // 模板导出复用 collectExportData（内部口径）
   if (!tmplFileData || !groups.length) { toast('请先上传模板并导入BOQ数据'); return; }
   if (!Object.keys(tmplMapping).length) { toast('请先匹配至少一列数据字段'); return; }
 

@@ -137,7 +137,7 @@ class GroupSummaryExporter:
         R = self.req.rates
         area = max(0.0, self.req.fitout_area or 0.0)   # 负面积钳 0，避免配合费倒扣
         part1 = d_measures = base = 0.0
-        unpriced = 0
+        unpriced = 0   # 计数单位为子目级（前端 buildGroupSummary 为行级）；端点前置 400 拦截，导出路径两侧不会同时可见
         sections: Dict[str, Dict[str, Any]] = {}
         groups: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -265,10 +265,11 @@ class GroupSummaryExporter:
             "lab": it["lab"], "mat": round(it["mat"], 4), "aux": it["aux"], "mech": it["mech"],
             "remark": "",
         }
-        lm, h = letters["lab"], letters["mech"]
-        values["mgmt"] = f"=({lm}{r}+{h}{r})*{_num(R.mgmt)}"
-        values["profit"] = f"=({lm}{r}+{h}{r})*{_num(R.profit)}"
-        values["h"] = f"={lm}{r}+{letters['mat']}{r}+{letters['aux']}{r}+{h}{r}" \
+        # lm_l = A 人工列字母、mech_l = E 机械列字母（命名避开「h」：h 在本表里是 H 综合单价列/键）
+        lm_l, mech_l = letters["lab"], letters["mech"]
+        values["mgmt"] = f"=({lm_l}{r}+{mech_l}{r})*{_num(R.mgmt)}"
+        values["profit"] = f"=({lm_l}{r}+{mech_l}{r})*{_num(R.profit)}"
+        values["h"] = f"={lm_l}{r}+{letters['mat']}{r}+{letters['aux']}{r}+{mech_l}{r}" \
                       f"+{letters['mgmt']}{r}+{letters['profit']}{r}"
         values["amount"] = f"={letters['h']}{r}*{letters['coef']}{r}*{letters['conv']}{r}" \
                            f"*{letters['qty']}{r}"
@@ -324,6 +325,7 @@ class GroupSummaryExporter:
         for i, label in enumerate(["编号", "名称", "金额（元）", "备注"]):
             ws.cell(row=2, column=i + 1, value=label)
         self._style_row(ws, 2, ncol, "header")
+        ws.freeze_panes = "A3"          # 同 sheet1 惯例：标题行 + 表头行常驻
         m = get_column_letter(3)
 
         r = 3
