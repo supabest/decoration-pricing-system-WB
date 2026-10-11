@@ -2931,16 +2931,33 @@ function renderGroupSummaryPanel() {
   body.innerHTML = html;
 }
 
-// 导出：收集 payload 并提交到后端（端点由 Task 7 提供）；本阶段仅保证收集正确、提交失败可降级提示。
+// 导出：收集 payload → POST /api/v1/export/group-summary → 下载后端返回的 xlsx；400 detail 按机器可读键分类提示。
 async function doGroupSummaryExport() {
   const payload = collectGroupSummaryPayload();
   if (!payload.items.length) { toast('暂无集团子目可导出（请先在对甲报价模式下套价）'); return; }
   try {
     const h = { 'Content-Type': 'application/json' };
     const t = localStorage.getItem('sb-access-token'); if (t) h['Authorization'] = 'Bearer ' + t;
-    const r = await fetch(BACKEND_URL + '/api/v1/group-pricing/export', { method: 'POST', headers: h, body: JSON.stringify(payload) });
-    if (r.ok) { toast('✅ 对甲报价汇总已提交后端（' + payload.items.length + ' 条）'); }
-    else { toast('⚠️ 后端导出端点未就绪（Task 7），已收集 ' + payload.items.length + ' 条 payload'); }
+    const r = await fetch(BACKEND_URL + '/api/v1/export/group-summary', { method: 'POST', headers: h, body: JSON.stringify(payload) });
+    if (!r.ok) {
+      // FastAPI HTTPException → {detail:{...}}；detail 不可解析时退回通用提示（不吞掉状态码）
+      let detail = null;
+      try { const j = await r.json(); detail = j && j.detail; } catch (_) {}
+      if (detail && detail.pending) { toast('⚠️ 待询价未补价，已拦截：' + detail.pending.length + ' 条：' + detail.pending.slice(0, 5).join('、') + (detail.pending.length > 5 ? '…' : '')); }
+      else if (detail && detail.error === 'coord_fee_not_configured') { toast('⚠️ 精装修配合费费率未配置，请在管理端配置或显式置 0'); }
+      else { toast('⚠️ 后端导出失败（HTTP ' + r.status + '），已收集 ' + payload.items.length + ' 条 payload'); }
+      return payload;
+    }
+    const blob = await r.blob();
+    const fname = payload.project_name ? (payload.project_name + '-集团汇总表.xlsx') : '集团汇总表.xlsx';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    toast('✓ 已导出：' + fname);
   } catch (e) {
     toast('⚠️ 后端不可达，已收集 ' + payload.items.length + ' 条 payload 供导出');
   }
