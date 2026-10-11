@@ -320,6 +320,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
         <span class="zone-badge">对外报价</span>
         <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">管理费</span><input class="pi" id="mgmtRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="管理费 = 人工单价 × 管理费率%">ℹ️</span></div>
         <div style="display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:var(--tx2);font-weight:500">利润</span><input class="pi" id="profitRateInp" type="number" min="0" max="100" step="1" value="0" style="width:50px;padding:3px 4px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="onGlobalRateChange()">%<span class="pi" style="font-size:11px;color:var(--tx2);font-weight:500;margin:0 4px" title="利润 = 人工单价 × 利润率%">ℹ️</span></div>
+        <div id="groupRateHint" style="display:none;flex-basis:100%;font-size:10px;line-height:1.4;color:var(--acc);font-weight:600"></div>
       </div>
       <div style="display:flex;align-items:center;gap:6px;padding-left:12px;border-left:2px dashed var(--border)" title="对内核算：①对甲合同金额 = 与甲方（建设单位）签订的合同总金额，不含暂列金额；仍在对外报价阶段、金额未定的项目可留空。②目标利润率由用户按项目全部直接成本（含未录入本工具的费用项）对比合同金额自行测算。目标成本线 = 对甲合同金额 × (1 - 目标利润率)，均不进入任何对外导出">
         <span class="zone-badge">对内核算</span>
@@ -887,6 +888,7 @@ async function loadGroupDataOnce() {
     toast('✅ 对甲报价数据就绪：集团基准价 ' + groupBenchRows.length + ' 条 · 管理费 ' + groupRateLabel(GROUP_RATES.mgmt) + ' / 利润 ' + groupRateLabel(GROUP_RATES.profit));
     // setPricingMode 不 await 懒加载，首轮 renderBoq/updateSum 跑在数据到达前（清单停在「数据未到」）；
     // 数据真正落地的此刻补渲染一次，失败分支不进这里，不会空重排。
+    updateGroupRateHint();   // 费率库值可能与 T01 默认不同，提示条跟着刷新
     renderBoq();
     updateSum();
   }
@@ -946,6 +948,7 @@ function setPricingMode(mode) {
   if (mi) { mi.disabled = isGroup; mi.title = isGroup ? '对甲报价：管理费取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.mgmt) + '），基数=人工+机械，不可手填' : '管理费 = 人工单价 × 管理费率%'; }
   if (pi) { pi.disabled = isGroup; pi.title = isGroup ? '对甲报价：利润取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.profit) + '），基数=人工+机械，不可手填' : '利润 = 人工单价 × 利润率%'; }
   if (isGroup) ensureGroupData();   // 懒加载入口（不阻塞切换）；数据落地后由 loadGroupDataOnce 补一次渲染
+  updateGroupRateHint();            // 提示条随模式走（库值刷新在 loadGroupDataOnce 成功分支）
   renderBoq();
   updateSum();
 }
@@ -1206,6 +1209,32 @@ function addSub(rid,bid,bsh) {
   return true;
 }
 function delSub(rid,bid,bsh) { const r=findRow(rid); if(r){r.subs=r.subs.filter(s=>!(s.bid===bid&&s.bsh===bsh));syncRowMat(rid);renderBoq();} }
+// 对甲报价：挂载 ZS02 集团基准价子目。与 addSub 共用同一条 subs 通道，靠 gtype:'group' 分流；
+// gtype 缺省即内部子目 → m.html / 草稿接力零影响。
+// 表→sub 字段映射：code→bid、'ZS02-'+discipline→bsh、work_type→workType、lab_price→lab、
+//   mats→深拷贝（改价不脏化基准价库）、aux_cost→aux、mech_cost→mech；coef/conv 起始 1.0。
+// 不走 syncRowMat：集团口径主材价只认 mats[].price（null=甲供待询价），行级暂存价不往子目上分配。
+function addGroupSub(rid, code) {
+  const r=findRow(rid); if(!r) return false;
+  const it=getGroupBench(code);
+  if(!it){ if(!batchMode) toast('⚠️ 集团基准价未找到：'+code); return false; }
+  const bsh='ZS02-'+(it.discipline||'');
+  if(r.subs.find(s=>s.bid===code&&s.bsh===bsh)){ if(!batchMode) toast('该子目已添加'); return false; }
+  const srcMats=Array.isArray(it.mats)?it.mats:[];
+  r.subs.push({bid:code,bsh:bsh,gtype:'group',coef:1.0,conv:1.0,
+    workType:it.work_type||'',lab:parseFloat(it.lab_price)||0,
+    mats:JSON.parse(JSON.stringify(srcMats)),
+    aux:parseFloat(it.aux_cost)||0,mech:parseFloat(it.mech_cost)||0});
+  r.open=true;
+  if(!batchMode) {
+    renderBoq();
+    const ru=(r.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3').toLowerCase().trim();
+    const bu=(it.unit||'').replace(/㎡/g,'m2').replace(/㎥/g,'m3').toLowerCase().trim();
+    if(ru&&bu&&ru!==bu) toast('⚠️ 单位不一致：清单'+r.unit+' / 集团基准价'+it.unit+'，请设置换算系数');
+    else toast('✓ 子目已挂载');
+  }
+  return true;
+}
 function updCoef(rid,bid,bsh,val) { const r=findRow(rid); const s=r&&r.subs.find(s=>s.bid===bid&&s.bsh===bsh); if(s){s.coef=parseFloat(val)||1.0;updateSum();renderBoq();} }
 function updConv(rid,bid,bsh,val) { const r=findRow(rid); const s=r&&r.subs.find(s=>s.bid===bid&&s.bsh===bsh); if(s){s.conv=parseFloat(val)||1.0;updateSum();renderBoq();} }
 // 子目字段（损耗率/主材价等）改动后必须 renderBoq：清单行的损耗率/主材单价/主材费是渲染时算好的派生单元格，只调 updateSum 仅刷底部总计、行上显示会停在旧值
@@ -1229,11 +1258,14 @@ function effPrice(sub) {
   return it ? it.price*sub.coef*globalCoef*(sub.conv||1.0) : 0;
 }
 function rowUnitPrice(r) {
+  // 对甲报价：整行改走集团公式（分支先于 hourlyMode 判定 → 时工模式在 group 下不适用）
+  // typeof 守卫：既有回归测试沙箱（m_parity/quote_import）按函数逐个抽取、不带 pricingMode 声明，变量缺席即视为 internal
+  if (typeof pricingMode !== 'undefined' && pricingMode === 'group') return groupRowUnitPrice(r);
   if (r.hourlyMode) return hourlyRate;   // 时工模式：单价固定为时工单价
   if (!r.subs.length) return null;
   return r.subs.reduce((s,sub)=>s+effPrice(sub),0);
 }
-function compUnitPrice(r) { const lab=rowUnitPrice(r)||0; const mat=rowMatCost(r); const aux=parseFloat(r.auxCost)||0; const mgmt=lab*(globalMgmtRate/100); const profit=lab*(globalProfitRate/100); return lab+mat+aux+mgmt+profit; }
+function compUnitPrice(r) { if (typeof pricingMode !== 'undefined' && pricingMode === 'group') return groupRowComp(r); const lab=rowUnitPrice(r)||0; const mat=rowMatCost(r); const aux=parseFloat(r.auxCost)||0; const mgmt=lab*(globalMgmtRate/100); const profit=lab*(globalProfitRate/100); return lab+mat+aux+mgmt+profit; }
 // 行主材费（单价级，含损耗+单位换算）：Σ 子目[matPrice×(1+损耗率)×coef×conv]。
 // coef=含量系数、conv=子目单位↔清单行单位换算；乘上后「行主材单价×行工程量 = Σ(子目主材费×子目工程量)」恒成立。
 function rowMatCost(r) { if(!r.subs||!r.subs.length) return 0; return r.subs.reduce((sum,sub)=>{const smp=parseFloat(sub.matPrice)||0;const swr=parseFloat(sub.wasteRate)||0;const cf=parseFloat(sub.coef)||1.0;const cv=parseFloat(sub.conv)||1.0;return sum+smp*(1+swr/100)*cf*cv;},0); }
@@ -1328,7 +1360,61 @@ function effRowMatPrice(r) {
   return parseFloat(r.matPrice)||0;
 }
 function rowAuxCost(r) { return parseFloat(r.auxCost)||0; }
-function rowTotal(r) { const p=rowUnitPrice(r),q=parseFloat(r.qty); const lab=(p!==null&&!isNaN(q))?p*q:0; const mat=rowMatCost(r)*q; const aux=parseFloat(r.auxCost)*q||0; const mgmt=(p!==null&&!isNaN(q))?p*globalMgmtRate/100*q:0; const profit=(p!==null&&!isNaN(q))?p*globalProfitRate/100*q:0; return lab+mat+aux+mgmt+profit; }
+function rowTotal(r) { if (typeof pricingMode !== 'undefined' && pricingMode === 'group') return groupRowTotal(r); const p=rowUnitPrice(r),q=parseFloat(r.qty); const lab=(p!==null&&!isNaN(q))?p*q:0; const mat=rowMatCost(r)*q; const aux=parseFloat(r.auxCost)*q||0; const mgmt=(p!==null&&!isNaN(q))?p*globalMgmtRate/100*q:0; const profit=(p!==null&&!isNaN(q))?p*globalProfitRate/100*q:0; return lab+mat+aux+mgmt+profit; }
+
+// ═══════════ 集团公式引擎（对甲报价 · ZS02 第二计价引擎）═══════════
+// 与 scripts/import_group_benchmark.py:recalc_h 同公式（集团计价办法 2024 版）：
+//   h = A人工 + Σ(Bi主材单价×Ci消耗量) + D辅材 + E机械 + (A+E)×mgmt + (A+E)×profit
+//   · 管理费/利润基数只认「人工+机械」，主材辅材不进基数
+//   · 费率取 GROUP_RATES（group_pricing_rules 驱动，初值即 T01 17%/12%）；T3 加载器已保证 rate 键全为数值，故此处直接参与乘法
+//   · 主材走消耗量口径（表内已是单位含量价，不乘损耗率/含量系数）；globalCoef/globalMgmtRate/globalProfitRate 一律不污染集团值
+// pending 判据（与 T2 导入口径一致）：mats 里存在 price==null 才是待询价；mats==[]（源表「——」已被导入过滤）
+//   是合法常态，price=0 是有效价，两者都不算 pending。
+function groupSubPrice(s) {
+  const sub = s || {};
+  const lab = parseFloat(sub.lab) || 0;      // A 人工
+  const aux = parseFloat(sub.aux) || 0;      // D 辅材
+  const mech = parseFloat(sub.mech) || 0;    // E 机械
+  const mats = Array.isArray(sub.mats) ? sub.mats : [];
+  let mat = 0, pending = false;
+  mats.forEach(m => {
+    if (!m) return;
+    if (m.price == null) { pending = true; return; }   // 甲供未定价：h 里按 0 计仅用于显示，行单价另判 null
+    mat += (parseFloat(m.price) || 0) * (parseFloat(m.consumption) || 0);
+  });
+  const base = lab + mech;
+  const mgmt = base * GROUP_RATES.mgmt, profit = base * GROUP_RATES.profit;
+  return {h: lab + mat + aux + mech + mgmt + profit, lab: lab, mat: mat, aux: aux, mech: mech, mgmt: mgmt, profit: profit, pending: pending};
+}
+// 行单价（group）：Σ 子目h×coef×conv（coef/conv 与内部 rowMatCost 同款容错）
+// 任一子目 pending → 整行 null（与内部「未套价」同语义，显示层 T5 接手）
+// 混合行：内部子目（无 lab/mats）在集团口径下 h=0，不与集团子目双计
+function groupRowUnitPrice(r) {
+  const subs = (r && r.subs) || [];
+  if (!subs.length) return null;
+  let sum = 0;
+  for (let i = 0; i < subs.length; i++) {
+    const p = groupSubPrice(subs[i]);
+    if (p.pending) return null;
+    sum += p.h * (parseFloat(subs[i].coef) || 1.0) * (parseFloat(subs[i].conv) || 1.0);
+  }
+  return sum;
+}
+// 综合单价（group）：ZS02 的 H 本身就是全费用单价（已含 D辅材/E机械/管理/利润），故等于行单价；
+// 行级 r.auxCost 是内部辅材引擎产物（集团子目算出 0），再叠加就双计了
+function groupRowComp(r) { return groupRowUnitPrice(r); }
+// 合价（group）：行单价×工程量；待询价行不计假值 → 0
+function groupRowTotal(r) {
+  const p = groupRowUnitPrice(r); if (p === null) return 0;
+  const q = parseFloat(r && r.qty); return isNaN(q) ? 0 : p * q;
+}
+// 管理费/利润输入旁的提示条：百分比数字从 GROUP_RATES 实时取（×100），不硬编码 17/12
+function updateGroupRateHint() {
+  const el = document.getElementById('groupRateHint'); if (!el) return;
+  if (pricingMode !== 'group') { el.style.display = 'none'; return; }
+  el.textContent = '对甲报价：管理' + groupRateLabel(GROUP_RATES.mgmt) + '/利润' + groupRateLabel(GROUP_RATES.profit) + '，基数=人工+机械（写死）';
+  el.style.display = '';
+}
 // ═══════════ AUXILIARY PRICE ENGINE ═══════════
 // 辅材计价引擎：从 benchmark_items 的 aux 配方 + material_prices 信息价实时计算
 let priceLib = {};           // 默认信息价 {materialName: {price, unit}}
