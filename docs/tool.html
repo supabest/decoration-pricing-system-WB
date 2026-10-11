@@ -335,6 +335,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
         <label style="font-size:11px;color:var(--tx2);font-weight:500;display:inline-flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="pricingModeRadio" id="modeGroupInp" value="group" onchange="setPricingMode(this.value)">对甲报价·集团基准价</label>
       </div>
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">项目名称</span><input class="pi" id="projName" type="text" placeholder="请输入项目名称" style="min-width:160px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--border);font-size:12px;outline:none"></div>
+      <div style="display:flex;align-items:center;gap:6px" title="装修面积（m²）：对甲报价汇总计算单方造价的分母；未填时汇总面板仅提示、不算单方（不除零）"><span style="font-size:11px;color:var(--tx2);font-weight:500">装修面积</span><input class="pi" id="fitoutAreaInp" type="number" min="0" step="0.01" placeholder="选填" style="width:88px;padding:4px 8px;border-radius:6px;border:1.5px solid var(--border);font-size:12px;text-align:right;outline:none" oninput="renderGroupSummaryPanel()"><span style="font-size:11px;color:var(--tx2)">m²</span></div>
       <div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--tx2);font-weight:500">人工系数</span><span class="coef-badge" id="coefBadge" onclick="openCoefModal()" style="background:var(--yel-d);border:1.5px solid var(--yel);color:var(--yel);font-size:11px;padding:3px 9px;border-radius:5px;font-family:var(--mono);cursor:pointer;font-weight:700">×1.00</span></div>
       <div style="display:flex;align-items:center;gap:8px;padding-left:12px;border-left:1px solid var(--border)" title="对外报价口径：管理费/利润为报价加成，计入综合单价，随对外报价导出">
         <span class="zone-badge">对外报价</span>
@@ -496,6 +497,17 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
           支持列：项目名称 · 项目特征 · 单位 · 工程量</div>
       </div>
       <div id="internalCostPanel" class="hidden" style="margin:8px 14px 0;padding:8px 14px;background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--yel);border-radius:8px;font-size:11.5px;display:flex;gap:14px;align-items:center;flex-wrap:wrap"></div>
+      <!-- T6 对甲报价汇总面板（仅 group 模式可见；内部模式 hidden）：面积输入在顶部项目栏，此处为手工费录入 + 四部分预览 + 导出 -->
+      <div id="groupSummaryPanel" class="hidden" style="margin:8px 14px 0;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--acc);border-radius:8px;font-size:11.5px;display:flex;flex-direction:column;gap:8px">
+        <div id="groupSummaryBody" style="display:flex;flex-direction:column;gap:4px"></div>
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:11px;color:var(--tx2);font-weight:500">其他项目费·手工录入</span>
+          <label style="display:flex;align-items:center;gap:4px">赶工措施费<input class="pi" id="manualFeeOvertimeInp" type="number" min="0" step="0.01" placeholder="0" style="width:80px;padding:3px 6px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="renderGroupSummaryPanel()">元</label>
+          <label style="display:flex;align-items:center;gap:4px">合同变更费用<input class="pi" id="manualFeeChangeInp" type="number" min="0" step="0.01" placeholder="0" style="width:80px;padding:3px 6px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="renderGroupSummaryPanel()">元</label>
+          <label style="display:flex;align-items:center;gap:4px">装修类型涨幅<input class="pi" id="manualFeeInflationInp" type="number" min="0" step="0.01" placeholder="0" style="width:80px;padding:3px 6px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="renderGroupSummaryPanel()">元</label>
+          <button class="btn btn-sm" onclick="doGroupSummaryExport()" style="margin-left:auto;padding:3px 10px;font-size:11px;border:1.5px solid var(--acc);border-radius:6px;cursor:pointer;background:transparent;color:var(--acc);font-weight:600">⬇ 导出对甲报价汇总</button>
+        </div>
+      </div>
       <div id="boqMain" class="hidden"></div>
     </div>
     <div class="sbar2">
@@ -2780,6 +2792,160 @@ function collectExportData() {
   };
 }
 
+// ═══════════ T6：T02 四部分汇总（对甲报价预览）+ 导出 payload 收集 ═══════════
+// 全部新逻辑只在 pricingMode==='group' 下生效；内部模式零改动。
+// buildGroupSummary(rows, opts) —— 纯函数，输入清单项 + {fitoutArea, manualFees}，输出 T02 四部分汇总。
+//   数学契约（集团计价办法 2024 版 · plan Global Constraints）：
+//     · part1（一·分部分项工程费）= Σ已套价行合价，按 discipline+section 归集；D 类（措施）不进 part1
+//     · part2（二·措施项目费）      = Σ D类合价 + 绿安费；绿安费 = Σ(part1 人工+机械) × GROUP_RATES.green（只含分部分项，不含 D）
+//     · part3（三·其他项目费）      = Σ(part1 人工+机械) × GROUP_RATES.baogan + Σ manualFees + 精装修配合费
+//                                            （coordFee×装修面积；coordFee===null 未配置→不计取，仅面板标注）；暂列金额=0（集团规定不予计取）
+//     · part4（四·税金）            = (part1+part2+part3) × GROUP_RATES.tax；五·总计 = 一+二+三+四；单方 = 五 ÷ fitoutArea
+//   · 所有费率一律从 GROUP_RATES 取，不硬编码 0.17/0.12/0.13/0.03/0.09
+//   · 待询价行（有集团子目但未套齐价）不进任何部分，计入 unpriced；无集团子目的内部行一律忽略
+function buildGroupSummary(rows, opts) {
+  const o = opts || {};
+  const area = parseFloat(o.fitoutArea) || 0;
+  const manualFees = o.manualFees || {};
+  const R = GROUP_RATES;
+  const list = Array.isArray(rows) ? rows : [];
+  let part1 = 0, dMeasures = 0, laborMechBase = 0, unpriced = 0;
+  const secMap = {};
+  list.forEach(r => {
+    const subs = rowGroupSubs(r);
+    if (!subs.length) return;                                       // 内部行/未套集团价：不参与、不计数
+    const agg = rowGroupAgg(r);
+    if (!agg.ready) { if (rowGroupPending(r)) unpriced++; return; } // 待询价：排除出各部分，仅计数
+    const q = parseFloat(r.qty) || 0;
+    subs.forEach(s => {
+      const it = getGroupBench(s.bid) || {};
+      const disc = it.discipline || String(s.bsh || '').replace(/^ZS02-/, '');
+      const secName = it.section_name || '';
+      const p = groupSubPrice(s);
+      const k = (parseFloat(s.coef) || 1.0) * (parseFloat(s.conv) || 1.0);
+      const amount = p.h * k * q;
+      if (disc === 'D') { dMeasures += amount; return; }            // D 类合价只进 part2，不进 part1/绿安·包干基数
+      part1 += amount;
+      laborMechBase += (p.lab + p.mech) * k * q;
+      const key = disc + '|' + secName;
+      if (!secMap[key]) secMap[key] = { name: disc + '·' + secName, amount: 0 };
+      secMap[key].amount += amount;
+    });
+  });
+  const green = laborMechBase * R.green;
+  const part2 = dMeasures + green;
+  const baogan = laborMechBase * R.baogan;
+  const coordFeeNum = parseFloat(R.coordFee);
+  const coordConfigured = (R.coordFee !== null && R.coordFee !== undefined && !isNaN(coordFeeNum));  // null≠0：未配置与 0 元不同义
+  const coordAmount = coordConfigured ? (coordFeeNum * area) : 0;
+  const manualSum = Object.keys(manualFees).reduce((s, kk) => s + (parseFloat(manualFees[kk]) || 0), 0);
+  const part3 = baogan + manualSum + coordAmount;
+  const part4 = (part1 + part2 + part3) * R.tax;
+  const total = part1 + part2 + part3 + part4;
+  const perSqm = area > 0 ? total / area : null;                     // 无装修面积→不算单方，避免除零
+  return {
+    part1: part1, part2: part2, part3: part3, part4: part4, total: total, perSqm: perSqm,
+    sections: Object.keys(secMap).map(k => secMap[k]),
+    dMeasures: dMeasures, green: green, baogan: baogan, laborMechBase: laborMechBase,
+    coordFee: coordAmount, coordFeeConfigured: coordConfigured,
+    manualFees: manualSum, unpriced: unpriced, needsArea: area <= 0,
+  };
+}
+
+// 从项目表单/汇总面板内的手工输入收集 buildGroupSummary 所需的 opts（费率仍走 GROUP_RATES，不在此）
+function getGroupSummaryOpts() {
+  const areaEl = document.getElementById('fitoutAreaInp');
+  return {
+    fitoutArea: areaEl ? (parseFloat(areaEl.value) || 0) : 0,
+    manualFees: collectGroupManualFees(),
+  };
+}
+function collectGroupManualFees() {
+  const fee = id => { const e = document.getElementById(id); return e ? (parseFloat(e.value) || 0) : 0; };
+  return { overtime_fee: fee('manualFeeOvertimeInp'), contract_change_fee: fee('manualFeeChangeInp'), inflation_fee: fee('manualFeeInflationInp') };
+}
+
+// collectGroupSummaryPayload() —— 后端请求体收集（供 Task 7 端点消费）。
+//   items 逐「行 × 集团子目」取 raw 值：code/discipline/section_name/name/spec/unit/work_type 取 ZS02 库行原样，
+//   lab/mats/aux/mech/coef/conv 取子目当前工作值，qty 取行工程量。
+//   ★ 不下发前端算得的 h —— 后端用同一公式重算（单一算账口径归后端）。
+function collectGroupSummaryPayload() {
+  const projEl = document.getElementById('projName');
+  const areaEl = document.getElementById('fitoutAreaInp');
+  const items = [];
+  getAllRows().forEach(r => {
+    const q = parseFloat(r.qty) || 0;
+    rowGroupSubs(r).forEach(s => {
+      const it = getGroupBench(s.bid) || {};
+      items.push({
+        code: s.bid,
+        discipline: it.discipline || String(s.bsh || '').replace(/^ZS02-/, ''),
+        section_name: it.section_name || '',
+        name: it.name || '',
+        unit: it.unit || '',
+        spec: it.spec || '',
+        qty: q,
+        work_type: (it.work_type != null ? it.work_type : s.workType) || '',
+        lab: s.lab,
+        mats: s.mats,
+        aux: s.aux,
+        mech: s.mech,
+        coef: s.coef,
+        conv: s.conv,
+      });
+    });
+  });
+  return {
+    project_name: projEl ? (projEl.value || '套价表') : '套价表',
+    fitout_area: areaEl ? (parseFloat(areaEl.value) || 0) : 0,
+    rates: GROUP_RATES,
+    manual_fees: collectGroupManualFees(),
+    items: items,
+  };
+}
+
+// 汇总面板渲染：只在 group 模式显示；内部模式完全隐藏（零影响）。
+// 只写静态子容器 groupSummaryBody 的 innerHTML，面积/手工费输入框保持不被重建（避免失焦）。
+function renderGroupSummaryPanel() {
+  const panel = document.getElementById('groupSummaryPanel');
+  if (!panel) return;
+  if (typeof pricingMode === 'undefined' || pricingMode !== 'group') { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const body = document.getElementById('groupSummaryBody') || panel;
+  const s = buildGroupSummary(getAllRows(), getGroupSummaryOpts());
+  const money = v => '¥ ' + fmt(v || 0);
+  const rowsHtml = s.sections.map(x => '<div style="padding-left:14px;color:var(--tx3)">· ' + esc(x.name) + ' <b style="font-family:var(--mono);color:var(--tx2)">' + fmt(x.amount) + '</b></div>').join('');
+  let html = '<span style="font-weight:700;color:var(--acc)">🧾 对甲报价汇总（T02 预览）</span>';
+  html += '<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px">';
+  html += '<span>一 · 分部分项工程费 <b style="font-family:var(--mono)">' + money(s.part1) + '</b></span>' + (rowsHtml || '');
+  html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
+  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) : '—') + '；暂列=0 不取）</span></span>';
+  if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费：参数未配置（GROUP_RATES.coordFee=null），未计入第三部分</span>';
+  html += '<span>四 · 税金 <b style="font-family:var(--mono)">' + money(s.part4) + '</b><span style="color:var(--tx3)">（(一+二+三)×' + groupRateLabel(GROUP_RATES.tax) + '）</span></span>';
+  html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
+  html += '<span>单方造价 <b style="font-family:var(--mono)">' + (s.perSqm === null ? '—（请先填写装修面积）' : (money(s.perSqm) + ' 元/m²')) + '</b></span>';
+  if (s.needsArea) html += '<span style="color:var(--yel);font-weight:600">⚠️ 请在顶部填写「装修面积」以计算单方造价</span>';
+  if (s.unpriced > 0) html += '<span style="color:var(--yel);font-weight:600">⚠️ ' + s.unpriced + ' 行待询价（甲供未定价），未计入汇总</span>';
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+// 导出：收集 payload 并提交到后端（端点由 Task 7 提供）；本阶段仅保证收集正确、提交失败可降级提示。
+async function doGroupSummaryExport() {
+  const payload = collectGroupSummaryPayload();
+  if (!payload.items.length) { toast('暂无集团子目可导出（请先在对甲报价模式下套价）'); return; }
+  try {
+    const h = { 'Content-Type': 'application/json' };
+    const t = localStorage.getItem('sb-access-token'); if (t) h['Authorization'] = 'Bearer ' + t;
+    const r = await fetch(BACKEND_URL + '/api/v1/group-pricing/export', { method: 'POST', headers: h, body: JSON.stringify(payload) });
+    if (r.ok) { toast('✅ 对甲报价汇总已提交后端（' + payload.items.length + ' 条）'); }
+    else { toast('⚠️ 后端导出端点未就绪（Task 7），已收集 ' + payload.items.length + ' 条 payload'); }
+  } catch (e) {
+    toast('⚠️ 后端不可达，已收集 ' + payload.items.length + ' 条 payload 供导出');
+  }
+  return payload;
+}
+
 // 「占总成本比例」列前置校验：对甲合同金额/目标利润率未填时提示用户补填。
 // 返回 true = 可以继续（已填或用户坚持继续，此时后端不输出比例列）；false = 中止导出
 function ensureInternalCostForRatio() {
@@ -3754,6 +3920,7 @@ function updateSum() {
   document.getElementById('s-total').textContent='¥ '+fmt(laborOnly);
   document.getElementById('s-grand').textContent='¥ '+fmt(total);
   updateFlowSteps();   // ①②③ 步骤徽章跟着清单/套价状态走
+  if (typeof renderGroupSummaryPanel === 'function') renderGroupSummaryPanel();   // T6：对甲报价汇总面板（内部模式下自动 hidden）
   scheduleAutoSave();
 }
 

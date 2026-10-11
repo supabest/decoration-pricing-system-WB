@@ -9,6 +9,9 @@
  * 覆盖 Task 5 契约：rowGroupAgg / rowGroupPending / rowGroupSubs / groupSubCells / updGroupMat /
  *   groupPickerItems·openGroupPicker·renderGroupPicker·closeGroupPicker·gpPick·groupPickerRetry /
  *   EXP_COLS 管理费利润列的 group 分支 / renderBoq 集团子目分流 / syncRowMat 的 gtype 隔离护栏
+ * 覆盖 Task 6 契约：buildGroupSummary（T02 四部分汇总勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1
+ *   · 绿安/baogan 基数只含分部分项人工+机械 · coordFee=null≠0 · 费率全取 GROUP_RATES 不硬编码 · perSqm 除零守护）
+ *   collectGroupSummaryPayload（后端请求体：raw 14 字段 items · 不下发前端 h · rates/manual_fees 顶层键）
  * 运行：node docs/superpowers/tests/group_pricing_test.js
  */
 const fs = require('fs');
@@ -115,6 +118,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'updCoef', 'updConv', 'updSubField',
   // ── T5：派生聚合 / 挂载面板 / gtype 隔离护栏 ──
   'rowGroupSubs', 'rowGroupAgg', 'rowGroupPending', 'groupExportFee', 'groupSubCells', 'groupSubRowHtml', 'updGroupMat',
+  // ── T6：T02 四部分汇总预览计算 + 导出 payload 收集 ──
+  'buildGroupSummary', 'collectGroupSummaryPayload', 'collectGroupManualFees',
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
   'delSub', 'addSub', 'syncRowMat', 'routeRowMat', 'subCategoryScore', 'normKey', 'rowMatPending', 'fmt', 'esc'];
@@ -900,6 +905,109 @@ ok('G18 updateSum 有 group 分支且人工费走 rowGroupAgg(r).lab（不拿全
   /pricingMode === 'group'/.test(US) && /rowGroupAgg\(r\)\.lab \* q/.test(US), US.slice(0, 200));
 ok('G18b internal 路径原样保留（rowUnitPrice×qty）', US.indexOf('rowUnitPrice(r)||0') >= 0 && /\* q;/.test(US));
 ok('G18c 合计仍走 rowTotal（group 下自动包含待询价行计 0 的口径）', /rowTotal\(r\)\|\|0/.test(US));
+
+/* ═══════════ H. Task 6：T02 四部分汇总预览计算 + 导出 payload 收集 ═══════════ */
+console.log('\n── H. buildGroupSummary / collectGroupSummaryPayload（勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1）──');
+run(RATE_RESET + ' globalCoef=1.0; batchMode=false;');
+run('rebuildGroupBenchMap([G009, D003]);');
+run('pricingMode = "group";');
+run(`function _mkSumRows() {
+  groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+  uid = 200;
+  var ra = makeRow({name:'瓷砖地面', unit:'m2', qty:'5'});    // id200：已补价 A-009
+  var rd = makeRow({name:'成品保护', unit:'m2', qty:'10'});   // id201：D-003（行名≠库名，验证 item 取库 raw 名）
+  var rp = makeRow({name:'待询价行', unit:'m2', qty:'2'});    // id202：A-009 未补价（pending）
+  groups[0].sections[0].rows = [ra, rd, rp];
+  rebuildRowMap();
+}`);
+run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003"); addGroupSub(202,"ZS02-A-009");');
+run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+run('var OPTS = {fitoutArea:100, manualFees:{}}; var SUM = buildGroupSummary(getAllRows(), OPTS);');
+
+near('H1 黄金值：part1 = 已套价行合价 230.6085×5（A-009 唯一来源）', run('SUM.part1'), 1153.0425, 0.01);
+near('H1b 单价复核：A-009 补齐价后行 unit = T4/T5 黄金值 230.6085', run('rowGroupAgg(findRow(200)).unit'), 230.6085, 0.001);
+const SECS = JSON.parse(run('JSON.stringify(SUM.sections)'));
+ok('H2 sections 按 discipline+section 归集，只含分部分项（A 类楼地面）',
+  SECS.length === 1 && /A/.test(SECS[0].name) && /楼地面/.test(SECS[0].name), JSON.stringify(SECS));
+near('H2b 勾稽：Σsections = part1', SECS.reduce((s, x) => s + x.amount, 0), run('SUM.part1'), 0.01);
+ok('H2c D 类绝不进 part1/sections（成品保护/措施 不出现在 sections）',
+  !SECS.some(x => /D|措施|成品保护/.test(x.name)), JSON.stringify(SECS));
+near('H3 part2 = Σ D类合价(4.0779×10=40.779) + 绿安费(308.25×0.13=40.0725)', run('SUM.part2'), 80.8515, 0.01);
+near('H4 绿安/baogan 基数只含 part1 人工+机械(308.25)，不含 D 类', run('SUM.laborMechBase'), 308.25, 0.01);
+near('H5 part3 = 预算包干费 308.25×0.03（coordFee=null 不计取 · manualFees 空 · 暂列=0）', run('SUM.part3'), 9.2475, 0.01);
+near('H6 勾稽：part4 = (part1+part2+part3)×GROUP_RATES.tax',
+  run('SUM.part4'), run('(SUM.part1+SUM.part2+SUM.part3)*GROUP_RATES.tax'), 0.01);
+near('H6b 数值：四 = 1243.1415×0.09 = 111.8827', run('SUM.part4'), 111.8827, 0.01);
+near('H7 勾稽：total = 一+二+三+四', run('SUM.total'), run('SUM.part1+SUM.part2+SUM.part3+SUM.part4'), 0.01);
+near('H7b 数值：总造价 1355.0242', run('SUM.total'), 1355.0242, 0.01);
+near('H8 perSqm = total ÷ fitoutArea(100)', run('SUM.perSqm'), run('SUM.total/100'), 0.01);
+near('H8b 数值：单方造价 13.5502', run('SUM.perSqm'), 13.5502, 0.01);
+ok('H9 待询价行（202）不进 part1 且被计数 unpriced=1', run('SUM.unpriced') === 1, 'unpriced=' + run('SUM.unpriced'));
+
+console.log('\n  · 费率不硬编码：green/baogan/tax 全走 GROUP_RATES');
+run('GROUP_RATES.green = 0.20; GROUP_RATES.baogan = 0.05; GROUP_RATES.tax = 0.10; var SUM2 = buildGroupSummary(getAllRows(), OPTS);');
+near('H10 part2 随 GROUP_RATES.green 变（0.13→0.20，不写死）', run('SUM2.part2'), run('40.779 + 308.25*0.20'), 0.01);
+near('H10b part3 随 GROUP_RATES.baogan 变（0.03→0.05，不写死）', run('SUM2.part3'), run('308.25*0.05'), 0.01);
+near('H10c part4 随 GROUP_RATES.tax 变：四 =(一+二+三)×0.10（不写死 0.09）',
+  run('SUM2.part4'), run('(SUM2.part1+SUM2.part2+SUM2.part3)*0.10'), 0.01);
+run(RATE_RESET);
+
+console.log('\n  · coordFee：null≠0（未配不计取，面板标注「参数未配置」）· 配置后 = 单价×装修面积');
+run('var SUMA = buildGroupSummary(getAllRows(), OPTS);');
+ok('H11 coordFee=null → coordFeeConfigured:false（part3 不含配合费，见 H5）', run('SUMA.coordFeeConfigured') === false);
+run('GROUP_RATES.coordFee = 50; var SUMB = buildGroupSummary(getAllRows(), OPTS);');
+ok('H11b coordFee=50 → coordFeeConfigured:true', run('SUMB.coordFeeConfigured') === true);
+near('H12 coordFee=50 元/m2 × 100m2 → part3 增加 5000', run('SUMB.part3'), run('SUMA.part3 + 50*100'), 0.01);
+run(RATE_RESET + ' var SUMC = buildGroupSummary(getAllRows(), OPTS);');
+near('H12b 复位 coordFee=null 后 part3 回到不含配合费', run('SUMC.part3'), run('SUMA.part3'), 0.01);
+
+console.log('\n  · manualFees：Σ 计入 part3（赶工/变更/涨幅 手工金额）');
+run('var SUMM = buildGroupSummary(getAllRows(), {fitoutArea:100, manualFees:{overtime_fee:1000, contract_change_fee:500, inflation_fee:0}});');
+near('H14 part3 含 ΣmanualFees=1500 + 预算包干费', run('SUMM.part3'), run('SUMA.part3 + 1500'), 0.01);
+
+console.log('\n  · fitoutArea 缺失/0 → perSqm=null 不除零 + needsArea 提示');
+run('var SUM0 = buildGroupSummary(getAllRows(), {fitoutArea:0, manualFees:{}});');
+ok('H13 fitoutArea=0 → perSqm 为 null（不产生 Infinity/除零）', run('SUM0.perSqm') === null, String(run('SUM0.perSqm')));
+ok('H13b 并置 needsArea:true（面板据此提示填写装修面积）', run('SUM0.needsArea') === true);
+run('var SUMN = buildGroupSummary(getAllRows(), {});');
+ok('H13c opts 缺 fitoutArea 同样 perSqm:null（undefined 非数值）', run('SUMN.perSqm') === null);
+
+console.log('\n  · collectGroupSummaryPayload：raw 字段集 + 不下发前端 h');
+run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003");');
+run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+run('document.getElementById("projName").value="天河精装一期"; document.getElementById("fitoutAreaInp").value="100"; document.getElementById("manualFeeOvertimeInp").value="1000"; document.getElementById("manualFeeChangeInp").value=""; document.getElementById("manualFeeInflationInp").value="";');
+const PL = run('collectGroupSummaryPayload();');
+ok('H15 顶层键 = {project_name,fitout_area,rates,manual_fees,items}',
+  JSON.stringify(Object.keys(PL).sort()) === JSON.stringify(['fitout_area', 'items', 'manual_fees', 'project_name', 'rates']), JSON.stringify(Object.keys(PL)));
+ok('H15b project_name 取项目表单，fitout_area 取新输入并数值化 100',
+  PL.project_name === '天河精装一期' && PL.fitout_area === 100, JSON.stringify([PL.project_name, PL.fitout_area]));
+ok('H15c rates = GROUP_RATES 原样六键',
+  JSON.stringify(Object.keys(PL.rates).sort()) === JSON.stringify(['baogan', 'coordFee', 'green', 'mgmt', 'profit', 'tax']), JSON.stringify(Object.keys(PL.rates)));
+ok('H15d manual_fees 三键 snake_case（赶工/变更/涨幅）',
+  JSON.stringify(Object.keys(PL.manual_fees).sort()) === JSON.stringify(['contract_change_fee', 'inflation_fee', 'overtime_fee']), JSON.stringify(PL.manual_fees));
+ok('H15e 赶工费取输入 1000，其余空为 0',
+  PL.manual_fees.overtime_fee === 1000 && PL.manual_fees.contract_change_fee === 0 && PL.manual_fees.inflation_fee === 0, JSON.stringify(PL.manual_fees));
+const ITEMS = PL.items;
+ok('H16 items = 每行×集团子目一条（本夹具两行两子目）', ITEMS.length === 2, JSON.stringify(ITEMS.length));
+const ITEM_KEYS = JSON.stringify(Object.keys(ITEMS[0]).sort());
+ok('H16b item raw 键集精确 =14 键（snake_case，不多不少）',
+  ITEM_KEYS === JSON.stringify(['aux', 'coef', 'code', 'conv', 'discipline', 'lab', 'mats', 'mech', 'name', 'qty', 'section_name', 'spec', 'unit', 'work_type'].sort()), ITEM_KEYS);
+ok('H16c 不下发前端算得的 h（后端重算）', ITEMS.every(it => !('h' in it)), JSON.stringify(Object.keys(ITEMS[0])));
+const AIT = ITEMS.find(x => x.code === 'ZS02-A-009');
+const DIT = ITEMS.find(x => x.code === 'ZS02-D-003');
+ok('H16d code=子目 bid；discipline/section_name/name/spec/unit 取库行 raw（非行名：D 行名「成品保护」→ item 取库「成品保护-PVC保护膜」）',
+  AIT && AIT.discipline === 'A' && AIT.section_name === '楼地面工程' && AIT.name === '瓷砖地面' && AIT.unit === 'm2' && AIT.spec === 'SA级600×600' &&
+  DIT && DIT.name === '成品保护-PVC保护膜', JSON.stringify(AIT));
+ok('H16e qty 取行工程量（A 行 5 / D 行 10）', AIT && AIT.qty === 5 && DIT && DIT.qty === 10);
+ok('H16f lab/mats/aux/mech/coef/conv 取子目 raw（补齐后的 mats 价原样下发）',
+  AIT && AIT.lab === 61.65 && AIT.aux === 1.98 && AIT.mech === 0 && AIT.coef === 1 && AIT.conv === 1 &&
+  AIT.mats[0].price === 100 && AIT.mats[1].price === 300, JSON.stringify(AIT && AIT.mats));
+ok('H16g work_type 取 raw 值（A 泥水 / D 油漆）', AIT && AIT.work_type === '泥水' && DIT && DIT.work_type === '油漆');
+run('_mkSumRows(); document.getElementById("fitoutAreaInp").value=""; document.getElementById("manualFeeOvertimeInp").value="";');
+const PL0 = run('collectGroupSummaryPayload();');
+ok('H17 无集团子目的行不产出 item（内部行零影响）', PL0.items.length === 0, JSON.stringify(PL0.items));
+ok('H17b fitout_area 空输入 → 数值 0（不抛、不 NaN）', PL0.fitout_area === 0, String(PL0.fitout_area));
+run(RATE_RESET + ' pricingMode = "internal";');
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
