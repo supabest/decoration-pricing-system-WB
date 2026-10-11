@@ -28,6 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cd docs && python3 -m http.server 8080
 # → http://localhost:8080/tool.html
 # → http://localhost:8080/admin.html
+# → http://localhost:8080/m.html   手机版（手机真机访问把 localhost 换成本机局域网 IP，同网段即可）
 
 # FastAPI 后端（AI 套价 + Excel 导出）
 cd backend && python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -62,6 +63,7 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 |------|------|
 | `docs/tool.html` | **核心套价工具** — BOQ 导入、基准价侧栏、AI 套价、Excel 导出 |
 | `docs/admin.html` | 管理面板 — 用户管理 / 信息价录入 / 知识库 / 基准价浏览 |
+| `docs/m.html` | **手机版套价工具**（V1.4 新增）— 五步流卡片式；与 tool.html 代码独立，只共享 groups_json 契约 + 同一套 Supabase/FastAPI；电脑端功能界面不受影响 |
 | `docs/v5.html` | V5 实验版 — AI 套价独立测试页面 |
 | `docs/ai_knowledge_base.json` | **AI 知识库** — tips/synonyms/rules 三类规则驱动 AI 匹配决策 |
 | `docs/benchmark_data.json` | 497 条基准价完整备份（含辅材配方），localhost 离线备用 |
@@ -216,11 +218,13 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 ## 注意事项
 
 - `docs/tool.html` ↔ `frontend/public/tool.html` 必须保持同步（修改时两处都要改）
-- 同理 `docs/admin.html` ↔ `frontend/public/admin.html`
-- `docs/benchmark_data.json` / `docs/waste_rates.json` ↔ `frontend/public/` 必须同步（Pages 只部署 `frontend/public/`，缺了会导致线上离线兜底退化为 4 条内置数据）
+- 同理 `docs/admin.html` ↔ `frontend/public/admin.html`，`docs/m.html` ↔ `frontend/public/m.html`
+- `docs/benchmark_data.json` / `docs/waste_rates.json` / `docs/ai_knowledge_base.json` ↔ `frontend/public/` 必须同步（Pages 只部署 `frontend/public/`，缺了会导致线上离线兜底退化为 4 条内置数据；ai_knowledge_base.json 缺了则 admin.html 未登录时知识库面板读到旧版规则集）
 - DeepSeek 模型名三处同步: `backend/app/core/config.py`, `docs/tool.html`, `docs/v5.html`
 - 新增 BOQ 行字段需同步改: `makeRow()`, `rowTotal()`, `renderBoq()`, `collectExportData()`
 - `rowUnitPrice(r)` 依赖 `r.subs`，`r.subs` 可能为 undefined，调用方需判空
 - 导出格式修改需同时验证方式一和方式二
 - 敏感数据（材料价格）只存 Supabase，不入 git
+- **手机版 `docs/m.html`**：`groups_json` 行/子目字段契约权威在 tool.html 的 `makeRow()`/`addSub()`；改这两处时必须同步 m.html 的 `makeRow()`/`addSub()`/`collectExportData()`/`buildDraftPayload()`，否则跨端草稿接力丢字段
+- m.html 回归：`node docs/superpowers/tests/m_logic_test.js`（手机端逻辑）+ `node docs/superpowers/tests/m_parity_test.js`（只读 tool.html 抽同名函数，双沙箱同夹具比对算价/落点/询价匹配一致性；**不修改电脑端**）
 - `data/seeds/` 已被 `.gitignore` 排除（含实际定价数据，不上传 GitHub）
