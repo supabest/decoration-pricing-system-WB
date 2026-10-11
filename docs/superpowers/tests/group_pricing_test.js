@@ -309,6 +309,74 @@ run('setPricingMode("group");');
 ok('D17 group 模式暴露给 T4：pricingMode/getGroupBench/GROUP_RATES 均为顶层可读写',
   run('pricingMode') === 'group' && typeof run('getGroupBench') === 'function' && run('typeof GROUP_RATES') === 'object');
 
+/* ────────────── E. 评审发现修复：rate 键 NULL 守护（F1）+ 数据到达后补渲染（F2） ────────────── */
+console.log('\n── E. rate 键缺失守护（保留 T01 默认 + 判失败可重试）/ 数据到达后补渲染 ──');
+const RATE_RESET = 'GROUP_RATES = {mgmt:0.17,profit:0.12,green:0.13,baogan:0.03,tax:0.09,coordFee:null};';
+const FLAG_RESET = 'groupDataLoaded=false; groupBenchLoaded=false; groupRulesLoaded=false; _groupLoading=null;';
+const tick = () => new Promise(r => setTimeout(r, 0));   // 排空沙箱内 .then 微任务
+
+// F1-1：单个 rate 键被 admin 置 NULL，其余有效
+reset();
+run(FLAG_RESET + ' ' + RATE_RESET);
+run('RESP = {group_pricing_rules: [{key:"mgmt_rate",value:null},{key:"profit_rate",value:0.11},'
+  + '{key:"green_safety_rate",value:0.13},{key:"lump_sum_rate",value:0.03},{key:"tax_rate",value:0.09},'
+  + '{key:"fitout_coordination_fee",value:null}]};');
+ok('E1 rate 键遇 NULL：loader 判失败返回 false（不再「成功加载」地放行）',
+  await runA('return loadGroupPricingRules();') === false);
+ok('E2 GROUP_RATES.mgmt 保留 T01 默认 0.17，未被库 NULL 覆盖（T4 里管理费不会静默归零）',
+  run('GROUP_RATES.mgmt') === 0.17, 'mgmt=' + run('GROUP_RATES.mgmt'));
+ok('E3 同批有效 rate 键照常覆盖库值（守护是逐键的，不整批丢弃）', run('GROUP_RATES.profit') === 0.11,
+  'profit=' + run('GROUP_RATES.profit'));
+ok('E4 缺失 toast 点名缺失键并声明保持 T01 默认',
+  TOASTS.some(t => /集团费率缺失/.test(String(t)) && /保持 T01 默认/.test(String(t))), JSON.stringify(TOASTS));
+reset();
+run(FLAG_RESET + ' ' + RATE_RESET);
+run('RESP = {group_benchmark_items: [G009, D003], group_pricing_rules: [{key:"mgmt_rate",value:null}]};');
+ok('E5 经整条加载链：一个 rate 键缺失则 loadGroupDataOnce 返回 false，且两个幂等标志均不置位（可重试）',
+  (await runA('return loadGroupDataOnce();')) === false && run('groupRulesLoaded') === false && run('groupDataLoaded') === false);
+ok('E5b 但基准价库那一组自身成功（分项标志只锁失败的那组）', run('groupBenchLoaded') === true);
+run(FLAG_RESET);
+
+// F1-2：NaN 坏值同属「坏值」，与 NULL 同等守护
+reset();
+run(RATE_RESET);
+run('RESP = {group_pricing_rules: [{key:"mgmt_rate",value:0.17},{key:"profit_rate",value:0.12},{key:"green_safety_rate",value:0.13},{key:"lump_sum_rate",value:0.03},{key:"tax_rate",value:"abc"}]};');
+ok('E6 rate 键坏值（parseFloat → NaN）：返回 false 且 tax 保持 0.09',
+  await runA('return loadGroupPricingRules();') === false && run('GROUP_RATES.tax') === 0.09, 'tax=' + run('GROUP_RATES.tax'));
+
+// F1-3：仅 fee 类允许写 null —— coordFee 为 NULL 不构成缺失
+reset();
+run(RATE_RESET);
+run('RESP = {group_pricing_rules: RULES_SEED};');
+ok('E7 五个 rate 键有效 + 仅 coordFee(fee 类) 为 NULL：加载成功且 coordFee 记 null',
+  await runA('return loadGroupPricingRules();') === true && run('GROUP_RATES.coordFee') === null && run('GROUP_RATES.mgmt') === 0.17);
+ok('E8 GROUP_RATES 六键中无任何 rate 键被写成 null（报价命脉全数值）',
+  run('[GROUP_RATES.mgmt,GROUP_RATES.profit,GROUP_RATES.green,GROUP_RATES.baogan,GROUP_RATES.tax].every(function(v){return typeof v === "number" && !isNaN(v);})') === true);
+
+// F2：异步数据到达后补一次渲染
+reset();
+run(FLAG_RESET + ' ' + RATE_RESET + ' _render=0; _sum=0;');
+run('RESP = {group_benchmark_items: [G009, D003], group_pricing_rules: RULES_SEED};');
+run('setPricingMode("group");');
+ok('E9 首切 group 先同步渲染一次（不阻塞等数据）', run('_render') === 1 && run('_sum') === 1,
+  'render=' + run('_render') + ' sum=' + run('_sum'));
+await runA('return ensureGroupData();');
+await tick();
+ok('E10 数据真正到达后 renderBoq 与 updateSum 各被再调一次（清单不再停在「数据未到」）',
+  run('_render') === 2 && run('_sum') === 2, 'render=' + run('_render') + ' sum=' + run('_sum'));
+ok('E11 补渲染发生在数据就绪之后：groupDataLoaded 已 true', run('groupDataLoaded') === true);
+
+reset();
+run(FLAG_RESET + ' _render=0; _sum=0;');
+run('RESP = {};');
+run('setPricingMode("group");');
+await runA('return ensureGroupData();');
+await tick();
+ok('E12 加载失败不补渲染（避免无数据的空重排；失败仍只保留首轮那一次）',
+  run('_render') === 1 && run('_sum') === 1, 'render=' + run('_render') + ' sum=' + run('_sum'));
+
+run('setPricingMode("internal");');
+
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团数据基座契约被破坏（库查询/费率映射/懒加载/开关互斥）\n' : '✅ ZS02 库与集团费率基座、报价模式开关状态机全部成立\n');
 process.exit(fail ? 1 : 0);

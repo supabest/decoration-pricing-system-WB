@@ -858,16 +858,24 @@ async function loadGroupBenchmark() {
 async function loadGroupPricingRules() {
   const rows = await _get('group_pricing_rules', { order: { col: 'key', asc: true } }).catch(() => []);
   if (!rows || !rows.length) { toast('⚠️ 集团费率库（group_pricing_rules）无数据：保持 T01 标准费率'); return false; }
+  // 守护：mgmt/profit/green/baogan/tax 五个 rate 键是报价命脉（T4 里直接参与算术），
+  // 库值 NULL/坏值绝不可写进 GROUP_RATES——否则 null 参与乘法会让管理费/利润静默归零。
+  // 只有 fee 类（coordFee，admin 必填拦截项）允许 null 表示「未填」。
+  const FEE_KEYS = { coordFee: true };
   let hit = 0;
+  const missing = [];
   rows.forEach(r => {
     if (!r) return;
     // 赶工费/变更费/涨幅费等手工金额行不在映射表内 → 直接忽略（不进 GROUP_RATES）
     const k = Object.prototype.hasOwnProperty.call(GROUP_RULE_KEY_MAP, r.key) ? GROUP_RULE_KEY_MAP[r.key] : null;
     if (!k) return;
     const v = (r.value === null || r.value === undefined || r.value === '') ? null : parseFloat(r.value);
-    GROUP_RATES[k] = (v === null || isNaN(v)) ? null : v;   // fee 类 NULL 记为「未填」而不是 0
-    if (GROUP_RATES[k] !== null) hit++;
+    const num = (v === null || isNaN(v)) ? null : v;
+    if (num !== null) { GROUP_RATES[k] = num; hit++; return; }
+    if (FEE_KEYS[k]) { GROUP_RATES[k] = null; }   // fee 类 NULL 记为「未填」而不是 0
+    else { missing.push(k); }                     // rate 键坏值：保留 T01 默认，不覆盖
   });
+  if (missing.length) { toast('⚠️ 集团费率缺失 ' + missing.join('、') + '：保持 T01 默认'); return false; }
   if (!hit) { toast('⚠️ 集团费率库无有效费率值：保持 T01 标准费率'); return false; }
   return true;
 }
@@ -875,7 +883,13 @@ async function loadGroupDataOnce() {
   if (!groupBenchLoaded) groupBenchLoaded = await loadGroupBenchmark();
   if (!groupRulesLoaded) groupRulesLoaded = await loadGroupPricingRules();
   groupDataLoaded = groupBenchLoaded && groupRulesLoaded;   // 有一组失败 → 保持 false，下次切入可重试
-  if (groupDataLoaded) toast('✅ 对甲报价数据就绪：集团基准价 ' + groupBenchRows.length + ' 条 · 管理费 ' + groupRateLabel(GROUP_RATES.mgmt) + ' / 利润 ' + groupRateLabel(GROUP_RATES.profit));
+  if (groupDataLoaded) {
+    toast('✅ 对甲报价数据就绪：集团基准价 ' + groupBenchRows.length + ' 条 · 管理费 ' + groupRateLabel(GROUP_RATES.mgmt) + ' / 利润 ' + groupRateLabel(GROUP_RATES.profit));
+    // setPricingMode 不 await 懒加载，首轮 renderBoq/updateSum 跑在数据到达前（清单停在「数据未到」）；
+    // 数据真正落地的此刻补渲染一次，失败分支不进这里，不会空重排。
+    renderBoq();
+    updateSum();
+  }
   return groupDataLoaded;
 }
 
@@ -897,7 +911,7 @@ function onGlobalRateChange() {
 let pricingMode = 'internal';   // 对内成本（现状引擎，零改动）
 let groupBenchMap = {};          // key=code，value=group_benchmark_items 行原样（不改字段名，T4 直读 lab_price/mats/aux_cost/mech_cost）
 let groupBenchRows = [];         // 原样有序数组（map 丢序，分部小计与汇总导出按此顺序）
-let GROUP_RATES = {mgmt:0.17, profit:0.12, green:0.13, baogan:0.03, tax:0.09, coordFee:null};  // 集团费率（小数）：初值即 T01 标准费率，加载成功后被库值覆盖
+let GROUP_RATES = {mgmt:0.17, profit:0.12, green:0.13, baogan:0.03, tax:0.09, coordFee:null};  // 集团费率（小数）：初值即 T01 标准费率；加载成功只用库里的有效数值覆盖，rate 键的 NULL/坏值不得写入
 const GROUP_RULE_KEY_MAP = {mgmt_rate:'mgmt', profit_rate:'profit', green_safety_rate:'green', lump_sum_rate:'baogan', tax_rate:'tax', fitout_coordination_fee:'coordFee'};  // 表 key → GROUP_RATES 短键
 let groupDataLoaded = false;    // 懒加载幂等标志：两组数据都成功后置 true
 let groupBenchLoaded = false;   // 分项标志：哪组没成就只重试哪组
@@ -931,7 +945,7 @@ function setPricingMode(mode) {
   const mi = document.getElementById('mgmtRateInp'), pi = document.getElementById('profitRateInp');
   if (mi) { mi.disabled = isGroup; mi.title = isGroup ? '对甲报价：管理费取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.mgmt) + '），基数=人工+机械，不可手填' : '管理费 = 人工单价 × 管理费率%'; }
   if (pi) { pi.disabled = isGroup; pi.title = isGroup ? '对甲报价：利润取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.profit) + '），基数=人工+机械，不可手填' : '利润 = 人工单价 × 利润率%'; }
-  if (isGroup) ensureGroupData();   // 懒加载入口
+  if (isGroup) ensureGroupData();   // 懒加载入口（不阻塞切换）；数据落地后由 loadGroupDataOnce 补一次渲染
   renderBoq();
   updateSum();
 }
