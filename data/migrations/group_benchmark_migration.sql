@@ -66,11 +66,16 @@ ON CONFLICT (key) DO NOTHING;
 -- ============================================================
 -- 依赖：public.profiles 存在且 authenticated 可读自身行（own-row SELECT policy）；
 --       否则写策略静默拒绝。
+-- 读策略取 TO public（=anon+authenticated 全集）：tool.html 在 localhost 免登录、
+-- 手机端等场景以 anon 角色直读（PostgREST 对不匹配角色的 SELECT 静默返回空数组，
+-- 2026-10-12 浏览器冒烟实证）；与既有 benchmark_items 的 anon 可读实态同构，
+-- 集团基准价/费率对前端本即明文下发，无额外保密面。写策略仍限 authenticated + admin。
 ALTER TABLE public.group_benchmark_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.group_pricing_rules  ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS gbi_read_auth ON public.group_benchmark_items;
-CREATE POLICY gbi_read_auth ON public.group_benchmark_items FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS gbi_read_all ON public.group_benchmark_items;
+CREATE POLICY gbi_read_all ON public.group_benchmark_items FOR SELECT TO public USING (true);
 
 DROP POLICY IF EXISTS gbi_write_admin ON public.group_benchmark_items;
 CREATE POLICY gbi_write_admin ON public.group_benchmark_items FOR ALL TO authenticated
@@ -78,7 +83,8 @@ CREATE POLICY gbi_write_admin ON public.group_benchmark_items FOR ALL TO authent
     WITH CHECK (EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND is_admin));
 
 DROP POLICY IF EXISTS gpr_read_auth ON public.group_pricing_rules;
-CREATE POLICY gpr_read_auth ON public.group_pricing_rules FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS gpr_read_all ON public.group_pricing_rules;
+CREATE POLICY gpr_read_all ON public.group_pricing_rules FOR SELECT TO public USING (true);
 
 DROP POLICY IF EXISTS gpr_write_admin ON public.group_pricing_rules;
 CREATE POLICY gpr_write_admin ON public.group_pricing_rules FOR ALL TO authenticated
