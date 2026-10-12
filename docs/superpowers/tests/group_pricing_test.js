@@ -1285,6 +1285,16 @@ run('findRow(230).subs = [];');
 ok('J6 列数不变式护栏：全表无 colspan="17"／无动态 colspan 分流痕迹（换列而非加列）',
   !/colspan="17"/.test(TOOL) && /colspan="16"/.test(TOOL) && !/colspan="\+'\(gMode/.test(TOOL));
 
+/* ── 表头去重（用户反馈：分部 ZS02-B 不需重复表头）：集团模式只随首个展开组渲染 ── */
+ok('J7 源码门控：boqHeadDone 每组循环外复位点唯一，内部短路（!gMode ||）保证内部模式零行为变更',
+  /let boqHeadDone = false;/.test(RB_SRC) && /const showHead = !gMode \|\| !boqHeadDone;/.test(RB_SRC) &&
+  /if \(showHead\) boqHeadDone = true;/.test(RB_SRC));
+ok('J8 折叠护栏：if (!g.open) return 先于 showHead 消费——折叠组既不占表头也不成表，表头顺延给下一个展开组',
+  RB_SRC.indexOf('if (!g.open) return;') < RB_SRC.indexOf('const showHead'));
+ok('J9 thead 拼接唯一：renderBoq 内只有一处 <thead> 且被 showHead 三元包裹，<tbody> 在三元外恒输出（无头组照样成表）',
+  (RB_SRC.match(/<thead>/g) || []).length === 1 && /\(showHead \? '<thead><tr>'/.test(RB_SRC) &&
+  /<\/tr><\/thead>' : ''\) \+ '<tbody>'/.test(RB_SRC));
+
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
 process.exit(fail ? 1 : 0);

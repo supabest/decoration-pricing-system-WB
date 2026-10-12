@@ -2079,6 +2079,7 @@ function renderBoq() {
   rebuildRowMap();
   let html = '';
   let globalIdx = 0;
+  let boqHeadDone = false;   // 集团模式表头去重（用户反馈：多个分部组重复表头）：只随首个展开组渲染；内部模式不受影响
 
   groups.forEach(g => {
     const gt = grpTotal(g), totalRows = g.sections.reduce((a,s)=>a+s.rows.length,0);
@@ -2090,7 +2091,9 @@ function renderBoq() {
     if (!g.open) return;
 
     const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
-    html += '<table class="boq-table"><thead><tr>' +
+    const showHead = !gMode || !boqHeadDone;
+    if (showHead) boqHeadDone = true;
+    html += '<table class="boq-table">' + (showHead ? '<thead><tr>' +
       '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-sp">项目特征</th>' +
       '<th class="c-un c">单位</th><th class="c-qty r">工程量</th>' +
       '<th class="c-pr r">人工单价</th><th class="c-mp r">主材单价</th>' +
@@ -2099,7 +2102,7 @@ function renderBoq() {
       '<th class="c-mat r">主材费</th><th class="c-aux r">辅材费</th>' +
       (gMode ? '<th class="c-mech r" title="E 机械：集团 h = A人工 + 主材 + D辅材 + E机械 + F管理 + G利润">机械费</th>' : '') +
       '<th class="c-mgmt r">管理费</th><th class="c-profit r">利润</th><th class="c-usp r">综合单价</th><th class="c-total r">定额合价</th>' +
-      '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead><tbody>';
+      '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead>' : '') + '<tbody>';
 
     g.sections.forEach(s => {
       const st = secTotal(s);
