@@ -297,7 +297,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 <div class="layout">
   <div class="sbar">
     <div class="sbar-hdr">
-      <div class="sbar-title">基准价库</div>
+      <div class="sbar-title" id="sbarTitle">基准价库</div>
       <div class="srch"><span class="srch-ic">🔍</span>
         <input id="libSrch" type="text" placeholder="搜索子目名称、编号…" oninput="_deb('lib',renderLib,200)">
       </div>
@@ -929,6 +929,7 @@ async function loadGroupDataOnce() {
     // setPricingMode 不 await 懒加载，首轮 renderBoq/updateSum 跑在数据到达前（清单停在「数据未到」）；
     // 数据真正落地的此刻补渲染一次，失败分支不进这里，不会空重排。
     updateGroupRateHint();   // 费率库值可能与 T01 默认不同，提示条跟着刷新
+    renderLib();             // 侧栏集团库同步补渲染（首轮切早于数据到达时停在「未加载」）
     renderBoq();
     updateSum();
   }
@@ -989,6 +990,11 @@ function setPricingMode(mode) {
   if (pi) { pi.disabled = isGroup; pi.title = isGroup ? '对甲报价：利润取 group_pricing_rules（当前 ' + groupRateLabel(GROUP_RATES.profit) + '），基数=人工+机械，不可手填' : '利润 = 人工单价 × 利润率%'; }
   if (isGroup) ensureGroupData();   // 懒加载入口（不阻塞切换）；数据落地后由 loadGroupDataOnce 补一次渲染
   updateGroupRateHint();            // 提示条随模式走（库值刷新在 loadGroupDataOnce 成功分支）
+  // 左侧基准价库随模式切双库：内部 497 条 ↔ 集团 ZS02 296 条（同交互：展开唯一行后点击/拖拽挂载）
+  const st = document.getElementById('sbarTitle');
+  if (st) st.textContent = isGroup ? '集团基准价库（ZS02）' : '基准价库';
+  rebuildLibTabs();
+  if (document.getElementById('libList')) renderLib();   // 精简 DOM（D16 契约）下跳过，不抛
   renderBoq();
   updateSum();
 }
@@ -1126,15 +1132,8 @@ function init() {
         rebuildBenchMap();
       }
     }
-    // 构建侧栏
-    const tabs = document.getElementById('ftabs');
-    SHEETS.forEach(sh => {
-      const b = document.createElement('button');
-      b.className = 'ftab'; b.dataset.sh = sh;
-      b.textContent = sh.replace('班组','').replace('工程','').replace('（现场专业分包）','');
-      b.onclick = () => setSheet(sh, b);
-      tabs.appendChild(b);
-    });
+    // 构建侧栏（分类标签按当前模式生成：internal=SHEETS 班组 / group=ZS02 discipline）
+    rebuildLibTabs();
     buildCoefOpts();
     renderLib();
     diag('完成！token=' + (hasToken ? '有' : '无') + '，Supabase=' + (hasSb ? '在线' : '离线') + '，已加载ALL=' + ALL.length + '条，班组=' + SHEETS.length + '个');
@@ -1143,19 +1142,59 @@ function init() {
 }
 
 // ═══════════ SIDEBAR ═══════════
+// 集团侧栏分类：discipline 单字母（导入脚本 SHEETS 映射产出）→ 中文标签
+const GROUP_DISC_TABS = [['A','A精装'], ['B','B水电'], ['C','C拆除'], ['D','D措施']];
+function rebuildLibTabs() {
+  const tabs = document.getElementById('ftabs'); if (!tabs) return;
+  tabs.innerHTML = '<button class="ftab on" data-sh="all" onclick="setSheet(\'all\',this)">全部</button>';
+  const isGrp = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  const mk = (sh, lbl) => {
+    const b = document.createElement('button');
+    b.className = 'ftab'; b.dataset.sh = sh; b.textContent = lbl;
+    b.onclick = () => setSheet(sh, b);
+    tabs.appendChild(b);
+  };
+  if (isGrp) GROUP_DISC_TABS.forEach(t => mk(t[0], t[1]));
+  else (typeof SHEETS !== 'undefined' ? SHEETS : []).forEach(sh => mk(sh, sh.replace('班组','').replace('工程','').replace('（现场专业分包）','')));
+  shFilter = 'all';
+}
 function setSheet(sh, el) {
   shFilter = sh;
   document.querySelectorAll('.ftab').forEach(b => b.classList.remove('on'));
   el.classList.add('on');
   renderLib();
 }
+// 集团库侧栏视图模型：复用 groupPickerItems 搜索 + discipline 筛选，h 由集团引擎实算（与行价同源）
+function groupLibItems(q) {
+  const disc = (shFilter && shFilter !== 'all') ? shFilter : '';
+  const out = [];
+  groupPickerItems(q).forEach(it => {
+    if (disc && String(it.discipline || '') !== disc) return;
+    const p = groupSubPrice({lab: it.lab_price, aux: it.aux_cost, mech: it.mech_cost, mats: it.mats});
+    const lbl = GROUP_DISC_TABS.find(t => t[0] === it.discipline);
+    out.push({id: it.code, name: it.name || '', unit: it.unit || '', price: p.h, pending: p.pending, sheet: lbl ? lbl[1] : (it.discipline || '')});
+  });
+  return out;
+}
 function getLibItems() {
+  if (typeof pricingMode !== 'undefined' && pricingMode === 'group') {
+    return groupLibItems(document.getElementById('libSrch').value.trim());
+  }
   let items = shFilter === 'all' ? ALL : ALL.filter(i => i.sheet === shFilter);
   const q = document.getElementById('libSrch').value.trim().toLowerCase();
   if (q) items = items.filter(i => i.name.toLowerCase().includes(q) || i.id.toLowerCase().includes(q) || i.trade.includes(q));
   return items;
 }
 function renderLib() {
+  // 集团模式空库（未加载/加载失败）：给重试入口，不让用户对着内部库残留或空白猜
+  if (typeof pricingMode !== 'undefined' && pricingMode === 'group' && (typeof groupBenchRows === 'undefined' || !groupBenchRows.length)) {
+    document.getElementById('libCnt').textContent = '集团库未加载';
+    document.getElementById('libList').innerHTML = '<div style="padding:20px;text-align:center;font-size:12px;color:var(--tx3)">' +
+      '<div style="color:var(--yel);font-weight:600">ZS02 库未加载</div>' +
+      '<div style="margin-top:4px;font-size:10px;color:var(--tx3)">集团基准价表读不到数据（后端不可用或表内无记录）</div>' +
+      '<div style="margin-top:10px"><button class="btn btn-sm" onclick="libGroupRetry()">🔄 重试加载</button></div></div>';
+    return;
+  }
   const items = getLibItems();
   document.getElementById('libCnt').textContent = '共 ' + items.length + ' 条子目';
   const el = document.getElementById('libList');
@@ -1167,16 +1206,25 @@ function renderLib() {
     '<div class="lib-id">'+esc(it.id)+'</div>' +
     '<div class="lib-name">'+esc(it.name)+'</div>' +
     '<div class="lib-meta"><span class="lib-unit">'+esc(it.unit)+'</span>' +
-    '<span class="lib-price">¥'+it.price.toFixed(2)+'</span>' +
+    '<span class="lib-price">' + (it.pending ? '待询价' : '¥' + it.price.toFixed(2)) + '</span>' +
     '<span class="lib-sheet-tag">'+esc(it.sheet)+'</span></div></div>'
   ).join('') + (items.length>250 ? '<div style="padding:6px 10px;font-size:11px;color:var(--tx3)">…还有'+(items.length-250)+'条</div>' : '');
 }
 function libClick(id, sh) {
+  // 集团模式：落点与内部侧栏同交互（唯一展开行 → addGroupSub），与行内 picker 共用同一挂载函数
+  if (typeof pricingMode !== 'undefined' && pricingMode === 'group') {
+    const exp = getAllRows().filter(r => r.open);
+    if (exp.length === 1) { addGroupSub(exp[0].id, id); return; }
+    if (exp.length > 1) { toast('请先只展开一行，再点击子目'); return; }
+    toast('请先展开一条清单行，再点击子目');
+    return;
+  }
   const exp = getAllRows().filter(r => r.open);
   if (exp.length === 1) { addSub(exp[0].id, id, sh); return; }
   if (exp.length > 1) { toast('请先只展开一行，再点击子目'); return; }
   toast('请先展开一条清单行，再点击子目');
 }
+function libGroupRetry() { Promise.resolve(ensureGroupData()).then(() => renderLib()); }
 
 // ═══════════ DRAG ═══════════
 function onDragStart(e, id, sh) { drag={id,sh}; e.dataTransfer.effectAllowed='copy'; }
@@ -1188,7 +1236,7 @@ function onRowDragover(e, rid) {
   if (!drag) return; e.preventDefault();
   document.querySelectorAll('.pr').forEach(tr => tr.classList.toggle('drop-hi', tr.dataset.rid==rid));
 }
-function onRowDrop(e, rid) { e.preventDefault(); if(drag){addSub(rid,drag.id,drag.sh);onDragEnd();} }
+function onRowDrop(e, rid) { e.preventDefault(); if(drag){ if (typeof pricingMode !== 'undefined' && pricingMode === 'group') addGroupSub(rid, drag.id); else addSub(rid,drag.id,drag.sh); onDragEnd();} }
 
 // ═══════════ HELPERS ═══════════
 function getAllRows() {

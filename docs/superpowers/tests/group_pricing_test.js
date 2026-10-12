@@ -85,11 +85,14 @@ const DOMCFG = { gone: false };   // 置 true 可模拟「元素不存在」的�
 function mkEl(id) {
   const cls = new Set();
   const ops = { added: [], removed: [] };
-  return { id, value: '', checked: false, disabled: false, title: '', className: '', innerHTML: '', textContent: '',
-    style: {}, focus() {},
+  const el = { id, value: '', checked: false, disabled: false, title: '', className: '', textContent: '',
+    style: {}, focus() {}, dataset: {}, children: [], appendChild(c) { this.children.push(c); },
     classList: { add(c) { cls.add(c); ops.added.push(c); }, remove(c) { cls.delete(c); ops.removed.push(c); },
       toggle(c) { cls.has(c) ? cls.delete(c) : cls.add(c); }, contains(c) { return cls.has(c); } },
     _cls: cls, _clsOps: ops };
+  let _html = '';
+  Object.defineProperty(el, 'innerHTML', { get: () => _html, set: v => { _html = v; el.children.length = 0; } });  // 真 DOM 语义：写 innerHTML 替换子节点（stub 里重建 tabs 不累积）
+  return el;
 }
 const document = {
   getElementById: id => (DOMCFG.gone ? null : (els[id] || (els[id] = mkEl(id)))),
@@ -104,10 +107,11 @@ const TOASTS = [];  // toast 文案
 /* ── 沙箱：group 数据基座 + T4 公式层 + 内部计价引擎（回归双夹具要真跑原公式），
  *    内部模式的费率/系数状态一并声明用于污染检查 ── */
 const LINES = ['let pricingMode', 'let groupDataLoaded', 'let groupBenchLoaded', 'let groupRulesLoaded',
-  'let _groupLoading', 'let rowMap', 'let groupPickerRowId'];
+  'let _groupLoading', 'let rowMap', 'let groupPickerRowId', 'let shFilter', 'let drag'];
 const DECLS = ['let GROUP_RATES', 'let groupBenchMap', 'let groupBenchRows', 'const GROUP_RULE_KEY_MAP',
   'const MAT_CAT_KEYWORDS',   // T5 护栏测试要真跑 syncRowMat→routeRowMat 链（品类识别依赖）
-  'const EXP_COLS'];          // T5 契约：管理费/利润列的 group 分支直接取数验证
+  'const EXP_COLS',           // T5 契约：管理费/利润列的 group 分支直接取数验证
+  'const GROUP_DISC_TABS'];   // I 段：侧栏双库 discipline 标签
 const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGroupBenchmark',
   'loadGroupPricingRules', 'loadGroupDataOnce', 'ensureGroupData', 'setPricingMode',
   // ── T4：集团公式引擎 ──
@@ -124,6 +128,9 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'groupModeBlock',              // F2 防御收口：混合态拦截逻辑断言（restoreProject 接线另为源码级）
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
+  // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
+  'rebuildLibTabs', 'groupLibItems', 'getLibItems', 'renderLib', 'setSheet', 'libClick', 'libGroupRetry',
+  'onDragStart', 'onDragEnd', 'onRowDrop',
   'delSub', 'addSub', 'syncRowMat', 'routeRowMat', 'subCategoryScore', 'normKey', 'rowMatPending', 'fmt', 'esc'];
 
 let ctx;
@@ -132,6 +139,7 @@ const HEAD = [
   'let globalCoef=1.0, globalMgmtRate=10, globalProfitRate=15;',
   '// 内部引擎依赖的库/清单状态（T4 回归夹具用）',
   'let DB={}, benchMap={}, groups=[], uid=1, ALL=[];',
+  'let SHEETS=["泥水班组","油漆班组"];',   // I 段：内部侧栏 tabs 重建用
   'let hourlyRate=350, batchMode=false;',
   '// renderBoq/updateSum 用计数器桩：本测试只验开关接线与公式，不跑真实渲染',
   'let _render=0, _sum=0; function renderBoq(){_render++;} function updateSum(){_sum++;}',
@@ -1187,6 +1195,67 @@ ok('F1d sections 只归集已定价子目（Σsections = part1，A·楼地面）
 near('F1e 跨端镜像常数：part1 与后端同夹具值 1153.0425 严格一致（tol 2e-6）', run('SUMF1.part1'), 230.6085 * 5, 2e-6);
 ok('F1f 行级展示语义不变：混合行仍 ready:false + rowGroupPending:true（BOQ 黄底照旧）',
   run('rowGroupAgg(findRow(210)).ready') === false && run('rowGroupPending(findRow(210))') === true);
+
+/* ═══════════ I. 侧栏双库（用户反馈：集团模式下左侧仍显示 497 条内部库） ═══════════ */
+console.log('\n── I. 侧栏双库：集团模式展示 ZS02 库 + discipline tabs + h 实算 + 挂载落点 ──');
+run('setPricingMode("group");');
+const TABS_GRP = run('document.getElementById("ftabs").children.map(function(b){ return b.dataset.sh + ":" + b.textContent; })');
+ok('I1 切 group 后侧栏 tabs = 全部 + A精装/B水电/C拆除/D措施',
+  /data-sh="all"/.test(run('document.getElementById("ftabs").innerHTML')) &&
+  TABS_GRP.length === 4 && TABS_GRP[0] === 'A:A精装' && TABS_GRP[3] === 'D:D措施', JSON.stringify(TABS_GRP));
+ok('I2 侧栏标题随模式切换', run('document.getElementById("sbarTitle").textContent') === '集团基准价库（ZS02）');
+run('rebuildGroupBenchMap([G009, D003]); document.getElementById("libSrch").value = ""; shFilter = "all";');
+const LVI = JSON.parse(run('JSON.stringify(getLibItems().map(function(i){ return {id:i.id, price:i.price, pend:!!i.pending, tag:i.sheet, unit:i.unit}; }))'));
+ok('I3 集团库视图：id=code、A-009 pending、discipline 中文标签',
+  LVI.length === 2 && LVI[0].id === 'ZS02-A-009' && LVI[0].pend === true && LVI[1].tag === 'D措施', JSON.stringify(LVI));
+near('I4 侧栏 h 与引擎同源：D-003 = 4.0779（黄金值，非 raw_composite 留档值）', LVI[1].price, 4.0779, 1e-6);
+ok('I5 待询价条目价格单元格显示「待询价」（renderLib 源：pending 三元）',
+  /it\.pending.*待询价/.test(grabAnyFn(TOOL, 'renderLib')));
+run('shFilter = "D";');
+ok('I6 discipline tab 筛选生效', run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZS02-D-003');
+run('shFilter = "all"; document.getElementById("libSrch").value = "瓷砖";');
+ok('I7 搜索命中名称（复用 groupPickerItems 分词链）', run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZS02-A-009');
+run('document.getElementById("libSrch").value = "zs02-d";');
+ok('I8 搜索命中编号（小写 code 包含）', run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZS02-D-003');
+run('document.getElementById("libSrch").value = "";');
+run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+     uid = 230;
+     var rlib = makeRow({name:'侧栏挂载行', unit:'m2', qty:'10'});
+     groups[0].sections[0].rows = [rlib]; rebuildRowMap(); rlib.open = true;
+     getAllRows().forEach(function(r){ if (r.id !== 230) r.open = false; });`);
+run('libClick("ZS02-D-003", "D措施");');
+ok('I9 集团侧栏点击走 addGroupSub（gtype 契约与行内 picker 同源）',
+  run('findRow(230).subs.length') === 1 && run('findRow(230).subs[0].gtype') === 'group' && run('findRow(230).subs[0].bid') === 'ZS02-D-003');
+run('findRow(230).open = false; TOASTS.length = 0;');
+run('libClick("ZS02-A-009", "A精装");');
+ok('I10 无展开行时点击只提示不挂载（与内部侧栏同文案）',
+  run('findRow(230).subs.length') === 1 && TOASTS.some(m => /请先展开一条清单行/.test(m)), JSON.stringify(TOASTS));
+run('findRow(230).open = true; drag = {id:"ZS02-A-009", sh:"A精装"};');
+run('onRowDrop({preventDefault:function(){}}, 230);');
+ok('I11 集团模式行拖放走 addGroupSub（onRowDrop 分流）',
+  run('findRow(230).subs.length') === 2 && run('findRow(230).subs[1].bid') === 'ZS02-A-009' && run('findRow(230).subs[1].gtype') === 'group');
+run('rebuildGroupBenchMap([]); renderLib();');
+ok('I12 集团空库：侧栏「ZS02 库未加载」+ libGroupRetry 重试入口',
+  /ZS02 库未加载/.test(els.libList.innerHTML) && /libGroupRetry/.test(els.libList.innerHTML) && els.libCnt.textContent === '集团库未加载');
+run('rebuildGroupBenchMap([G009, D003]);');
+ok('I13 libGroupRetry 只走 ensureGroupData 既有链路（不自发 fetch）',
+  /ensureGroupData/.test(grabAnyFn(TOOL, 'libGroupRetry')) && !/_get\(/.test(grabAnyFn(TOOL, 'libGroupRetry')));
+run('setPricingMode("internal");');
+const TABS_INT = run('document.getElementById("ftabs").children.map(function(b){ return b.dataset.sh; })');
+ok('I14 切回内部：SHEETS tabs 重建 + 标题还原 + shFilter 复位',
+  /data-sh="all"/.test(run('document.getElementById("ftabs").innerHTML')) &&
+  TABS_INT.length === 2 && TABS_INT[0] === '泥水班组' &&
+  run('document.getElementById("sbarTitle").textContent') === '基准价库' && run('shFilter') === 'all');
+run('ALL = [{id:"ZY-01", name:"满堂红脚手架", trade:"其他", unit:"m3", price:30, sheet:"其他班组"}]; document.getElementById("libSrch").value = "";');
+ok('I15 内部分支 getLibItems 行为不变（ALL + 小写过滤原路径）',
+  run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZY-01');
+run('findRow(230).open = true; libClick("ZY-01", "其他班组");');
+ok('I16 内部侧栏点击仍走 addSub（原落点零变更，无 gtype 字段）',
+  run('findRow(230).subs.length') === 3 && run('findRow(230).subs[2].bid') === 'ZY-01' && run('!findRow(230).subs[2].gtype'));
+ok('I17 数据落地后侧栏补渲染（loadGroupDataOnce 成功点含 renderLib()）',
+  /renderLib\(\)/.test(grabAnyFn(TOOL, 'loadGroupDataOnce')));
+ok('I18 往返切换不炸（侧栏双库链路在两种模式下均无异常）',
+  run('(function(){ try { setPricingMode("group"); setPricingMode("internal"); setPricingMode("group"); setPricingMode("internal"); return true; } catch(e) { return "throw: " + e.message; } })()') === true);
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
