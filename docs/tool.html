@@ -2958,6 +2958,9 @@ function renderGroupSummaryPanel() {
 async function doGroupSummaryExport() {
   const payload = collectGroupSummaryPayload();
   if (!payload.items.length) { toast('暂无集团子目可导出（请先在对甲报价模式下套价）'); return; }
+  // F4 客户端预检：与后端 fitout_area_required 闸门同源提示，面积≤0 直接拦截不发请求
+  const pre = buildGroupSummary(getAllRows(), getGroupSummaryOpts());
+  if (pre.needsArea) { toast('请先填写装修面积（单方造价分母）'); const fa = document.getElementById('fitoutAreaInp'); if (fa) fa.focus(); return; }
   try {
     const h = { 'Content-Type': 'application/json' };
     const t = localStorage.getItem('sb-access-token'); if (t) h['Authorization'] = 'Bearer ' + t;
@@ -2967,6 +2970,7 @@ async function doGroupSummaryExport() {
       let detail = null;
       try { const j = await r.json(); detail = j && j.detail; } catch (_) {}
       if (detail && detail.pending) { toast('⚠️ 待询价未补价，已拦截：' + detail.pending.length + ' 条：' + detail.pending.slice(0, 5).join('、') + (detail.pending.length > 5 ? '…' : '')); }
+      else if (detail && detail.error === 'fitout_area_required') { toast('请先填写装修面积（单方造价分母）'); const fa = document.getElementById('fitoutAreaInp'); if (fa) fa.focus(); }
       else if (detail && detail.error === 'coord_fee_not_configured') { toast('⚠️ 精装修配合费费率未配置，请在管理端配置或显式置 0'); }
       else { toast('⚠️ 后端导出失败（HTTP ' + r.status + '），已收集 ' + payload.items.length + ' 条 payload'); }
       return payload;

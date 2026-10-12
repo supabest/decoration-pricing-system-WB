@@ -1122,6 +1122,16 @@ ok('M2 面板预警：coordFeeConfigured 且 needsArea → 配合费行补注「
   /if \(!s\.coordFeeConfigured\)/.test(PANEL_SRC));
 run('pricingMode = "group";');
 
+/* ── F4 导出 400 分类补全 + 客户端预检（源码级：导出函数走真实 fetch，不进沙箱） ── */
+console.log('\n  · F4：fitout_area_required 分支 + needsArea 预检拦截');
+const DGE_SRC = grabAnyFn(TOOL, 'doGroupSummaryExport');
+ok('F4a 400 分类补全：fitout_area_required 分支存在，文案与后端闸门同源且聚焦 #fitoutAreaInp',
+  /detail\.error === 'fitout_area_required'/.test(DGE_SRC) && /请先填写装修面积（单方造价分母）/.test(DGE_SRC) &&
+  (DGE_SRC.match(/fitoutAreaInp/g) || []).length >= 2, (DGE_SRC.match(/fitoutAreaInp/g) || []).length + ' 处');
+ok('F4b 客户端预检：needsArea 在 await fetch 之前 toast 拦截不发请求',
+  /pre\.needsArea/.test(DGE_SRC) && DGE_SRC.indexOf('pre.needsArea') < DGE_SRC.indexOf('await fetch') &&
+  /buildGroupSummary\(getAllRows\(\), getGroupSummaryOpts\(\)\)/.test(DGE_SRC));
+
 /* ── F1 镜像夹具：一行挂 2 个集团子目、其一 pending → 子目级排除（与后端 group_summary_export.compute 同口径） ── */
 console.log('\n  · F1：一行两子目其一待询价 —— 子目级剔除，兄弟子目照常进 part1（双向钉镜像后端）');
 run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
