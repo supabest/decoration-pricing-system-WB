@@ -71,6 +71,8 @@ admin.html 新增「集团取费参数」面板可编辑。
 - **硬校验**：逐条按公式重算 H，与 Excel 原值差 |Δ|≤0.01，296 条全过才写库；
   输出审计报告（沿用 `price_audit_report.py` 惯例）
 - T01/T03 sheet → `group_pricing_rules` 种子 SQL（`data/seeds/`，不入 git）
+  —— **P1 裁定延期至 P2**（2026-10-12 最终评审 #6）：P1 只灌 9 行费率种子；
+  T01 条文 56 条（kind='rule_text'）与 T03 主材限价 24 条未导入，枚举保留待 P2 消费
 
 ## 2. 引擎层（tool.html 报价模式开关）
 
