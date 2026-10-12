@@ -2071,6 +2071,20 @@ function groupSubRowHtml(r, sub) {
     '<td class="c"><button class="btn btn-del" style="font-size:10px" onclick="delSub(' + r.id + ',' + idArg + ')">✕</button></td>' +
     '</tr>';
 }
+function boqTheadHtml() {
+  // 表头拼接两模式共用（内部：每组各自表头；集团：单一大表只出一次且置顶）
+  const gm = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  return '<thead><tr>' +
+    '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-sp">项目特征</th>' +
+    '<th class="c-un c">单位</th><th class="c-qty r">工程量</th>' +
+    '<th class="c-pr r">人工单价</th><th class="c-mp r">主材单价</th>' +
+    // 集团口径损耗率恒不适用 → 整列撤下（非借位）；E 机械独立成列置于辅材费后（列数恒 16，colspan 链零改动）
+    (gm ? '' : '<th class="c-waste r">主材损耗率</th>') +
+    '<th class="c-mat r">主材费</th><th class="c-aux r">辅材费</th>' +
+    (gm ? '<th class="c-mech r" title="E 机械：集团 h = A人工 + 主材 + D辅材 + E机械 + F管理 + G利润">机械费</th>' : '') +
+    '<th class="c-mgmt r">管理费</th><th class="c-profit r">利润</th><th class="c-usp r">综合单价</th><th class="c-total r">定额合价</th>' +
+    '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead>';
+}
 function renderBoq() {
   const main = document.getElementById('boqMain');
   updateInternalCostPanel();
@@ -2079,30 +2093,22 @@ function renderBoq() {
   rebuildRowMap();
   let html = '';
   let globalIdx = 0;
-  let boqHeadDone = false;   // 集团模式表头去重（用户反馈：多个分部组重复表头）：只随首个展开组渲染；内部模式不受影响
+  const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  // 集团模式单一大表（用户裁定：表头置于各分部最上面）：分部组条/清单行/子目行全进同一张表，列宽全局对齐
+  if (gMode) html += '<table class="boq-table">' + boqTheadHtml() + '<tbody>';
 
   groups.forEach(g => {
     const gt = grpTotal(g), totalRows = g.sections.reduce((a,s)=>a+s.rows.length,0);
-    html += '<div class="grp-row" onclick="toggleGroup('+g.id+')">' +
+    const bar = '<div class="grp-row" onclick="toggleGroup('+g.id+')">' +
       '<span class="grp-arrow'+(g.open?'':' closed')+'">▾</span>' +
       '<span class="grp-name">'+esc(g.sheetName)+'</span>' +
       '<span class="grp-meta">'+totalRows+' 条</span>' +
       '<span class="grp-total">'+fmt(gt)+'</span></div>';
+    // 集团：组条进表成全宽行（仿 sec-row 既有形态）；内部：表外 div 原样（零行为变更）
+    html += gMode ? '<tr class="grp-tr"><td colspan="16" style="padding:0">' + bar + '</td></tr>' : bar;
     if (!g.open) return;
 
-    const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
-    const showHead = !gMode || !boqHeadDone;
-    if (showHead) boqHeadDone = true;
-    html += '<table class="boq-table">' + (showHead ? '<thead><tr>' +
-      '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-sp">项目特征</th>' +
-      '<th class="c-un c">单位</th><th class="c-qty r">工程量</th>' +
-      '<th class="c-pr r">人工单价</th><th class="c-mp r">主材单价</th>' +
-      // 集团口径损耗率恒不适用 → 整列撤下（非借位）；E 机械独立成列置于辅材费后（列数恒 16，colspan 链零改动）
-      (gMode ? '' : '<th class="c-waste r">主材损耗率</th>') +
-      '<th class="c-mat r">主材费</th><th class="c-aux r">辅材费</th>' +
-      (gMode ? '<th class="c-mech r" title="E 机械：集团 h = A人工 + 主材 + D辅材 + E机械 + F管理 + G利润">机械费</th>' : '') +
-      '<th class="c-mgmt r">管理费</th><th class="c-profit r">利润</th><th class="c-usp r">综合单价</th><th class="c-total r">定额合价</th>' +
-      '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead>' : '') + '<tbody>';
+    if (!gMode) html += '<table class="boq-table">' + boqTheadHtml() + '<tbody>';
 
     g.sections.forEach(s => {
       const st = secTotal(s);
@@ -2263,8 +2269,9 @@ function renderBoq() {
         }
       });
     });
-    html += '</tbody></table>';
+    if (!gMode) html += '</tbody></table>';
   });
+  if (gMode) html += '</tbody></table>';
   main.innerHTML = html;
   updateSum();
   scheduleAutoSave();

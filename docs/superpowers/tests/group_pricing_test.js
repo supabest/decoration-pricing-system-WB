@@ -1259,8 +1259,8 @@ ok('I18 往返切换不炸（侧栏双库链路在两种模式下均无异常）
 
 /* ═══════════ J. 套价表独立机械费列（用户裁定：机械费次要，放辅材费后；损耗率列集团模式整列撤下） ═══════════ */
 console.log('\n── J. 机械费独立成列：集团模式 撤损耗率列 + 辅材费后加机械费列（列数恒 16，colspan 链零改动） ──');
-ok('J1 表头换列：集团撤 waste 列、mech 列夹在辅材费与管理费之间（含 .c-mech 列宽定义）',
-  /\(gMode \? '' : '<th class="c-waste r">主材损耗率<\/th>'\)/.test(TOOL) && !/gModeH/.test(TOOL) &&
+ok('J1 表头换列（boqTheadHtml）：集团撤 waste 列、mech 列夹在辅材费与管理费之间（含 .c-mech 列宽定义）',
+  /\(gm \? '' : '<th class="c-waste r">主材损耗率<\/th>'\)/.test(TOOL) && !/gModeH/.test(TOOL) &&
   TOOL.indexOf('<th class="c-aux r">辅材费') < TOOL.indexOf('<th class="c-mech r"') &&
   TOOL.indexOf('<th class="c-mech r"') < TOOL.indexOf('<th class="c-mgmt r">管理费') &&
   /\.c-mech\{width:64px\}/.test(TOOL));
@@ -1285,15 +1285,22 @@ run('findRow(230).subs = [];');
 ok('J6 列数不变式护栏：全表无 colspan="17"／无动态 colspan 分流痕迹（换列而非加列）',
   !/colspan="17"/.test(TOOL) && /colspan="16"/.test(TOOL) && !/colspan="\+'\(gMode/.test(TOOL));
 
-/* ── 表头去重（用户反馈：分部 ZS02-B 不需重复表头）：集团模式只随首个展开组渲染 ── */
-ok('J7 源码门控：boqHeadDone 每组循环外复位点唯一，内部短路（!gMode ||）保证内部模式零行为变更',
-  /let boqHeadDone = false;/.test(RB_SRC) && /const showHead = !gMode \|\| !boqHeadDone;/.test(RB_SRC) &&
-  /if \(showHead\) boqHeadDone = true;/.test(RB_SRC));
-ok('J8 折叠护栏：if (!g.open) return 先于 showHead 消费——折叠组既不占表头也不成表，表头顺延给下一个展开组',
-  RB_SRC.indexOf('if (!g.open) return;') < RB_SRC.indexOf('const showHead'));
-ok('J9 thead 拼接唯一：renderBoq 内只有一处 <thead> 且被 showHead 三元包裹，<tbody> 在三元外恒输出（无头组照样成表）',
-  (RB_SRC.match(/<thead>/g) || []).length === 1 && /\(showHead \? '<thead><tr>'/.test(RB_SRC) &&
-  /<\/tr><\/thead>' : ''\) \+ '<tbody>'/.test(RB_SRC));
+/* ── 表头置顶（用户裁定：表头应放在各分部最上面）：集团模式单一大表，thead 只出现在循环前 ── */
+ok('J7 单一大表：循环前 gMode 开表+表头，内部模式仍每组各自成表；上一轮 boqHeadDone 去重桩已退役',
+  /if \(gMode\) html \+= '<table class="boq-table">' \+ boqTheadHtml\(\) \+ '<tbody>';/.test(RB_SRC) &&
+  RB_SRC.indexOf("if (gMode) html += '<table") < RB_SRC.indexOf('groups.forEach') &&
+  /if \(!gMode\) html \+= '<table class="boq-table">' \+ boqTheadHtml\(\) \+ '<tbody>';/.test(RB_SRC) &&
+  !/boqHeadDone/.test(RB_SRC) && !/showHead/.test(RB_SRC));
+ok('J8 分部组条进表成全宽行（仿 sec-row）；内部模式组条仍表外 div 零变更（: bar 短路）',
+  /html \+= gMode \? '<tr class="grp-tr"><td colspan="16" style="padding:0">' \+ bar \+ '<\/td><\/tr>' : bar;/.test(RB_SRC) &&
+  /const bar = '<div class="grp-row" onclick="toggleGroup\(/.test(RB_SRC));
+ok('J9 开闭表对称：renderBoq 内 </tbody></table> 恰两处——循环内 !gMode 条件闭 + 循环后 gMode 统一闭',
+  (RB_SRC.match(/<\/tbody><\/table>/g) || []).length === 2 &&
+  /if \(!gMode\) html \+= '<\/tbody><\/table>';/.test(RB_SRC) &&
+  /if \(gMode\) html \+= '<\/tbody><\/table>';/.test(RB_SRC) &&
+  RB_SRC.indexOf("if (!gMode) html += '</tbody></table>'") < RB_SRC.indexOf("if (gMode) html += '</tbody></table>'"));
+ok('J10 表头拼接唯一来源：boqTheadHtml 全文件只定义一次，renderBoq 内无 <thead> 字面量残留（无第二套表头副本）',
+  (TOOL.match(/function boqTheadHtml\(\)/g) || []).length === 1 && !/<thead>/.test(RB_SRC));
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
