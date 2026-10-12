@@ -2542,12 +2542,20 @@ function handleKnowledgeFile(e) {
 // 全部按内部口径算账（EXP_COLS lab/mat/aux/waste 列、rowUnitPrice、computeAuxForRow），与集团公式不同源；
 // 集团导出链 doGroupSummaryExport → collectGroupSummaryPayload → /export/group-summary 自成一路，
 // 不经 collectExportData / buildSplitExport（EXP_COLS 本体因此逐字不改）。
-// 内部模式 groupModeBlock 恒返回 false → 旧导出行为零变更。
+// 内部模式且清单无集团子目时 groupModeBlock 恒返回 false → 旧导出行为零变更。
 // 用法：入口函数首行 `if (groupModeBlock()) return;`（true = 已拦下并 toast）
+// F2 防御收口：pricingMode 纯内存态，恢复项目/刷新后会掉回 internal 而 subs 里存量 gtype:'group'，
+// 混合态下同样拦截（内部口径导出集团子目 = 金额失真的合法格式文件），消息改用可操作提示。
 function groupModeBlock(msg) {
-  if (typeof pricingMode === 'undefined' || pricingMode !== 'group') return false;
-  toast(msg || '集团模式不适用，请使用「导出对甲报价汇总」');
-  return true;
+  if (typeof pricingMode !== 'undefined' && pricingMode === 'group') {
+    toast(msg || '集团模式不适用，请使用「导出对甲报价汇总」');
+    return true;
+  }
+  if ((getAllRows() || []).some(r => (r.subs || []).some(s => s && s.gtype === 'group'))) {
+    toast(msg || '清单中存在集团子目，请在对甲报价模式下处理（或先删除集团子目）');
+    return true;
+  }
+  return false;
 }
 
 function showExportModal() {
@@ -4620,9 +4628,16 @@ async function restoreProject(id) {
   let maxId = 0;
   groups.forEach(g => { maxId = Math.max(maxId, g.id); g.sections?.forEach(s => { maxId = Math.max(maxId, s.id); s.rows?.forEach(r => { maxId = Math.max(maxId, r.id); }); }); });
   uid = maxId + 1;
+  // F2 防御收口：恢复后扫描 rows，存在任一 gtype:'group' 子目 → 复用 radio onchange 同一条
+  // setPricingMode 路径（模式切换 + 懒加载 ensureGroupData + 渲染）自动切到对甲报价，避免混合态。
+  const hasGroupSub = getAllRows().some(r => (r.subs || []).some(s => s && s.gtype === 'group'));
   showBoq(); renderBoq();
   closeHistory();
   toast('✓ 已恢复方案：' + snap.name);
+  if (hasGroupSub && (typeof pricingMode === 'undefined' || pricingMode !== 'group')) {
+    setPricingMode('group');
+    toast('检测到集团子目，已切换至对甲报价模式');
+  }
 }
 
 async function deleteProject(id) {

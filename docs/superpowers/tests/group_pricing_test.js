@@ -121,6 +121,7 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'rowGroupSubs', 'rowGroupAgg', 'rowGroupPending', 'groupExportFee', 'groupSubCells', 'groupSubRowHtml', 'updGroupMat',
   // ── T6：T02 四部分汇总预览计算 + 导出 payload 收集 ──
   'buildGroupSummary', 'collectGroupSummaryPayload', 'collectGroupManualFees', 'getGroupSummaryOpts',
+  'groupModeBlock',              // F2 防御收口：混合态拦截逻辑断言（restoreProject 接线另为源码级）
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
   'delSub', 'addSub', 'syncRowMat', 'routeRowMat', 'subCategoryScore', 'normKey', 'rowMatPending', 'fmt', 'esc'];
@@ -928,9 +929,10 @@ ok('G18c 合计仍走 rowTotal（group 下自动包含待询价行计 0 的口�
 /* ── G⑦ T8 收尾：group 模式下旧导出入口门控（源码级：内部导出链零改动） ── */
 console.log('\n  · 旧导出入口门控：group 模式拦方式一/方式二/辅材清单/导出弹窗（内部模式恒 false）');
 const GMB_SRC = grabAnyFn(TOOL, 'groupModeBlock');
-ok('G19 groupModeBlock helper 就位：pricingMode 缺席或非 group → 恒 false（内部模式零变更），group 下 toast 指向集团导出入口',
-  /typeof pricingMode/.test(GMB_SRC) && /pricingMode !== 'group'/.test(GMB_SRC) &&
-  /return false/.test(GMB_SRC) && /toast\(/.test(GMB_SRC) && /导出对甲报价汇总/.test(GMB_SRC));
+ok('G19/F2 groupModeBlock 守卫收口：group 拦截（消息指向对甲汇总）· 混合态拦截（消息=清单中存在集团子目）· 纯内部清单恒 false',
+  /typeof pricingMode/.test(GMB_SRC) && /pricingMode === 'group'/.test(GMB_SRC) &&
+  /gtype === 'group'/.test(GMB_SRC) && /清单中存在集团子目，请在对甲报价模式下处理/.test(GMB_SRC) &&
+  /toast\(/.test(GMB_SRC) && /导出对甲报价汇总/.test(GMB_SRC));
 ok('G19b 四个用户可触发入口首行一律 groupModeBlock 拦截（含 splitByTrade 对账弹窗所在的 doConfigExport）',
   ['showExportModal', 'doConfigExport', 'doAuxExport', 'doTemplateExport'].every(function (n) {
     const f = grabAnyFn(TOOL, n);
@@ -941,6 +943,29 @@ ok('G19c 集团导出链与 EXP_COLS 零交集：doGroupSummaryExport/collectGro
   !/EXP_COLS/.test(grabAnyFn(TOOL, 'collectGroupSummaryPayload')) &&
   !/groupModeBlock|pricingMode/.test(grabAnyFn(TOOL, 'collectExportData')) &&
   /key:'mat',\s*label:'主材费',\s*get:r=>rowMatCost\(r\)\|\|0/.test(TOOL));
+
+/* ── F2 防御收口：混合态 4 入口被拦（逻辑）+ 恢复含 gtype 数据触发切换（源码） ── */
+console.log('\n  · F2：模式守卫防御收口（混合态拦截 / 纯内部零变更 / restoreProject 自动切换）');
+run('pricingMode = "internal"; groups = [{id:1, sheetName:"S", open:true, sections:[{id:2, name:"分部", open:true, rows:[]}]}]; uid = 220;');
+run('var rg22 = makeRow({name:"集团行", unit:"m2", qty:"1"}); rg22.subs = [{bid:"ZS02-A-009",bsh:"ZS02-A",gtype:"group",coef:1,conv:1,lab:1,aux:0,mech:0,mats:[]}]; var ri22 = makeRow({name:"内部行", unit:"m2", qty:"1"}); groups[0].sections[0].rows = [rg22, ri22]; rebuildRowMap();');
+reset();
+ok('F2a 混合态（internal 模式 + 存量集团子目）→ groupModeBlock 拦下，消息可操作',
+  run('groupModeBlock()') === true && TOASTS.some(t => /清单中存在集团子目，请在对甲报价模式下处理（或先删除集团子目）/.test(t)), JSON.stringify(TOASTS));
+ok('F2b 调用方自定义 msg 优先（4 入口不改调用点的兼容前提）',
+  run('groupModeBlock("自定义")') === true && TOASTS[TOASTS.length - 1] === '自定义');
+run('groups[0].sections[0].rows = [ri22]; rebuildRowMap();');
+reset();
+ok('F2c 纯内部清单（internal 模式、无集团子目）→ 恒 false 且零 toast（内部模式零行为变更）',
+  run('groupModeBlock()') === false && TOASTS.length === 0);
+run('pricingMode = "group";');
+reset();
+ok('F2d group 模式照旧拦截，消息指向「导出对甲报价汇总」',
+  run('groupModeBlock()') === true && TOASTS.some(t => /导出对甲报价汇总/.test(t)), JSON.stringify(TOASTS));
+run('pricingMode = "internal";');
+const RP_SRC = grabAnyFn(TOOL, 'restoreProject');
+ok('F2e restoreProject 回写后扫描 gtype:\'group\' → 复用 setPricingMode(\'group\')（含懒加载路径）并 toast 已切换',
+  /gtype === 'group'/.test(RP_SRC) && /setPricingMode\('group'\)/.test(RP_SRC) && /已切换至对甲报价模式/.test(RP_SRC),
+  RP_SRC.slice(-260));
 
 /* ═══════════ H. Task 6：T02 四部分汇总预览计算 + 导出 payload 收集 ═══════════ */
 console.log('\n── H. buildGroupSummary / collectGroupSummaryPayload（勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1）──');
