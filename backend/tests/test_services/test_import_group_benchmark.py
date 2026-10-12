@@ -1,8 +1,7 @@
 """ZS02 附录2 集团基准价导入脚本回归测试 — 解析 + 296 条 H 重算审计（异常登记制）。
 
-运行方式（从仓库根；conftest 失效属既有缺陷，用 --confcutdir 绕过，见 T2 report §2）：
-  - python3 -m pytest backend/tests/test_services/test_import_group_benchmark.py -v \
-        --confcutdir=backend/tests/test_services
+运行方式（conftest 已修，无需 --confcutdir）：
+  - cd backend && python -m pytest tests/test_services/test_import_group_benchmark.py -q
   - python3 backend/tests/test_services/test_import_group_benchmark.py  （无 pytest 时也能直跑）
 """
 import os

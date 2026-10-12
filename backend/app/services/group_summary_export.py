@@ -86,8 +86,12 @@ def _money(v: Optional[float]) -> str:
 
 
 def _num(v: float) -> str:
-    """写进公式的数值字面量：0.17 → '0.17'、100 → '100'（不出现 100.0）"""
-    return f"{float(v):g}"
+    """写进公式的数值字面量：0.17 → '0.17'、100 → '100'（不出现 100.0）。
+
+    F7：固定 6 位小数 + 尾零裁剪，弃用 `:g`——`:g` 对大数切科学计数（1234567 → 1.23457e+06）
+    且 6 位有效数字会舍入大金额，Excel 公式都无法解析/失真。"""
+    s = f"{float(v):.6f}".rstrip('0').rstrip('.')
+    return s if s not in ('', '-0') else '0'
 
 
 class GroupSummaryExporter:
@@ -222,6 +226,14 @@ class GroupSummaryExporter:
         buf.seek(0)
         return buf
 
+    @staticmethod
+    def _safe_text(val: Any) -> Any:
+        """F7 Excel 公式注入护栏：文本单元格值以 =/+/-/@ 开头则前置 ' 转义（只针对文字列，
+        公式列 mgmt/profit/h/amount 不经此函数）。"""
+        if isinstance(val, str) and val[:1] in ('=', '+', '-', '@'):
+            return "'" + val
+        return val
+
     # sheet1：清单明细（一条子目一行，组头行按「专业·分部」分组折叠）
 
     def _write_items_sheet(self, wb: Workbook, c: Dict[str, Any]):
@@ -280,6 +292,8 @@ class GroupSummaryExporter:
             values["remark"] = "甲供待询价：" + "、".join(it["pending_names"]) + "（不计入汇总）"
         for i, col in enumerate(ITEM_COLUMNS):
             val = values.get(col["key"], "")
+            if col["key"] in ("name", "spec", "section_name"):   # F7：用户可控文本列防公式注入
+                val = self._safe_text(val)
             cell = ws.cell(row=r, column=i + 1, value=val)
             if col.get("num") and isinstance(val, (int, float)):
                 cell.number_format = NUM_FMT
@@ -419,7 +433,8 @@ class GroupSummaryExporter:
 
     @staticmethod
     def _put_title(ws, row: int, text: str, ncol: int):
-        ws.cell(row=row, column=1, value=text)
+        # F7：标题以 project_name 开头——同样过注入转义（正常中文名不受影响）
+        ws.cell(row=row, column=1, value=GroupSummaryExporter._safe_text(text))
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncol)
         GroupSummaryExporter._style_row(ws, row, ncol, "title")
 

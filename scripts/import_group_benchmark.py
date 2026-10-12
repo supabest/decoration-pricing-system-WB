@@ -166,6 +166,7 @@ def _mk_item(disc, section, ri, row):
 
 def parse_workbook(path):
     """解析 xlsx 四张清单 sheet → list[dict]（字段名与 group_benchmark_items 列一致）。"""
+    PARSE_FAILURES.clear()   # F7：入口清状态——同进程连续解析多本/重复调用不再携带上一次失败记录
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     items = []
     try:

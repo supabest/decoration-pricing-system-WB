@@ -1461,7 +1461,9 @@ function groupRowTotal(r) {
 // 管理费/利润输入旁的提示条：百分比数字从 GROUP_RATES 实时取（×100），不硬编码 17/12
 function updateGroupRateHint() {
   const el = document.getElementById('groupRateHint'); if (!el) return;
-  if (pricingMode !== 'group') { el.style.display = 'none'; return; }
+  // F7 守卫风格统一：既有回归沙箱按函数逐个抽取、可能不带模式变量声明，变量缺席即视为 internal
+  const gOn = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  if (!gOn) { el.style.display = 'none'; return; }
   el.textContent = '对甲报价：管理' + groupRateLabel(GROUP_RATES.mgmt) + '/利润' + groupRateLabel(GROUP_RATES.profit) + '，基数=人工+机械（写死）';
   el.style.display = '';
 }
@@ -2058,7 +2060,7 @@ function renderBoq() {
         const up=rowUnitPrice(r), tot=rowTotal(r);
         // 对甲报价（T5）：行级派生单元格唯一的集团取数入口 rowGroupAgg，渲染层不再乘 globalMgmtRate/globalProfitRate
         //   ready → 分量出数；待询价 → 「待询价」；行内无集团子目 → 「—」（0.00 会被误读成真的报零）
-        const gMode = (pricingMode === 'group');
+        const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
         const gagg = gMode ? rowGroupAgg(r) : null;
         const gPend = gMode && !gagg.ready && rowGroupPending(r);
         const gDashCell = '<span style="color:var(--tx3);font-size:10px" title="本行尚未套集团基准价：展开行 →「＋ 集团子目（ZS02）」挂载后自动出数">—</span>';
@@ -2195,9 +2197,9 @@ function renderBoq() {
           });
           html += '<tr class="addsub-tr"><td colspan="16">' +
             // F5：集团模式下内部「＋ 挂子目」入口关门（与集团 picker 按钮互斥渲染，内部模式原样）
-            (pricingMode !== 'group' ? '<button class="addsub-btn" onclick="openPicker('+r.id+')">＋ 挂子目（从基准价库选择）</button>' : '') +
+            (!gMode ? '<button class="addsub-btn" onclick="openPicker('+r.id+')">＋ 挂子目（从基准价库选择）</button>' : '') +
             // 集团子目按钮只在 group 模式出现：内部模式一行不少地保持原样（内部 UI 零变化）
-            (pricingMode === 'group' ? ' <button class="addsub-btn grp" onclick="openGroupPicker('+r.id+')">＋ 集团子目（ZS02 基准价）</button>' : '') +
+            (gMode ? ' <button class="addsub-btn grp" onclick="openGroupPicker('+r.id+')">＋ 集团子目（ZS02 基准价）</button>' : '') +
             '</td></tr>';
         }
       });
@@ -2593,8 +2595,8 @@ const EXP_COLS = [
   {key:'aux',  label:'辅材费',     get:r=>parseFloat(r.auxCost)||0,   num:true, wide:10, def:false, preset:{client:false,internal:true, labor:false}},
   // 对甲报价（T5）：管理费/利润取集团口径 rowGroupAgg（基数=人工+机械，费率取 group_pricing_rules），
   // 待询价 / 未套集团价的行给 0 —— 与 rowTotal 的「pending 不计假值」同口径，导出里不出现半成品金额
-  {key:'mgmt', label:'管理费',     get:r=>(pricingMode==='group'?groupExportFee(r,'mgmt'):(rowUnitPrice(r)||0)*(globalMgmtRate/100)), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
-  {key:'profit',label:'利润',      get:r=>(pricingMode==='group'?groupExportFee(r,'profit'):(rowUnitPrice(r)||0)*(globalProfitRate/100)), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
+  {key:'mgmt', label:'管理费',     get:r=>(typeof pricingMode !== 'undefined' && pricingMode==='group'?groupExportFee(r,'mgmt'):(rowUnitPrice(r)||0)*(globalMgmtRate/100)), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
+  {key:'profit',label:'利润',      get:r=>(typeof pricingMode !== 'undefined' && pricingMode==='group'?groupExportFee(r,'profit'):(rowUnitPrice(r)||0)*(globalProfitRate/100)), num:true, wide:8, def:false, preset:{client:false,internal:true, labor:false}},
   {key:'usp',  label:'综合单价',    get:r=>compUnitPrice(r)||0,   num:true, wide:12, def:true,  preset:{client:true, internal:true, labor:false}},
   {key:'total',label:'合价',       get:r=>rowTotal(r)||0,        num:true, wide:14, def:true,  preset:{client:true, internal:true, labor:true}},
   {key:'remark',label:'备注',      get:r=>exportRemark(r),       num:false, wide:22, def:true,  preset:{client:true, internal:true, labor:true}},

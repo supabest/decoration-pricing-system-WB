@@ -905,8 +905,9 @@ ok('G16b 分流先于 getBench→「⚠️子目数据缺失」红底路径（�
 ok('G16c 红底路径本身保留（内部子目仍需缺失告警）', MISS_IDX >= 0 && /\u26a0\ufe0f 子目数据缺失/.test(RB) && GB_IDX >= 0);
 ok('G16d 集团子目行派生单元格交给 groupSubRowHtml（渲染层不内联公式）', /groupSubRowHtml\(/.test(RB));
 ok('G16e 待询价行挂 CSS 类（黄底 + 徽标由样式层承担，不在 JS 里拼颜色）', /grp-pend/.test(RB) && /zone-badge pend|badge pend/.test(RB));
-ok('G16f 「＋ 集团子目」按钮仅 group 模式渲染（内部 UI 零变化）',
-  /pricingMode === 'group'[\s\S]{0,240}openGroupPicker\(/.test(RB), RB.slice(RB.indexOf('addsub-tr'), RB.indexOf('addsub-tr') + 420));
+ok('G16f 「＋ 集团子目」按钮仅 group 模式渲染（内部 UI 零变化；F7 后经 gMode 守卫变量）',
+  /const gMode = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(RB) &&
+  /\(gMode \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB), RB.slice(RB.indexOf('addsub-tr'), RB.indexOf('addsub-tr') + 420));
 ok('G16g 既有内部 picker 按钮仍无条件保留（并排而非替换）', /openPicker\('\+r.id\+'\)/.test(RB) && /挂子目（从基准价库选择）/.test(RB));
 const GSRH = TOOL.indexOf('function groupSubRowHtml');
 const GSRH_END = TOOL.indexOf('function renderBoq()', GSRH);
@@ -1138,9 +1139,10 @@ ok('F5a startAiPricing 首行 groupModeBlock 拦截（AI 套价仅支持对内�
   SAP_SRC.slice(SAP_SRC.indexOf('{') + 1).trim().startsWith("if (groupModeBlock('AI 套价仅支持对内模式，请切回对内成本')) return;"),
   SAP_SRC.slice(SAP_SRC.indexOf('{') + 1, SAP_SRC.indexOf('{') + 130));
 const RB_SRC = grabAnyFn(TOOL, 'renderBoq');
-ok('F5b renderBoq 内部「＋ 挂子目」与集团按钮互斥渲染：group 下隐藏、内部模式原样',
-  /pricingMode !== 'group' \? '<button class="addsub-btn" onclick="openPicker\(/.test(RB_SRC) &&
-  /pricingMode === 'group' \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB_SRC));
+ok('F5b renderBoq 内部「＋ 挂子目」与集团按钮互斥渲染：group 下隐藏、内部模式原样（F7 后复用 gMode 守卫变量）',
+  /const gMode = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(RB_SRC) &&
+  /\(!gMode \? '<button class="addsub-btn" onclick="openPicker\(/.test(RB_SRC) &&
+  /\(gMode \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB_SRC));
 
 /* ── F6 保存假成功收口（源码级：保存链走真实 fetch，不进沙箱） ── */
 const SP_SRC = grabAnyFn(TOOL, 'saveProject');
@@ -1154,6 +1156,18 @@ ok('F6b doAutoSave 失败首次追加 ⚠️ toast（once 标志双分支：HTTP
 ok('F6c _post/_patch 共享封装本体逐字零改动（内部模式零行为铁律）',
   TOOL.includes("const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};") &&
   TOOL.includes("const _patch=async(t,id,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t+'?id=eq.'+id,{method:'PATCH',headers:h,body:JSON.stringify(b)})};"));
+
+/* ── F7 pricingMode 守卫风格统一（源码级：typeof 前置守卫，缺席即视为 internal） ── */
+console.log('\n  · F7：守卫风格统一 —— updateGroupRateHint / renderBoq gMode / EXP_COLS getter 全部带 typeof 前置');
+const UGH_SRC = grabAnyFn(TOOL, 'updateGroupRateHint');
+ok('F7a updateGroupRateHint 正形 typeof 守卫（gOn），pricingMode 仅出现在 gOn 声明内、无裸引用',
+  /const gOn = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(UGH_SRC) &&
+  /if \(!gOn\)/.test(UGH_SRC) && (UGH_SRC.match(/pricingMode/g) || []).length === 2);
+ok('F7b EXP_COLS mgmt/profit getter 带 typeof 前置守卫（且仍走 groupExportFee/internal 二分支）',
+  (TOOL.match(/typeof pricingMode !== 'undefined' && pricingMode==='group'\?groupExportFee\(r,'(mgmt|profit)'\)/g) || []).length === 2);
+ok('F7b2 renderBoq 的 gMode 声明先于两处按钮消费（守卫变量单一来源）',
+  RB_SRC.indexOf('const gMode =') < RB_SRC.indexOf('!gMode ?') && RB_SRC.indexOf('const gMode =') < RB_SRC.indexOf('gMode ?') &&
+  (RB_SRC.match(/pricingMode === 'group'/g) || []).length === 1);
 
 /* ── F1 镜像夹具：一行挂 2 个集团子目、其一 pending → 子目级排除（与后端 group_summary_export.compute 同口径） ── */
 console.log('\n  · F1：一行两子目其一待询价 —— 子目级剔除，兄弟子目照常进 part1（双向钉镜像后端）');

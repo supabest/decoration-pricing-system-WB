@@ -375,3 +375,44 @@ def _amount(ws, label, col_label='金额（元）'):
             if isinstance(v, str) and v.strip() == label:
                 return ws.cell(row=r, column=col).value
     raise AssertionError('行不存在：' + label)
+
+
+# ── F7：_num 固定小数尾零裁剪 + _safe_text 公式注入护栏 ──────────────────────
+
+def test_f7_num_fixed_decimal_no_scientific():
+    from app.services.group_summary_export import _num
+    # 旧 `:g` 对大数切科学计数（1234567 → 1.23457e+06）Excel 公式无法解析；且 6 位有效数字会舍入大金额
+    assert _num(1234567) == '1234567'
+    assert _num(1234567.89) == '1234567.89'
+    assert _num(0.17) == '0.17'          # 既有行为不变：尾零裁剪、不带 .0
+    assert _num(100) == '100'
+    assert _num(230.6085) == '230.6085'
+    assert _num(0) == '0'
+    assert _num(-0.0000001) == '0'       # 负下溢归一，公式里不出现 -0
+
+
+def test_f7_safe_text_escapes_formula_prefixes():
+    st = GroupSummaryExporter._safe_text
+    assert st('=HYPERLINK("evil")') == "'=HYPERLINK(\"evil\")"
+    assert st('+1') == "'+1"
+    assert st('-2+3') == "'-2+3"
+    assert st('@x') == "'@x"
+    assert st('瓷砖地面') == '瓷砖地面'   # 正常文本零改动
+    assert st(None) is None              # 非字符串（None/数值）原值返回
+    assert st(100) == 100
+
+
+def test_f7_exported_workbook_text_cells_escaped():
+    # 工作簿级：name/spec/section_name 写入前过 _safe_text，注入串落地为普通文本而非公式
+    req = build_req()
+    req.items[0].name = '=HYPERLINK("http://evil","点我")'
+    req.items[1].section_name = '@A-注入分部'
+    wb = load_workbook(GroupSummaryExporter(req).generate())
+    hits = [v for row in wb[SHEET1].iter_rows(values_only=True) for v in row
+            if isinstance(v, str) and 'HYPERLINK' in v]
+    assert hits and all(v.startswith("'=") for v in hits), hits
+    hits2 = [v for row in wb[SHEET1].iter_rows(values_only=True) for v in row
+             if isinstance(v, str) and '注入分部' in v]
+    # 数据行已转义；组头行被「【】」包裹后不再以公式前缀开头（本质安全，不强行加 '）
+    assert any(v.startswith("'@") for v in hits2), hits2
+    assert all(v.startswith("'") or v.startswith('【') for v in hits2), hits2
