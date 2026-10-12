@@ -2194,7 +2194,8 @@ function renderBoq() {
               '</tr>';
           });
           html += '<tr class="addsub-tr"><td colspan="16">' +
-            '<button class="addsub-btn" onclick="openPicker('+r.id+')">＋ 挂子目（从基准价库选择）</button>' +
+            // F5：集团模式下内部「＋ 挂子目」入口关门（与集团 picker 按钮互斥渲染，内部模式原样）
+            (pricingMode !== 'group' ? '<button class="addsub-btn" onclick="openPicker('+r.id+')">＋ 挂子目（从基准价库选择）</button>' : '') +
             // 集团子目按钮只在 group 模式出现：内部模式一行不少地保持原样（内部 UI 零变化）
             (pricingMode === 'group' ? ' <button class="addsub-btn grp" onclick="openGroupPicker('+r.id+')">＋ 集团子目（ZS02 基准价）</button>' : '') +
             '</td></tr>';
@@ -4174,6 +4175,7 @@ function showConsistencyWarnings(warnings) {
 }
 
 async function startAiPricing() {
+  if (groupModeBlock('AI 套价仅支持对内模式，请切回对内成本')) return;   // F5：集团引擎只认基准价子目，内部套价引擎在集团口径下不开放
   const key=document.getElementById('aiKey').value.trim();
   if(!key){toast('请先输入 API Key（需与所选模型厂商匹配）');return;}
   const allRows=getAllRows();

@@ -1132,6 +1132,16 @@ ok('F4b 客户端预检：needsArea 在 await fetch 之前 toast 拦截不发请
   /pre\.needsArea/.test(DGE_SRC) && DGE_SRC.indexOf('pre.needsArea') < DGE_SRC.indexOf('await fetch') &&
   /buildGroupSummary\(getAllRows\(\), getGroupSummaryOpts\(\)\)/.test(DGE_SRC));
 
+/* ── F5 集团模式下 AI 套价与内部 picker 关门（源码级：两函数不进沙箱） ── */
+const SAP_SRC = grabAnyFn(TOOL, 'startAiPricing');
+ok('F5a startAiPricing 首行 groupModeBlock 拦截（AI 套价仅支持对内模式）',
+  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1).trim().startsWith("if (groupModeBlock('AI 套价仅支持对内模式，请切回对内成本')) return;"),
+  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1, SAP_SRC.indexOf('{') + 130));
+const RB_SRC = grabAnyFn(TOOL, 'renderBoq');
+ok('F5b renderBoq 内部「＋ 挂子目」与集团按钮互斥渲染：group 下隐藏、内部模式原样',
+  /pricingMode !== 'group' \? '<button class="addsub-btn" onclick="openPicker\(/.test(RB_SRC) &&
+  /pricingMode === 'group' \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB_SRC));
+
 /* ── F1 镜像夹具：一行挂 2 个集团子目、其一 pending → 子目级排除（与后端 group_summary_export.compute 同口径） ── */
 console.log('\n  · F1：一行两子目其一待询价 —— 子目级剔除，兄弟子目照常进 part1（双向钉镜像后端）');
 run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
