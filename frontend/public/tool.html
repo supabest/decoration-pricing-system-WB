@@ -1274,8 +1274,8 @@ function addBoqRow(data={}) {
 }
 function delRow(rid) {
   groups.forEach(g=>g.sections.forEach(s=>{s.rows=s.rows.filter(r=>r.id!==rid);}));
-  groups.forEach(g=>{g.sections=g.sections.filter(s=>s.rows.length>0);});
-  groups=groups.filter(g=>g.sections.length>0);
+  groups.forEach(g=>{g.sections=g.sections.filter(s=>s.rows.length>0 || g.gkind);});   // 补录分部保留空 section（供继续录入）
+  groups=groups.filter(g=>g.sections.length>0 || g.gkind);                              // 补录分部永不剪除
   if(!getAllRows().length) showUpload();
   renderBoq();
 }
@@ -2012,6 +2012,62 @@ function fmt(v,dec=2) { return (v===null||v===undefined)?'—':v.toLocaleString(
 function secTotal(s) { return s.rows.reduce((a,r)=>a+(rowTotal(r)||0),0); }
 function grpTotal(g) { return g.sections.reduce((a,s)=>a+secTotal(s),0); }
 
+// ═══════════ 对甲补录分部（措施/其他项目费手工行，用户裁定：给可见输入区而非仅提示）═══════════
+// 手工行独立于集团引擎：直接录 综合单价×工程量=合价；measure 归集第二部分、other 归集第三部分。
+// 仅 group 模式存在；内部模式 renderBoq 直接跳过 gkind 分部（零变更）。不参与绿安/包干基数（与 D 类同口径）。
+function isManualRow(r) { return !!(r && (r.manual === 'measure' || r.manual === 'other')); }
+function manualRowTotal(r) { return isManualRow(r) ? (parseFloat(r.qty) || 0) * (parseFloat(r.usp) || 0) : 0; }
+function ensureManualGroups() {
+  if (typeof pricingMode === 'undefined' || pricingMode !== 'group') return;
+  if (!groups.length) return;   // 空清单（上传页）不建，待有内容再补
+  const mk = (gkind, name, secName) => ({id: uid++, sheetName: name, open: true, gkind, sections: [{id: uid++, name: secName, open: true, rows: []}]});
+  if (!groups.some(g => g.gkind === 'measure')) groups.push(mk('measure', 'ZS02-D · 措施项目', '措施项目'));
+  if (!groups.some(g => g.gkind === 'other')) groups.push(mk('other', 'ZS02-OTH · 其他项目', '其他项目'));
+}
+function addManualRow(gid) {
+  const g = groups.find(x => x.id === gid); if (!g || !g.gkind) return;
+  if (!g.sections.length) g.sections.push({id: uid++, name: g.sheetName, open: true, rows: []});
+  const r = makeRow({}); r.manual = g.gkind; r.usp = '';
+  g.sections[0].rows.push(r);
+  renderBoq();
+}
+function updManual(rid, fld, val) {
+  const r = findRow(rid); if (!r) return;
+  r[fld] = val;
+  const c = document.getElementById('mrowtot-' + rid); if (c) c.textContent = fmt(manualRowTotal(r));
+  updateSum();
+}
+function renderManualGroupHtml(g) {
+  const rows = (g.sections[0] && g.sections[0].rows) || [];
+  const gtot = rows.reduce((a, r) => a + manualRowTotal(r), 0);
+  let h = '<div class="grp-row" onclick="toggleGroup(' + g.id + ')">' +
+    '<span class="grp-arrow' + (g.open ? '' : ' closed') + '">▾</span>' +
+    '<span class="grp-name">' + esc(g.sheetName) + '</span>' +
+    '<span class="grp-meta">' + rows.length + ' 条</span>' +
+    '<span class="grp-total">' + fmt(gtot) + '</span></div>';
+  if (!g.open) return h;
+  h += '<table class="boq-table manual-table"><thead><tr>' +
+    '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-un c">单位</th>' +
+    '<th class="c-qty r">工程量</th><th class="c-usp r">综合单价</th><th class="c-total r">合价</th>' +
+    '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead><tbody>';
+  if (!rows.length) h += '<tr><td colspan="8" style="padding:10px 12px;color:var(--tx3);font-size:11px">尚无补录行——点下方「＋ 手工补录行」直接填 名称/单位/工程量/综合单价（例：垂直运输　项　1　8000）</td></tr>';
+  rows.forEach((r, i) => {
+    h += '<tr class="pr manual-row" data-rid="' + r.id + '">' +
+      '<td class="rno c">' + (i + 1) + '</td>' +
+      '<td><input class="ri" value="' + esc(r.name) + '" placeholder="项目名称" onchange="updManual(' + r.id + ',\'name\',this.value)"></td>' +
+      '<td class="c"><input class="ri ri-sm ri-c" style="width:100%" value="' + esc(r.unit) + '" placeholder="单位" onchange="updManual(' + r.id + ',\'unit\',this.value)"></td>' +
+      '<td class="r"><input class="qty-i" type="text" inputmode="decimal" value="' + r.qty + '" placeholder="0.00" oninput="updManual(' + r.id + ',\'qty\',this.value)"></td>' +
+      '<td class="r"><input class="qty-i" type="text" inputmode="decimal" value="' + (r.usp || '') + '" placeholder="0.00" oninput="updManual(' + r.id + ',\'usp\',this.value)"></td>' +
+      '<td class="r-total r" id="mrowtot-' + r.id + '">' + fmt(manualRowTotal(r)) + '</td>' +
+      '<td><input class="ri ri-sm" value="' + esc(r.remark) + '" placeholder="备注" onchange="updManual(' + r.id + ',\'remark\',this.value)"></td>' +
+      '<td class="c"><button class="btn btn-del" onclick="delRow(' + r.id + ')">✕</button></td>' +
+      '</tr>';
+  });
+  h += '<tr class="addsub-tr"><td colspan="8"><button class="addsub-btn grp" onclick="addManualRow(' + g.id + ')">＋ 手工补录行</button></td></tr>';
+  h += '</tbody></table>';
+  return h;
+}
+
 // ═══════════ RENDER ═══════════
 // 集团子目行（T5）：与主表 16 列对齐的派生单元格，值全部来自 groupSubCells（本函数不做任何算术）。
 // 绝不进 getBench 路径：内部基准价库里没有 ZS02 编码，走进去就会被打上「⚠️子目数据缺失」红底，
@@ -2075,12 +2131,16 @@ function renderBoq() {
   const main = document.getElementById('boqMain');
   updateInternalCostPanel();
   if (!groups.length) { updateSum(); return; }
+  const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  if (gMode) ensureManualGroups();   // 对甲模式：确保措施/其他补录分部存在（幂等；内部模式不建不渲染）
   recomputeAllAux();
   rebuildRowMap();
   let html = '';
   let globalIdx = 0;
 
   groups.forEach(g => {
+    if (g.gkind && !gMode) return;                                   // 内部模式：补录分部不出现（零变更）
+    if (g.gkind) { html += renderManualGroupHtml(g); return; }        // 集团模式：措施/其他手工分部走独立小表
     const gt = grpTotal(g), totalRows = g.sections.reduce((a,s)=>a+s.rows.length,0);
     html += '<div class="grp-row" onclick="toggleGroup('+g.id+')">' +
       '<span class="grp-arrow'+(g.open?'':' closed')+'">▾</span>' +
@@ -2089,7 +2149,6 @@ function renderBoq() {
       '<span class="grp-total">'+fmt(gt)+'</span></div>';
     if (!g.open) return;
 
-    const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
     html += '<table class="boq-table"><thead><tr>' +
       '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-sp">项目特征</th>' +
       '<th class="c-un c">单位</th><th class="c-qty r">工程量</th>' +
@@ -2892,9 +2951,14 @@ function buildGroupSummary(rows, opts) {
   const manualFees = o.manualFees || {};
   const R = GROUP_RATES;
   const list = Array.isArray(rows) ? rows : [];
-  let part1 = 0, dMeasures = 0, laborMechBase = 0, unpriced = 0;
+  let part1 = 0, dMeasures = 0, laborMechBase = 0, unpriced = 0, manualMeasure = 0, manualOther = 0;
   const secMap = {};
   list.forEach(r => {
+    if (isManualRow(r)) {                                            // 对甲补录手工行：measure→二、other→三，直接计合价（不走引擎、不入绿安/包干基数）
+      const amt = manualRowTotal(r);
+      if (r.manual === 'measure') manualMeasure += amt; else manualOther += amt;
+      return;
+    }
     const subs = rowGroupSubs(r);
     if (!subs.length) return;                                       // 内部行/未套集团价：不参与、不计数
     const q = parseFloat(r.qty) || 0;
@@ -2915,13 +2979,13 @@ function buildGroupSummary(rows, opts) {
     });
   });
   const green = laborMechBase * R.green;
-  const part2 = dMeasures + green;
+  const part2 = dMeasures + manualMeasure + green;
   const baogan = laborMechBase * R.baogan;
   const coordFeeNum = parseFloat(R.coordFee);
   const coordConfigured = (R.coordFee !== null && R.coordFee !== undefined && !isNaN(coordFeeNum));  // null≠0：未配置与 0 元不同义
   const coordAmount = coordConfigured ? (coordFeeNum * area) : 0;
   const manualSum = Object.keys(manualFees).reduce((s, kk) => s + Math.max(0, parseFloat(manualFees[kk]) || 0), 0);   // M-1：手工费逐项钳到 ≥0
-  const part3 = baogan + manualSum + coordAmount;
+  const part3 = baogan + manualSum + coordAmount + manualOther;
   const part4 = (part1 + part2 + part3) * R.tax;
   const total = part1 + part2 + part3 + part4;
   const perSqm = area > 0 ? total / area : null;                     // 无装修面积→不算单方，避免除零
@@ -2931,6 +2995,7 @@ function buildGroupSummary(rows, opts) {
     dMeasures: dMeasures, green: green, baogan: baogan, laborMechBase: laborMechBase,
     coordFee: coordAmount, coordFeeConfigured: coordConfigured,
     manualFees: manualSum, unpriced: unpriced, needsArea: area <= 0,
+    manualMeasure: manualMeasure, manualOther: manualOther,
   };
 }
 
@@ -2956,7 +3021,14 @@ function collectGroupSummaryPayload() {
   const projEl = document.getElementById('projName');
   const areaEl = document.getElementById('fitoutAreaInp');
   const items = [];
+  const manual_measures = [], manual_others = [];
   getAllRows().forEach(r => {
+    if (isManualRow(r)) {                                            // 手工补录行随 payload 下发，后端重算（前端值不被信任）
+      const o = {name: r.name || '', unit: r.unit || '', qty: parseFloat(r.qty) || 0,
+        usp: parseFloat(r.usp) || 0, amount: manualRowTotal(r), remark: r.remark || ''};
+      (r.manual === 'measure' ? manual_measures : manual_others).push(o);
+      return;
+    }
     const q = parseFloat(r.qty) || 0;
     rowGroupSubs(r).forEach(s => {
       const it = getGroupBench(s.bid) || {};
@@ -2984,18 +3056,18 @@ function collectGroupSummaryPayload() {
     rates: { ...GROUP_RATES },   // M-6：浅拷贝，避免下发 GROUP_RATES 活引用被后续懒加载补写费率而漂移
     manual_fees: collectGroupManualFees(),
     items: items,
+    manual_measures: manual_measures, manual_others: manual_others,   // 对甲补录手工行（二/三部分）
   };
 }
 
 // 汇总面板渲染：只在 group 模式显示；内部模式完全隐藏（零影响）。
 // 只写静态子容器 groupSummaryBody 的 innerHTML，面积/手工费输入框保持不被重建（避免失焦）。
-// 补录缺口引导（用户批准的设计）：清单已套价但无 D 类措施费/无其他费手工金额 → 面板提示 + 导出前确认。
-// 两者都是合法数值（可不发生），故只引导不拦截；完全未套价时不提示（套价流程本身未完成）
+// 补录缺口引导：措施/其他费为 0 合法但大概率漏录 → 面板提示 + 导出前确认（不拦截）。
+// 无 started 门槛（用户反馈：措施费空却没提示）——只要处于对甲模式且该部分缺位就提示，引导去对应分部补录。
 function groupGapFlags(s) {
-  const started = s.part1 > 0 || s.dMeasures > 0;
   return {
-    noMeasure: started && s.dMeasures <= 0,
-    noOther: started && s.manualFees <= 0 && (!s.coordFeeConfigured || s.coordFee <= 0),
+    noMeasure: ((s.dMeasures || 0) + (s.manualMeasure || 0)) <= 0,
+    noOther: ((s.manualFees || 0) + (s.manualOther || 0)) <= 0 && (!s.coordFeeConfigured || s.coordFee <= 0),
   };
 }
 // 引导跳转①：侧栏切到集团库「D措施」分类（复用侧栏双库既有交互，零新链路）
@@ -3027,11 +3099,11 @@ function renderGroupSummaryPanel() {
   let html = '<span style="font-weight:700;color:var(--acc)">🧾 对甲报价汇总（T02 预览）</span>';
   html += '<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px">';
   html += '<span>一 · 分部分项工程费 <b style="font-family:var(--mono)">' + money(s.part1) + '</b></span>' + (rowsHtml || '');
-  html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
-  if (gaps.noMeasure) html += '<span style="color:var(--yel);font-weight:600">⚠ 本清单未挂载措施项目（ZS02-D 类，共 11 条，如垂直运输/成品保护）。若合同要求计取措施费，请<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="jumpGroupDiscD()">去挂载</button>从左侧「D措施」分类拖入清单；确认无措施费可忽略本提示</span>';
-  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) + (s.needsArea ? '（暂按 0 计，待装修面积确认）' : '') : '—') + '；暂列金额集团规定不予计取）</span></span>';
-  if (gaps.noOther) html += '<span style="color:var(--yel);font-weight:600">⚠ 其他项目费目前仅含预算包干费。若有赶工/变更/涨幅费用请<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="focusGroupManualFees()">去补录</button>在项目表单填入；确认无则忽略本提示</span>';
-  if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费：参数未配置（GROUP_RATES.coordFee=null），未计入第三部分</span>';
+  html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + (s.manualMeasure ? ' + 手工补录 ' + fmt(s.manualMeasure) : '') + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
+  if (gaps.noMeasure) html += '<span style="color:var(--yel);font-weight:600">⚠ 措施项目费为 0：如合同含措施费（垂直运输/成品保护等），请在清单「ZS02-D · 措施项目」分部点「＋ 手工补录行」直接填价，或<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="jumpGroupDiscD()">去挂载</button>左侧「D措施」集团子目；确认无措施费可忽略</span>';
+  html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + (s.manualOther ? ' + 手工补录行 ' + fmt(s.manualOther) : '') + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) + (s.needsArea ? '（暂按 0 计，待装修面积确认）' : '') : '—') + '；暂列金额集团规定不予计取）</span></span>';
+  if (gaps.noOther) html += '<span style="color:var(--yel);font-weight:600">⚠ 其他项目费仅含预算包干费：赶工/变更/涨幅等可在清单「ZS02-OTH · 其他项目」分部点「＋ 手工补录行」填入，或用下方「其他项目费·手工录入」金额框<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="focusGroupManualFees()">去填写</button>；确认无则忽略</span>';
+  if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费未计入——尚未配置该费率（元/m²），如需计取请在管理端录入配合费费率或联系管理员</span>';
   html += '<span>四 · 税金 <b style="font-family:var(--mono)">' + money(s.part4) + '</b><span style="color:var(--tx3)">（(一+二+三)×' + groupRateLabel(GROUP_RATES.tax) + '）</span></span>';
   html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
   html += '<span>单方造价 <b style="font-family:var(--mono)">' + (s.perSqm === null ? '—（请先填写装修面积）' : (money(s.perSqm) + ' 元/m²')) + '</b></span>';
@@ -3052,9 +3124,9 @@ async function doGroupSummaryExport() {
   const gaps = groupGapFlags(pre);
   if (gaps.noMeasure || gaps.noOther) {
     const miss = [];
-    if (gaps.noMeasure) miss.push('措施项目费（未挂任何 ZS02-D 类子目）');
-    if (gaps.noOther) miss.push('其他项目费（手工费用与配合费均为 0）');
-    if (!confirm('⚠ ' + miss.join('；') + '。\n确认按此报价导出？（需补录请点取消，回汇总面板点「去挂载 / 去补录」）')) return;
+    if (gaps.noMeasure) miss.push('措施项目费为 0（「ZS02-D · 措施项目」分部无补录行且未挂 D 类子目）');
+    if (gaps.noOther) miss.push('其他项目费仅预算包干（「ZS02-OTH · 其他项目」分部无补录行）');
+    if (!confirm('⚠ ' + miss.join('；') + '。\n确认按此报价导出？（需补录请点「取消」，回清单对应分部点「＋ 手工补录行」）')) return;
   }
   try {
     const h = { 'Content-Type': 'application/json' };

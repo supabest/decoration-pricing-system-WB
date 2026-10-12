@@ -166,14 +166,17 @@ class GroupSummaryExporter:
             sec["amount"] += amount
 
         green = base * R.green
-        part2 = d_measures + green
+        # 对甲补录手工行：后端重算 amount=qty×usp（前端值不被信任），measure→二、other→三，不入绿安/包干基数
+        manual_measure_total = sum((ln.qty or 0.0) * (ln.usp or 0.0) for ln in self.req.manual_measures)
+        manual_other_total = sum((ln.qty or 0.0) * (ln.usp or 0.0) for ln in self.req.manual_others)
+        part2 = d_measures + manual_measure_total + green
         baogan = base * R.baogan
         coord_configured = R.coordFee is not None
         coord_amount = (R.coordFee or 0.0) * area if coord_configured else 0.0
         mf = self.req.manual_fees
         manual_total = (max(0.0, mf.overtime_fee) + max(0.0, mf.contract_change_fee)
                         + max(0.0, mf.inflation_fee))
-        part3 = baogan + manual_total + coord_amount
+        part3 = baogan + manual_total + coord_amount + manual_other_total
         part4 = (part1 + part2 + part3) * R.tax
         total = part1 + part2 + part3 + part4
         return {
@@ -181,6 +184,8 @@ class GroupSummaryExporter:
             "part1": part1, "part2": part2, "part3": part3, "part4": part4,
             "total": total, "per_sqm": (total / area if area > 0 else None),
             "labor_mech_base": base, "green": green, "d_measures": d_measures,
+            "manual_measure_total": manual_measure_total, "manual_other_total": manual_other_total,
+            "manual_measure_lines": self.req.manual_measures, "manual_other_lines": self.req.manual_others,
             "baogan": baogan, "coord_amount": coord_amount,
             "coord_configured": coord_configured,
             "manual_total": manual_total,
@@ -200,10 +205,10 @@ class GroupSummaryExporter:
              "remark": f"一 · Σ已套价合价（不含 {DISCIPLINE_MEASURES} 类措施）；"
                        f"管理费 {_pct(R.mgmt)}/利润 {_pct(R.profit)}，基数=人工+机械"},
             {"label": "措施项目", "amount": c["part2"],
-             "remark": f"二 · D类措施 {_money(c['d_measures'])} + 绿安费 {_money(c['green'])}"
+             "remark": f"二 · D类措施 {_money(c['d_measures'])} + 手工补录 {_money(c['manual_measure_total'])} + 绿安费 {_money(c['green'])}"
                        f"（基数 {_money(c['labor_mech_base'])} × {_pct(R.green)}）"},
             {"label": "其他项目", "amount": c["part3"],
-             "remark": f"三 · 预算包干 {_money(c['baogan'])} + 手工费用 {_money(c['manual_total'])}"
+             "remark": f"三 · 预算包干 {_money(c['baogan'])} + 手工费用 {_money(c['manual_total'])} + 手工补录行 {_money(c['manual_other_total'])}"
                        f" + 精装修配合费 {_money(c['coord_amount'])}；暂列金额集团规定不予计取"},
             {"label": "税金", "amount": c["part4"], "remark": f"四 · (一+二+三) × {_pct(R.tax)}"},
             {"label": "总造价", "amount": c["total"], "remark": "五 · 一+二+三+四"},
@@ -375,7 +380,7 @@ class GroupSummaryExporter:
 
         # 二 · 措施项目费
         r2 = put(r, "二", "措施项目费", None,
-                 f"D类措施 {_money(c['d_measures'])} + 绿安费 {_money(c['green'])}", "part")
+                 f"D类措施 {_money(c['d_measures'])} + 手工补录 {_money(c['manual_measure_total'])} + 绿安费 {_money(c['green'])}", "part")
         r += 1
         ch_first = r
         put(r, "（一）", "绿安费", round(c["green"], 4),
@@ -384,6 +389,10 @@ class GroupSummaryExporter:
         put(r, "", "单价措施项目费", round(c["d_measures"], 4),
             f"Σ 已套 ZS02-{DISCIPLINE_MEASURES} 类条目合价", "sub")
         r += 1
+        for ln in c["manual_measure_lines"]:
+            put(r, "", ln.name or "措施补录行", round((ln.qty or 0.0) * (ln.usp or 0.0), 4),
+                f"手工补录：{_num(ln.qty)} × {_num(ln.usp)} 元" + (f"（{ln.remark}）" if ln.remark else ""), "sub")
+            r += 1
         ws.cell(row=r2, column=3, value=f"=SUM({m}{ch_first}:{m}{r - 1})").number_format = NUM_FMT
 
         # 三 · 其他项目费
@@ -403,6 +412,10 @@ class GroupSummaryExporter:
         r += 1
         for name, amount in c["manual_fees"].items():
             put(r, "", name, round(amount, 4), "手工金额（项目表单录入）", "sub")
+            r += 1
+        for ln in c["manual_other_lines"]:
+            put(r, "", ln.name or "其他补录行", round((ln.qty or 0.0) * (ln.usp or 0.0), 4),
+                f"手工补录行：{_num(ln.qty)} × {_num(ln.usp)} 元" + (f"（{ln.remark}）" if ln.remark else ""), "sub")
             r += 1
         ws.cell(row=r3, column=3, value=f"=SUM({m}{o3}:{m}{r - 1})").number_format = NUM_FMT
 

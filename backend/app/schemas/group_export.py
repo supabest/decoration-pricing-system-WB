@@ -133,6 +133,24 @@ class GroupManualFees(BaseModel):
         extra = "ignore"
 
 
+class GroupManualLine(BaseModel):
+    """对甲补录手工行（措施/其他项目费）：直接录 综合单价×工程量=合价，不走 ZS02 引擎分解。
+    amount 由后端用 qty×usp 重算（前端值不被信任），与前端 manualRowTotal 同口径。"""
+    name: str = ""
+    unit: str = ""
+    qty: float = 0.0
+    usp: float = 0.0                    # 手工综合单价
+    remark: str = ""
+
+    @field_validator('qty', 'usp', mode='before')
+    @classmethod
+    def _num_blank_to_zero(cls, v):
+        return _blank_to(v, 0.0)
+
+    class Config:
+        extra = "ignore"   # 前端可能带 amount 等派生键（后端重算，忽略）
+
+
 class GroupSummaryRequest(BaseModel):
     """POST /api/v1/export/group-summary 请求体"""
     project_name: str = "套价表"
@@ -140,6 +158,8 @@ class GroupSummaryRequest(BaseModel):
     rates: GroupRates = Field(default_factory=GroupRates)
     manual_fees: GroupManualFees = Field(default_factory=GroupManualFees)
     items: List[GroupSummaryItem] = []
+    manual_measures: List[GroupManualLine] = []   # 措施项目手工行 → 第二部分
+    manual_others: List[GroupManualLine] = []     # 其他项目手工行 → 第三部分
 
     @field_validator('fitout_area', mode='before')
     @classmethod

@@ -162,6 +162,35 @@ def test_negative_manual_fees_clamped():
     assert abs(c['part3'] - (9.2475 + 5000)) < 0.01
 
 
+def test_manual_measure_and_other_lines():
+    """对甲补录手工行：measure→二、other→三；后端用 qty×usp 重算（前端 amount 不被信任）；不入绿安/包干基数。"""
+    base = GroupSummaryExporter(build_req()).compute()
+    payload = build_req().model_dump()
+    payload['manual_measures'] = [{'name': '垂直运输', 'unit': '项', 'qty': 1, 'usp': 8000, 'amount': 999999}]
+    payload['manual_others'] = [{'name': '赶工费', 'unit': '项', 'qty': 2, 'usp': 500}]
+    req = GroupSummaryRequest.model_validate(payload)
+    c = GroupSummaryExporter(req).compute()
+    assert abs(c['manual_measure_total'] - 8000) < 0.01     # 1×8000，忽略客户端 amount=999999
+    assert abs(c['manual_other_total'] - 1000) < 0.01       # 2×500
+    assert abs(c['part2'] - (base['part2'] + 8000)) < 0.01  # 措施手工行进第二部分
+    assert abs(c['part3'] - (base['part3'] + 1000)) < 0.01  # 其他手工行进第三部分
+    assert abs(c['labor_mech_base'] - base['labor_mech_base']) < 1e-9   # 不改绿安/包干基数
+    assert abs(c['green'] - base['green']) < 1e-9
+    # 勾稽不变：四 = (一+二+三)×tax
+    assert abs(c['part4'] - (c['part1'] + c['part2'] + c['part3']) * 0.09) < 0.01
+
+
+def test_manual_lines_render_in_t02_sheet():
+    """T02 sheet 明细区列出手工补录行（措施/其他）。"""
+    payload = build_req().model_dump()
+    payload['manual_measures'] = [{'name': '成品保护补录', 'unit': 'm2', 'qty': 10, 'usp': 4}]
+    payload['manual_others'] = [{'name': '配合费补录', 'unit': '项', 'qty': 1, 'usp': 3000}]
+    req = GroupSummaryRequest.model_validate(payload)
+    ws2 = load_workbook(GroupSummaryExporter(req).generate())[SHEET2]
+    txt = ' '.join(str(ws2.cell(row=i, column=2).value or '') for i in range(1, ws2.max_row + 1))
+    assert '成品保护补录' in txt and '配合费补录' in txt
+
+
 # ── coordFee：null≠0（服务层不计取 + 备注留痕；端点层拦截导出）─────────────────
 
 def test_coord_fee_none_not_counted_and_remarked():

@@ -128,6 +128,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'groupModeBlock',              // F2 防御收口：混合态拦截逻辑断言（restoreProject 接线另为源码级）
   'groupGapFlags',               // K 段：补录缺口引导（措施/其他费）纯函数真跑
   'jumpGroupDiscD', 'focusGroupManualFees', // K 段：引导跳转真跑（DOM stub 下降级到 shFilter 兜底）
+  // ── K 段：对甲补录分部（措施/其他手工行）──
+  'isManualRow', 'manualRowTotal', 'ensureManualGroups', 'addManualRow', 'updManual', 'renderManualGroupHtml',
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
   // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
@@ -1049,8 +1051,10 @@ run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003");
 run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
 run('document.getElementById("projName").value="天河精装一期"; document.getElementById("fitoutAreaInp").value="100"; document.getElementById("manualFeeOvertimeInp").value="1000"; document.getElementById("manualFeeChangeInp").value=""; document.getElementById("manualFeeInflationInp").value="";');
 const PL = run('collectGroupSummaryPayload();');
-ok('H15 顶层键 = {project_name,fitout_area,rates,manual_fees,items}',
-  JSON.stringify(Object.keys(PL).sort()) === JSON.stringify(['fitout_area', 'items', 'manual_fees', 'project_name', 'rates']), JSON.stringify(Object.keys(PL)));
+ok('H15 顶层键 = {project_name,fitout_area,rates,manual_fees,items,manual_measures,manual_others}（对甲补录分部新增两键）',
+  JSON.stringify(Object.keys(PL).sort()) === JSON.stringify(['fitout_area', 'items', 'manual_fees', 'manual_measures', 'manual_others', 'project_name', 'rates']), JSON.stringify(Object.keys(PL)));
+ok('H15a2 无手工行时 manual_measures/manual_others 为空数组（不是 undefined）',
+  JSON.stringify(PL.manual_measures) === '[]' && JSON.stringify(PL.manual_others) === '[]', JSON.stringify([PL.manual_measures, PL.manual_others]));
 ok('H15b project_name 取项目表单，fitout_area 取新输入并数值化 100',
   PL.project_name === '天河精装一期' && PL.fitout_area === 100, JSON.stringify([PL.project_name, PL.fitout_area]));
 ok('H15c rates = GROUP_RATES 原样六键',
@@ -1293,32 +1297,43 @@ ok('J7 每组各自表头（初始设计）：thead 内联于每组开表串，�
   (RB_SRC.match(/<\/tbody><\/table>/g) || []).length === 1 &&
   !/boqTheadHtml/.test(TOOL) && !/boqHeadDone/.test(TOOL) && !/showHead/.test(TOOL) && !/grp-tr/.test(TOOL));
 
-console.log('\n── K. 补录缺口引导：未挂 D 类措施/无其他费金额 → 面板提示 + 导出前确认闸（用户批准设计；纯呈现层不碰公式） ──');
-ok('K1 groupGapFlags 未 started（part1=0 且 dMeasures=0）→ 双提示全关（完全未套价不打扰）',
-  run('(function(){var g=groupGapFlags({part1:0,dMeasures:0,manualFees:0,coordFeeConfigured:true,coordFee:100});return g.noMeasure===false&&g.noOther===false;})()') === true);
-ok('K2 已套价但无 D 类 → noMeasure=true；挂了 D 类 → false',
-  run('groupGapFlags({part1:1000,dMeasures:0,manualFees:0,coordFeeConfigured:true,coordFee:100}).noMeasure') === true &&
-  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:100}).noMeasure') === false);
-ok('K3 noOther 判据：手工费=0 且（coordFee 未配置 或 =0）才为 true；任一有金额即 false',
-  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:false,coordFee:0}).noOther') === true &&
-  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:0}).noOther') === true &&
-  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:50}).noOther') === false &&
-  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:800,coordFeeConfigured:true,coordFee:0}).noOther') === false);
-ok('K4 只有 D 类无分部分项也算 started（dMeasures>0 即可提示其他费缺口）',
-  run('groupGapFlags({part1:0,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:0}).noOther') === true);
-ok('K5 面板接线：renderGroupSummaryPanel 消费 groupGapFlags，两提示条各带跳转按钮（去挂载/去补录）',
-  /const gaps = groupGapFlags\(s\);/.test(PANEL_SRC) &&
-  /if \(gaps\.noMeasure\)/.test(PANEL_SRC) && /jumpGroupDiscD\(\)/.test(PANEL_SRC) && /去挂载/.test(PANEL_SRC) &&
-  /if \(gaps\.noOther\)/.test(PANEL_SRC) && /focusGroupManualFees\(\)/.test(PANEL_SRC) && /去补录/.test(PANEL_SRC));
-ok('K6 导出确认闸：doGroupSummaryExport 在 await fetch 之前用 groupGapFlags(pre) + confirm 二选一，拒绝即 return',
-  /const gaps = groupGapFlags\(pre\);/.test(DGE_SRC) && /if \(!confirm\(/.test(DGE_SRC) &&
-  DGE_SRC.indexOf('groupGapFlags(pre)') < DGE_SRC.indexOf('await fetch'));
-ok('K7 跳转①真跑：jumpGroupDiscD 优先 setSheet 切 D tab（无 tab 先 rebuildLibTabs 重建再找），兼得改 shFilter 兜底后 libList 滚顶',
-  run('(function(){shFilter="all";jumpGroupDiscD();return shFilter;})()') === 'D' &&
-  /rebuildLibTabs\(\)/.test(grabAnyFn(TOOL, 'jumpGroupDiscD')));
-ok('K8 跳转②接线：focusGroupManualFees 聚焦赶工费输入框（与 tool.html 真实 id 同源）',
-  /manualFeeOvertimeInp/.test(grabAnyFn(TOOL, 'focusGroupManualFees')) &&
-  TOOL.includes("id=\"manualFeeOvertimeInp\"") && /onclick="focusGroupManualFees\(\)"/.test(PANEL_SRC));
+console.log('\n── K. 对甲补录分部：措施/其他项目手工行输入区 + 无门槛提示 + coordFee 人话（用户裁定：给可见入口而非仅提示）──');
+ok('K1 无 started 门槛（用户反馈核心：措施费空却没提示）——完全空汇总也出 noMeasure',
+  run('groupGapFlags({part1:0,dMeasures:0,manualMeasure:0,manualFees:0,manualOther:0,coordFeeConfigured:true,coordFee:100}).noMeasure') === true);
+ok('K2 措施有值即不提示：D 类引擎值 或 手工补录行 任一>0 → noMeasure=false',
+  run('groupGapFlags({part1:0,dMeasures:50,manualMeasure:0,manualFees:0,manualOther:0,coordFeeConfigured:true,coordFee:0}).noMeasure') === false &&
+  run('groupGapFlags({part1:0,dMeasures:0,manualMeasure:8000,manualFees:0,manualOther:0,coordFeeConfigured:true,coordFee:0}).noMeasure') === false);
+ok('K3 noOther 判据含手工行：手工费+manualOther=0 且（coordFee 未配置或=0）才 true；任一有金额即 false',
+  run('groupGapFlags({dMeasures:50,manualMeasure:0,manualFees:0,manualOther:0,coordFeeConfigured:false,coordFee:0}).noOther') === true &&
+  run('groupGapFlags({dMeasures:50,manualMeasure:0,manualFees:0,manualOther:3000,coordFeeConfigured:true,coordFee:0}).noOther') === false &&
+  run('groupGapFlags({dMeasures:50,manualMeasure:0,manualFees:800,manualOther:0,coordFeeConfigured:true,coordFee:0}).noOther') === false);
+ok('K4 coordFee 文案改人话：不再泄露 GROUP_RATES.coordFee=null，改为「管理端/配合费费率」指引',
+  !/GROUP_RATES\.coordFee=null/.test(PANEL_SRC) && /管理端/.test(PANEL_SRC) && /配合费费率/.test(PANEL_SRC) &&
+  !/GROUP_RATES\.coordFee=null/.test(TOOL));
+ok('K5 面板接线：part2/part3 展示手工分量 + 两提示条指名对应分部（ZS02-D·措施项目 / ZS02-OTH·其他项目）',
+  /s\.manualMeasure/.test(PANEL_SRC) && /s\.manualOther/.test(PANEL_SRC) &&
+  /ZS02-D · 措施项目/.test(PANEL_SRC) && /ZS02-OTH · 其他项目/.test(PANEL_SRC));
+ok('K6 导出确认闸文案指向分部：miss 提及两个分部名与「手工补录行」',
+  /ZS02-D · 措施项目/.test(DGE_SRC) && /ZS02-OTH · 其他项目/.test(DGE_SRC) && /手工补录行/.test(DGE_SRC));
+ok('K7 ensureManualGroups：集团模式补建两个 gkind 分部且幂等；内部模式不建',
+  run('(function(){pricingMode="group";groups=[{id:1,sheetName:"E",open:true,sections:[{id:2,name:"s",open:true,rows:[]}]}];uid=500;ensureManualGroups();ensureManualGroups();return groups.filter(function(g){return g.gkind;}).length;})()') === 2 &&
+  run('(function(){pricingMode="internal";groups=[{id:1,sheetName:"E",open:true,sections:[{id:2,name:"s",open:true,rows:[]}]}];ensureManualGroups();return groups.filter(function(g){return g.gkind;}).length;})()') === 0);
+ok('K7b 空清单（groups=[]）不建补录分部（上传页不打扰）',
+  run('(function(){pricingMode="group";groups=[];ensureManualGroups();return groups.length;})()') === 0);
+ok('K8 buildGroupSummary 纳入手工行：measure→part2、other→part3，laborMechBase/green 不变，勾稽成立',
+  run('(function(){pricingMode="group";rebuildGroupBenchMap([G009,D003]);groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=300;var re=makeRow({name:"瓷砖地面",unit:"m2",qty:"5"});groups[0].sections[0].rows.push(re);rebuildRowMap();addGroupSub(300,"ZS02-A-009");findRow(300).subs[0].mats=[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"砂浆",price:300,unit:"m3",consumption:0.0147}];var base=buildGroupSummary(getAllRows(),{fitoutArea:100,manualFees:{}});var mm=makeRow({name:"垂直运输",unit:"项",qty:"1"});mm.manual="measure";mm.usp="8000";var mo=makeRow({name:"赶工",unit:"项",qty:"2"});mo.manual="other";mo.usp="500";groups[0].sections[0].rows.push(mm,mo);rebuildRowMap();var c=buildGroupSummary(getAllRows(),{fitoutArea:100,manualFees:{}});return Math.abs(c.part2-base.part2-8000)<0.01 && Math.abs(c.part3-base.part3-1000)<0.01 && Math.abs(c.laborMechBase-base.laborMechBase)<1e-9 && Math.abs(c.part4-(c.part1+c.part2+c.part3)*GROUP_RATES.tax)<0.01;})()') === true);
+ok('K9 renderManualGroupHtml：手工小表含综合单价列+手工补录行按钮，每手工行一个 tr',
+  (function(){ var mh = run('(function(){pricingMode="group";uid=400;var mg={id:9,gkind:"measure",sheetName:"ZS02-D · 措施项目",open:true,sections:[{id:8,name:"措施项目",open:true,rows:[]}]};var r=makeRow({name:"垂直运输",unit:"项",qty:"1"});r.manual="measure";r.usp="8000";mg.sections[0].rows.push(r);return renderManualGroupHtml(mg);})()');
+    return /manual-table/.test(mh) && /综合单价/.test(mh) && /＋ 手工补录行/.test(mh) && /class="pr manual-row"/.test(mh) && /8000/.test(mh); })());
+ok('K10 内部模式零变更：renderBoq 首行跳过 gkind 分部且仅 gMode 才 ensureManualGroups（源码钩）',
+  /if \(g\.gkind && !gMode\) return;/.test(RB_SRC) && /if \(gMode\) ensureManualGroups\(\);/.test(RB_SRC) &&
+  /if \(g\.gkind\) \{ html \+= renderManualGroupHtml\(g\); return; \}/.test(RB_SRC));
+ok('K11 手工行助手：isManualRow 双值判定；manualRowTotal=qty×usp；addManualRow 落对应分部且携 manual 标记',
+  run('isManualRow({manual:"measure"})') === true && run('isManualRow({})') === false &&
+  run('manualRowTotal({manual:"other",qty:"2",usp:"500"})') === 1000 &&
+  run('(function(){pricingMode="group";groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]},{id:9,gkind:"measure",sheetName:"M",open:true,sections:[{id:8,name:"m",open:true,rows:[]}]}];uid=600;addManualRow(9);var g=groups.find(function(x){return x.id===9;});return g.sections[0].rows.length===1 && g.sections[0].rows[0].manual==="measure";})()') === true);
+ok('K12 payload 同源：手工行进 manual_measures/manual_others（snake_case qty/usp 供后端重算），不入 items',
+  run('(function(){pricingMode="group";rebuildGroupBenchMap([G009,D003]);groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=300;var re=makeRow({name:"瓷砖地面",unit:"m2",qty:"5"});groups[0].sections[0].rows.push(re);rebuildRowMap();addGroupSub(300,"ZS02-A-009");findRow(300).subs[0].mats=[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469}];var mm=makeRow({name:"垂直运输",unit:"项",qty:"1"});mm.manual="measure";mm.usp="8000";var mo=makeRow({name:"赶工",unit:"项",qty:"2"});mo.manual="other";mo.usp="500";groups[0].sections[0].rows.push(mm,mo);rebuildRowMap();var p=collectGroupSummaryPayload();return p.items.length===1 && p.manual_measures.length===1 && p.manual_others.length===1 && p.manual_measures[0].name==="垂直运输" && p.manual_measures[0].qty===1 && p.manual_measures[0].usp===8000 && p.manual_others[0].qty===2 && p.manual_others[0].usp===500;})()') === true);
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
