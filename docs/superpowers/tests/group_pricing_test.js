@@ -1257,6 +1257,17 @@ ok('I17 数据落地后侧栏补渲染（loadGroupDataOnce 成功点含 renderLi
 ok('I18 往返切换不炸（侧栏双库链路在两种模式下均无异常）',
   run('(function(){ try { setPricingMode("group"); setPricingMode("internal"); setPricingMode("group"); setPricingMode("internal"); return true; } catch(e) { return "throw: " + e.message; } })()') === true);
 
+/* ═══════════ J. 套价表行级机械费列（用户反馈：对甲界面缺 E 机械可核对位） ═══════════ */
+console.log('\n── J. 行级机械费：集团模式借「主材损耗率」列位展示 E 机械（与子目行同款安排） ──');
+ok('J1 表头借列位分流（消费单一来源 gMode）：集团出「机械费」、内部仍「主材损耗率」（零行为变更）',
+  /gMode \? '<th class="c-waste r"[^>]*>机械费<\/th>' : '<th class="c-waste r">主材损耗率<\/th>'/.test(TOOL) && !/gModeH/.test(TOOL));
+ok('J2 行级机械格取数 gCell(gagg.mech)（ready 出数 / 待询价·未套价三态与其余分量列一致）',
+  /gCell\(gagg\.mech\)/.test(TOOL) && !/gagg\.ready \? gNaCell : \(gPend \? gPendCell : gDashCell\)\)<\/td>' : wrCell/.test(TOOL));
+ok('J3 rowGroupAgg 本就聚合 mech（数据层零改动，只接渲染）', /out\.mech \+= p\.mech \* k;/.test(TOOL));
+run('findRow(230).subs.push({bid:"ZS02-X-999",bsh:"ZS02-A",gtype:"group",coef:2.0,conv:1.0,workType:"",lab:10,aux:0,mech:5,mats:[]});');
+near('J4 mech 聚合数值：Σ mech×coef×conv = 5×2 = 10（行内其余集团子目 mech=0）', run('rowGroupAgg(findRow(230)).mech'), 10, 1e-9);
+run('findRow(230).subs.pop();');
+
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
 process.exit(fail ? 1 : 0);

@@ -2085,10 +2085,13 @@ function renderBoq() {
       '<span class="grp-total">'+fmt(gt)+'</span></div>';
     if (!g.open) return;
 
+    const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
     html += '<table class="boq-table"><thead><tr>' +
       '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-sp">项目特征</th>' +
       '<th class="c-un c">单位</th><th class="c-qty r">工程量</th>' +
-      '<th class="c-pr r">人工单价</th><th class="c-mp r">主材单价</th><th class="c-waste r">主材损耗率</th>' +
+      '<th class="c-pr r">人工单价</th><th class="c-mp r">主材单价</th>' +
+      // 集团口径损耗率恒不适用，该列位借给 E 机械（与子目行同款列位安排，T5 既定设计语言）
+      (gMode ? '<th class="c-waste r" title="E 机械：集团 h = A人工 + 主材 + D辅材 + E机械 + F管理 + G利润">机械费</th>' : '<th class="c-waste r">主材损耗率</th>') +
       '<th class="c-mat r">主材费</th><th class="c-aux r">辅材费</th>' +
       '<th class="c-mgmt r">管理费</th><th class="c-profit r">利润</th><th class="c-usp r">综合单价</th><th class="c-total r">定额合价</th>' +
       '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead><tbody>';
@@ -2108,7 +2111,6 @@ function renderBoq() {
         const up=rowUnitPrice(r), tot=rowTotal(r);
         // 对甲报价（T5）：行级派生单元格唯一的集团取数入口 rowGroupAgg，渲染层不再乘 globalMgmtRate/globalProfitRate
         //   ready → 分量出数；待询价 → 「待询价」；行内无集团子目 → 「—」（0.00 会被误读成真的报零）
-        const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
         const gagg = gMode ? rowGroupAgg(r) : null;
         const gPend = gMode && !gagg.ready && rowGroupPending(r);
         const gDashCell = '<span style="color:var(--tx3);font-size:10px" title="本行尚未套集团基准价：展开行 →「＋ 集团子目（ZS02）」挂载后自动出数">—</span>';
@@ -2176,7 +2178,7 @@ function renderBoq() {
               ? (matPend?'<span style="color:var(--yel);font-size:10px;font-weight:600" title="本行有多个子目，请指定该主材价属于哪个子目">待分配</span>':fmt(effRowMatPrice(r)))
               : '<input class="cof-i" style="width:60px;font-size:10px" type="text" inputmode="decimal" value="'+(parseFloat(r.matPrice)||0)+'" placeholder="0" onchange="updRowMat('+r.id+',this.value)" title="主材单价（尚无可挂子目时为行级录入；套价后自动分配到子目）">')) +
           '</td>' +
-          (gMode ? '<td class="r">'+(gagg.ready ? gNaCell : (gPend ? gPendCell : gDashCell))+'</td>' : wrCell) +
+          (gMode ? '<td class="r" title="E 机械：Σ 集团子目机械费×系数（单价级，已含在综合单价内）">' + (gagg.ready && gagg.mech ? '<span class="grp-cell-lbl">E机械</span>' : '') + gCell(gagg.mech) + '</td>' : wrCell) +
           '<td class="r">'+(gMode
             ? gCell(gagg.mat)
             : fmt(matCost)+(matStaged
