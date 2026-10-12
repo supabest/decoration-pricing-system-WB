@@ -137,7 +137,7 @@ class GroupSummaryExporter:
         R = self.req.rates
         area = max(0.0, self.req.fitout_area or 0.0)   # 负面积钳 0，避免配合费倒扣
         part1 = d_measures = base = 0.0
-        unpriced = 0   # 计数单位为子目级（前端 buildGroupSummary 为行级）；端点前置 400 拦截，导出路径两侧不会同时可见
+        unpriced = 0   # 计数单位为子目级（F1 后前端 buildGroupSummary 同为子目级，两端镜像）；端点前置 400 拦截
         sections: Dict[str, Dict[str, Any]] = {}
         groups: Dict[str, List[Dict[str, Any]]] = {}
 

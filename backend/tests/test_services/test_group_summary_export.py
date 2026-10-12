@@ -237,6 +237,26 @@ def test_service_excludes_pending_items_from_all_parts():
     assert c['unpriced'] == 1
 
 
+def test_f1_pending_excluded_at_item_level_mirror():
+    """F1 双向钉：同一「清单行挂 2 个集团子目、其一 pending」的数值夹具（前端平铺后 = 同编码两
+    items，qty 同行为 5），断言与 group_pricing_test.js F1a/F1c/F1e 镜像：后端 part1 只含
+    已定价子目合价 230.6085×5，unpriced 按子目级计数。"""
+    pending_pair = {**_A009, 'mats': [
+        {'name': '瓷砖', 'price': None, 'unit': 'm2', 'consumption': 1.4469},
+        {'name': '1:3干硬性水泥砂浆', 'price': None, 'unit': 'm3', 'consumption': 0.0147}]}
+    req = GroupSummaryRequest.model_validate({
+        'project_name': '镜像夹具', 'fitout_area': 100,
+        'rates': {'mgmt': 0.17, 'profit': 0.12, 'green': 0.13,
+                  'baogan': 0.03, 'tax': 0.09, 'coordFee': None},
+        'items': [dict(_A009), pending_pair],   # 同行两子目：一价一 pending（前端 F1 夹具同数值）
+    })
+    c = GroupSummaryExporter(req).compute()
+    assert abs(c['part1'] - 1153.0425) < 2e-6          # = 前端 SUMF1.part1 镜像常数
+    assert c['unpriced'] == 1                           # 子目级计数（一条 pending = 1）
+    assert abs(c['labor_mech_base'] - 308.25) < 2e-6    # 基数也只认已定价子目的人工
+    assert abs(sum(s['amount'] for s in c['sections']) - c['part1']) < 2e-6
+
+
 def test_endpoint_returns_xlsx_stream():
     req = build_req()
     req.rates.coordFee = 50

@@ -2816,7 +2816,9 @@ function collectExportData() {
 //                                            （coordFee×装修面积；coordFee===null 未配置→不计取，仅面板标注）；暂列金额=0（集团规定不予计取）
 //     · part4（四·税金）            = (part1+part2+part3) × GROUP_RATES.tax；五·总计 = 一+二+三+四；单方 = 五 ÷ fitoutArea
 //   · 所有费率一律从 GROUP_RATES 取，不硬编码 0.17/0.12/0.13/0.03/0.09
-//   · 待询价行（有集团子目但未套齐价）不进任何部分，计入 unpriced；无集团子目的内部行一律忽略
+//   · 待询价按子目级排除（F1，与后端 group_summary_export.compute 同口径）：pending 子目只计 unpriced 并跳过，
+//     同行已定价兄弟子目照常进各部分；行级 agg.ready 只服务 BOQ 黄底展示，不参与汇总口径。
+//     无集团子目的内部行一律忽略
 function buildGroupSummary(rows, opts) {
   const o = opts || {};
   const area = Math.max(0, parseFloat(o.fitoutArea) || 0);   // M-1：手输负面积钳到 ≥0，避免 coordAmount 负值倒扣 part3
@@ -2828,14 +2830,13 @@ function buildGroupSummary(rows, opts) {
   list.forEach(r => {
     const subs = rowGroupSubs(r);
     if (!subs.length) return;                                       // 内部行/未套集团价：不参与、不计数
-    const agg = rowGroupAgg(r);
-    if (!agg.ready) { if (rowGroupPending(r)) unpriced++; return; } // 待询价：排除出各部分，仅计数
     const q = parseFloat(r.qty) || 0;
     subs.forEach(s => {
+      const p = groupSubPrice(s);
+      if (p.pending) { unpriced++; return; }  // F1 子目级排除：一条 pending 只剔该子目，兄弟子目照常累进
       const it = getGroupBench(s.bid) || {};
       const disc = it.discipline || String(s.bsh || '').replace(/^ZS02-/, '');
       const secName = it.section_name || '';
-      const p = groupSubPrice(s);
       const k = (parseFloat(s.coef) || 1.0) * (parseFloat(s.conv) || 1.0);
       const amount = p.h * k * q;
       if (disc === 'D') { dMeasures += amount; return; }            // D 类合价只进 part2，不进 part1/绿安·包干基数
@@ -2940,7 +2941,7 @@ function renderGroupSummaryPanel() {
   html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
   html += '<span>单方造价 <b style="font-family:var(--mono)">' + (s.perSqm === null ? '—（请先填写装修面积）' : (money(s.perSqm) + ' 元/m²')) + '</b></span>';
   if (s.needsArea) html += '<span style="color:var(--yel);font-weight:600">⚠️ 请在顶部填写「装修面积」以计算单方造价</span>';
-  if (s.unpriced > 0) html += '<span style="color:var(--yel);font-weight:600">⚠️ ' + s.unpriced + ' 行待询价（甲供未定价），未计入汇总</span>';
+  if (s.unpriced > 0) html += '<span style="color:var(--yel);font-weight:600">⚠️ ' + s.unpriced + ' 条子目待询价（甲供未定价），未计入汇总</span>';
   html += '</div>';
   body.innerHTML = html;
 }

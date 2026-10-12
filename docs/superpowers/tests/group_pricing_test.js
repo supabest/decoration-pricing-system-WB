@@ -1097,6 +1097,25 @@ ok('M2 面板预警：coordFeeConfigured 且 needsArea → 配合费行补注「
   /if \(!s\.coordFeeConfigured\)/.test(PANEL_SRC));
 run('pricingMode = "group";');
 
+/* ── F1 镜像夹具：一行挂 2 个集团子目、其一 pending → 子目级排除（与后端 group_summary_export.compute 同口径） ── */
+console.log('\n  · F1：一行两子目其一待询价 —— 子目级剔除，兄弟子目照常进 part1（双向钉镜像后端）');
+run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+     uid = 210;
+     var rmix = makeRow({name:'混合待询价行', unit:'m2', qty:'5'});
+     groups[0].sections[0].rows = [rmix]; rebuildRowMap();`);
+run('addGroupSub(210,"ZS02-A-009");');   // 子目①：A-009 未补价（G009 mats 价格均 null → pending）
+run('findRow(210).subs.push({bid:"ZS02-A-009",bsh:"ZS02-A",gtype:"group",coef:1.0,conv:1.0,workType:"泥水",lab:61.65,aux:1.98,mech:0,mats:[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}]});');  // 子目②：同编码已定价（addGroupSub 查重拒绝同 bid+bsh，手工入同一 subs 通道）
+run('var SUMF1 = buildGroupSummary(getAllRows(), OPTS);');
+near('F1a part1 只含已定价子目合价 230.6085×5（pending 兄弟子目不拖累整行）', run('SUMF1.part1'), 1153.0425, 0.01);
+ok('F1b unpriced 按子目级计数：1 条 pending 子目 = 1', run('SUMF1.unpriced') === 1, 'unpriced=' + run('SUMF1.unpriced'));
+near('F1c 绿安/包干基数同样子目级：laborMechBase = 61.65×5', run('SUMF1.laborMechBase'), 308.25, 1e-6);
+const SECSF1 = JSON.parse(run('JSON.stringify(SUMF1.sections)'));
+ok('F1d sections 只归集已定价子目（Σsections = part1，A·楼地面）',
+  SECSF1.length === 1 && Math.abs(SECSF1[0].amount - run('SUMF1.part1')) < 0.01 && /楼地面/.test(SECSF1[0].name), JSON.stringify(SECSF1));
+near('F1e 跨端镜像常数：part1 与后端同夹具值 1153.0425 严格一致（tol 2e-6）', run('SUMF1.part1'), 230.6085 * 5, 2e-6);
+ok('F1f 行级展示语义不变：混合行仍 ready:false + rowGroupPending:true（BOQ 黄底照旧）',
+  run('rowGroupAgg(findRow(210)).ready') === false && run('rowGroupPending(findRow(210))') === true);
+
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
 process.exit(fail ? 1 : 0);
