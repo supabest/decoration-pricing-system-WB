@@ -2989,6 +2989,31 @@ function collectGroupSummaryPayload() {
 
 // 汇总面板渲染：只在 group 模式显示；内部模式完全隐藏（零影响）。
 // 只写静态子容器 groupSummaryBody 的 innerHTML，面积/手工费输入框保持不被重建（避免失焦）。
+// 补录缺口引导（用户批准的设计）：清单已套价但无 D 类措施费/无其他费手工金额 → 面板提示 + 导出前确认。
+// 两者都是合法数值（可不发生），故只引导不拦截；完全未套价时不提示（套价流程本身未完成）
+function groupGapFlags(s) {
+  const started = s.part1 > 0 || s.dMeasures > 0;
+  return {
+    noMeasure: started && s.dMeasures <= 0,
+    noOther: started && s.manualFees <= 0 && (!s.coordFeeConfigured || s.coordFee <= 0),
+  };
+}
+// 引导跳转①：侧栏切到集团库「D措施」分类（复用侧栏双库既有交互，零新链路）
+function jumpGroupDiscD() {
+  let tabEl = (document.querySelector ? document.querySelector('#ftabs [data-sh="D"]') : null);
+  if (!tabEl && typeof rebuildLibTabs === 'function') { rebuildLibTabs(); tabEl = document.querySelector('#ftabs [data-sh="D"]'); }
+  if (tabEl) setSheet('D', tabEl);
+  else { shFilter = 'D'; if (document.getElementById('libList')) renderLib(); } // 极旧标签结构兜底：直改筛选器重绘
+  const list = document.getElementById('libList');
+  if (list && list.scrollIntoView) list.scrollIntoView({block:'start'});
+}
+// 引导跳转②：滚动聚焦顶部「赶工措施费」输入框（三个手工费框首位，用户顺势往下填）
+function focusGroupManualFees() {
+  const el = document.getElementById('manualFeeOvertimeInp');
+  if (!el) return;
+  if (el.scrollIntoView) el.scrollIntoView({block:'center'});
+  if (el.focus) el.focus();
+}
 function renderGroupSummaryPanel() {
   const panel = document.getElementById('groupSummaryPanel');
   if (!panel) return;
@@ -2996,13 +3021,16 @@ function renderGroupSummaryPanel() {
   panel.classList.remove('hidden');
   const body = document.getElementById('groupSummaryBody') || panel;
   const s = buildGroupSummary(getAllRows(), getGroupSummaryOpts());
+  const gaps = groupGapFlags(s);
   const money = v => '¥ ' + fmt(v || 0);
   const rowsHtml = s.sections.map(x => '<div style="padding-left:14px;color:var(--tx3)">· ' + esc(x.name) + ' <b style="font-family:var(--mono);color:var(--tx2)">' + fmt(x.amount) + '</b></div>').join('');
   let html = '<span style="font-weight:700;color:var(--acc)">🧾 对甲报价汇总（T02 预览）</span>';
   html += '<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px">';
   html += '<span>一 · 分部分项工程费 <b style="font-family:var(--mono)">' + money(s.part1) + '</b></span>' + (rowsHtml || '');
   html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
+  if (gaps.noMeasure) html += '<span style="color:var(--yel);font-weight:600">⚠ 本清单未挂载措施项目（ZS02-D 类，共 11 条，如垂直运输/成品保护）。若合同要求计取措施费，请<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="jumpGroupDiscD()">去挂载</button>从左侧「D措施」分类拖入清单；确认无措施费可忽略本提示</span>';
   html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) + (s.needsArea ? '（暂按 0 计，待装修面积确认）' : '') : '—') + '；暂列金额集团规定不予计取）</span></span>';
+  if (gaps.noOther) html += '<span style="color:var(--yel);font-weight:600">⚠ 其他项目费目前仅含预算包干费。若有赶工/变更/涨幅费用请<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="focusGroupManualFees()">去补录</button>在项目表单填入；确认无则忽略本提示</span>';
   if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费：参数未配置（GROUP_RATES.coordFee=null），未计入第三部分</span>';
   html += '<span>四 · 税金 <b style="font-family:var(--mono)">' + money(s.part4) + '</b><span style="color:var(--tx3)">（(一+二+三)×' + groupRateLabel(GROUP_RATES.tax) + '）</span></span>';
   html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
@@ -3020,6 +3048,14 @@ async function doGroupSummaryExport() {
   // F4 客户端预检：与后端 fitout_area_required 闸门同源提示，面积≤0 直接拦截不发请求
   const pre = buildGroupSummary(getAllRows(), getGroupSummaryOpts());
   if (pre.needsArea) { toast('请先填写装修面积（单方造价分母）'); const fa = document.getElementById('fitoutAreaInp'); if (fa) fa.focus(); return; }
+  // 补录确认闸（非拦截）：措施/其他费为 0 合法但大概率漏录，导出前让用户二选一确认
+  const gaps = groupGapFlags(pre);
+  if (gaps.noMeasure || gaps.noOther) {
+    const miss = [];
+    if (gaps.noMeasure) miss.push('措施项目费（未挂任何 ZS02-D 类子目）');
+    if (gaps.noOther) miss.push('其他项目费（手工费用与配合费均为 0）');
+    if (!confirm('⚠ ' + miss.join('；') + '。\n确认按此报价导出？（需补录请点取消，回汇总面板点「去挂载 / 去补录」）')) return;
+  }
   try {
     const h = { 'Content-Type': 'application/json' };
     const t = localStorage.getItem('sb-access-token'); if (t) h['Authorization'] = 'Bearer ' + t;

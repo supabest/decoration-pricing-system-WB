@@ -126,6 +126,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   // ── T6：T02 四部分汇总预览计算 + 导出 payload 收集 ──
   'buildGroupSummary', 'collectGroupSummaryPayload', 'collectGroupManualFees', 'getGroupSummaryOpts',
   'groupModeBlock',              // F2 防御收口：混合态拦截逻辑断言（restoreProject 接线另为源码级）
+  'groupGapFlags',               // K 段：补录缺口引导（措施/其他费）纯函数真跑
+  'jumpGroupDiscD', 'focusGroupManualFees', // K 段：引导跳转真跑（DOM stub 下降级到 shFilter 兜底）
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
   // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
@@ -1290,6 +1292,33 @@ ok('J7 每组各自表头（初始设计）：thead 内联于每组开表串，�
   /<table class="boq-table"><thead><tr>/.test(RB_SRC) &&
   (RB_SRC.match(/<\/tbody><\/table>/g) || []).length === 1 &&
   !/boqTheadHtml/.test(TOOL) && !/boqHeadDone/.test(TOOL) && !/showHead/.test(TOOL) && !/grp-tr/.test(TOOL));
+
+console.log('\n── K. 补录缺口引导：未挂 D 类措施/无其他费金额 → 面板提示 + 导出前确认闸（用户批准设计；纯呈现层不碰公式） ──');
+ok('K1 groupGapFlags 未 started（part1=0 且 dMeasures=0）→ 双提示全关（完全未套价不打扰）',
+  run('(function(){var g=groupGapFlags({part1:0,dMeasures:0,manualFees:0,coordFeeConfigured:true,coordFee:100});return g.noMeasure===false&&g.noOther===false;})()') === true);
+ok('K2 已套价但无 D 类 → noMeasure=true；挂了 D 类 → false',
+  run('groupGapFlags({part1:1000,dMeasures:0,manualFees:0,coordFeeConfigured:true,coordFee:100}).noMeasure') === true &&
+  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:100}).noMeasure') === false);
+ok('K3 noOther 判据：手工费=0 且（coordFee 未配置 或 =0）才为 true；任一有金额即 false',
+  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:false,coordFee:0}).noOther') === true &&
+  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:0}).noOther') === true &&
+  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:50}).noOther') === false &&
+  run('groupGapFlags({part1:1000,dMeasures:50,manualFees:800,coordFeeConfigured:true,coordFee:0}).noOther') === false);
+ok('K4 只有 D 类无分部分项也算 started（dMeasures>0 即可提示其他费缺口）',
+  run('groupGapFlags({part1:0,dMeasures:50,manualFees:0,coordFeeConfigured:true,coordFee:0}).noOther') === true);
+ok('K5 面板接线：renderGroupSummaryPanel 消费 groupGapFlags，两提示条各带跳转按钮（去挂载/去补录）',
+  /const gaps = groupGapFlags\(s\);/.test(PANEL_SRC) &&
+  /if \(gaps\.noMeasure\)/.test(PANEL_SRC) && /jumpGroupDiscD\(\)/.test(PANEL_SRC) && /去挂载/.test(PANEL_SRC) &&
+  /if \(gaps\.noOther\)/.test(PANEL_SRC) && /focusGroupManualFees\(\)/.test(PANEL_SRC) && /去补录/.test(PANEL_SRC));
+ok('K6 导出确认闸：doGroupSummaryExport 在 await fetch 之前用 groupGapFlags(pre) + confirm 二选一，拒绝即 return',
+  /const gaps = groupGapFlags\(pre\);/.test(DGE_SRC) && /if \(!confirm\(/.test(DGE_SRC) &&
+  DGE_SRC.indexOf('groupGapFlags(pre)') < DGE_SRC.indexOf('await fetch'));
+ok('K7 跳转①真跑：jumpGroupDiscD 优先 setSheet 切 D tab（无 tab 先 rebuildLibTabs 重建再找），兼得改 shFilter 兜底后 libList 滚顶',
+  run('(function(){shFilter="all";jumpGroupDiscD();return shFilter;})()') === 'D' &&
+  /rebuildLibTabs\(\)/.test(grabAnyFn(TOOL, 'jumpGroupDiscD')));
+ok('K8 跳转②接线：focusGroupManualFees 聚焦赶工费输入框（与 tool.html 真实 id 同源）',
+  /manualFeeOvertimeInp/.test(grabAnyFn(TOOL, 'focusGroupManualFees')) &&
+  TOOL.includes("id=\"manualFeeOvertimeInp\"") && /onclick="focusGroupManualFees\(\)"/.test(PANEL_SRC));
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
