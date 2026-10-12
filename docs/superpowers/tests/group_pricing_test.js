@@ -1257,16 +1257,33 @@ ok('I17 数据落地后侧栏补渲染（loadGroupDataOnce 成功点含 renderLi
 ok('I18 往返切换不炸（侧栏双库链路在两种模式下均无异常）',
   run('(function(){ try { setPricingMode("group"); setPricingMode("internal"); setPricingMode("group"); setPricingMode("internal"); return true; } catch(e) { return "throw: " + e.message; } })()') === true);
 
-/* ═══════════ J. 套价表行级机械费列（用户反馈：对甲界面缺 E 机械可核对位） ═══════════ */
-console.log('\n── J. 行级机械费：集团模式借「主材损耗率」列位展示 E 机械（与子目行同款安排） ──');
-ok('J1 表头借列位分流（消费单一来源 gMode）：集团出「机械费」、内部仍「主材损耗率」（零行为变更）',
-  /gMode \? '<th class="c-waste r"[^>]*>机械费<\/th>' : '<th class="c-waste r">主材损耗率<\/th>'/.test(TOOL) && !/gModeH/.test(TOOL));
-ok('J2 行级机械格取数 gCell(gagg.mech)（ready 出数 / 待询价·未套价三态与其余分量列一致）',
-  /gCell\(gagg\.mech\)/.test(TOOL) && !/gagg\.ready \? gNaCell : \(gPend \? gPendCell : gDashCell\)\)<\/td>' : wrCell/.test(TOOL));
+/* ═══════════ J. 套价表独立机械费列（用户裁定：机械费次要，放辅材费后；损耗率列集团模式整列撤下） ═══════════ */
+console.log('\n── J. 机械费独立成列：集团模式 撤损耗率列 + 辅材费后加机械费列（列数恒 16，colspan 链零改动） ──');
+ok('J1 表头换列：集团撤 waste 列、mech 列夹在辅材费与管理费之间（含 .c-mech 列宽定义）',
+  /\(gMode \? '' : '<th class="c-waste r">主材损耗率<\/th>'\)/.test(TOOL) && !/gModeH/.test(TOOL) &&
+  TOOL.indexOf('<th class="c-aux r">辅材费') < TOOL.indexOf('<th class="c-mech r"') &&
+  TOOL.indexOf('<th class="c-mech r"') < TOOL.indexOf('<th class="c-mgmt r">管理费') &&
+  /\.c-mech\{width:64px\}/.test(TOOL));
+ok('J2 行级：waste 位集团不输出（wrCell 仅内部），辅材格后接 mech td 取 gCell(gagg.mech) 三态一致',
+  /\(gMode \? '' : wrCell\)/.test(TOOL) && /gCell\(gagg\.mech\)/.test(TOOL) &&
+  TOOL.indexOf('gagg.aux') < TOOL.indexOf('gCell(gagg.mech)'));
 ok('J3 rowGroupAgg 本就聚合 mech（数据层零改动，只接渲染）', /out\.mech \+= p\.mech \* k;/.test(TOOL));
 run('findRow(230).subs.push({bid:"ZS02-X-999",bsh:"ZS02-A",gtype:"group",coef:2.0,conv:1.0,workType:"",lab:10,aux:0,mech:5,mats:[]});');
 near('J4 mech 聚合数值：Σ mech×coef×conv = 5×2 = 10（行内其余集团子目 mech=0）', run('rowGroupAgg(findRow(230)).mech'), 10, 1e-9);
 run('findRow(230).subs.pop();');
+run('setPricingMode("group"); addGroupSub(230, "ZS02-A-009");');
+const GHG = run('groupSubRowHtml(findRow(230), findRow(230).subs[findRow(230).subs.length-1])');
+ok('J5a 集团模式子目行：借位形态撤下、E机械列排在 D辅材之后（td 仍恒 16，与表头对齐）',
+  (GHG.match(/<td/g) || []).length === 16 && !/本列位展示 E 机械/.test(GHG) &&
+  GHG.indexOf('D 辅材') >= 0 && GHG.indexOf('E 机械（表行 mech_cost') > GHG.indexOf('D 辅材'),
+  (GHG.match(/<td/g) || []).length + ' 个 td');
+run('setPricingMode("internal");');
+const GHI = run('groupSubRowHtml(findRow(230), findRow(230).subs[findRow(230).subs.length-1])');
+ok('J5b 内部模式子目行保留 T5 借位形态零改动（损耗率列位展示 E 机械，无独立 mech 列，td 仍 16）',
+  (GHI.match(/<td/g) || []).length === 16 && /本列位展示 E 机械/.test(GHI) && !/E 机械（表行 mech_cost/.test(GHI));
+run('findRow(230).subs = [];');
+ok('J6 列数不变式护栏：全表无 colspan="17"／无动态 colspan 分流痕迹（换列而非加列）',
+  !/colspan="17"/.test(TOOL) && /colspan="16"/.test(TOOL) && !/colspan="\+'\(gMode/.test(TOOL));
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');

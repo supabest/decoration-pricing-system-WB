@@ -136,7 +136,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px
   text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid var(--border);white-space:nowrap;background:var(--bg3)}
 .boq-table th.r,.boq-table td.r{text-align:right;white-space:nowrap}.boq-table th.c,.boq-table td.c{text-align:center;white-space:nowrap}
 .c-no{width:40px}.c-nm{width:340px}.c-sp{width:280px}.c-mp{width:72px}
-.c-un{width:52px}.c-qty{width:110px}.c-pr{width:84px}.c-total{width:90px}.c-re{width:120px}.c-ac{width:48px}.c-mat{width:74px}.c-waste{width:54px}.c-aux{width:68px}.c-mgmt{width:54px}.c-profit{width:54px}.c-usp{width:84px}
+.c-un{width:52px}.c-qty{width:110px}.c-pr{width:84px}.c-total{width:90px}.c-re{width:120px}.c-ac{width:48px}.c-mat{width:74px}.c-waste{width:54px}.c-aux{width:68px}.c-mech{width:64px}.c-mgmt{width:54px}.c-profit{width:54px}.c-usp{width:84px}
 .pr{border-bottom:1px solid var(--border);transition:background .08s;background:var(--bg2)}
 .pr:hover{background:var(--bg4)}.pr.drop-hi td{background:rgba(29,111,165,.08)!important}
 .pr td{padding:8px 10px;vertical-align:middle}
@@ -2026,6 +2026,9 @@ function groupSubRowHtml(r, sub) {
   const pend = '<span class="grp-pend-txt" title="甲供主材未定价：填齐本条子目的主材价后才计入行价">待询价</span>';
   const idArg = '\'' + esc(c.code) + '\',\'' + esc(c.bsh) + '\'';
   const dash = '<span style="color:var(--tx3);font-size:10px">—</span>';
+  // 列位安排随模式分流（用户裁定）：集团模式损耗率列整列撤下、E 机械独立成列置于辅材费后；
+  // 内部模式保留 T5 借位形态（损耗率列位展示 E 机械），两种形态列数恒等 16，colspan 链零改动
+  const gGrp = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
   const matLines = c.mats.length
     ? c.mats.map(m => '<div style="display:flex;align-items:center;gap:3px;line-height:1.6">'
         + '<span style="flex:1;min-width:0;font-size:10px;color:var(--tx2)" title="' + esc(m.name) + '（消耗量 ' + m.consumption + (m.unit || '') + '）">' + esc(m.name) + '×' + m.consumption + '</span>'
@@ -2056,9 +2059,10 @@ function groupSubRowHtml(r, sub) {
     '<td class="r">' + fmt(subQty, 3) + '</td>' +
     '<td class="r" title="A 人工（表行 lab_price，已含子目系数×换算前的单位值）">' + fmt(c.lab) + '</td>' +
     '<td title="集团口径主材按消耗量计价：逐条单价×消耗量；黄底输入框 = 甲供未定价，需人工询价">' + matLines + '</td>' +
-    '<td class="r" title="集团口径不乘主材损耗率；本列位展示 E 机械">' + (c.mech ? '<span class="grp-cell-lbl">E机械</span>' : '') + fmt(c.mech) + '</td>' +
+    (gGrp ? '' : '<td class="r" title="集团口径不乘主材损耗率；本列位展示 E 机械">' + (c.mech ? '<span class="grp-cell-lbl">E机械</span>' : '') + fmt(c.mech) + '</td>') +
     '<td class="r" title="Σ 主材单价×消耗量（不乘损耗率/含量系数）">' + (c.pending ? pend : fmt(c.mat)) + '</td>' +
     '<td class="r" title="D 辅材">' + fmt(c.aux) + '</td>' +
+    (gGrp ? '<td class="r" title="E 机械（表行 mech_cost，已含在综合单价内）">' + fmt(c.mech) + '</td>' : '') +
     '<td class="r" title="管理费 = (A人工+E机械)×' + groupRateLabel(GROUP_RATES.mgmt) + '">' + fmt(c.mgmt) + '</td>' +
     '<td class="r" title="利润 = (A人工+E机械)×' + groupRateLabel(GROUP_RATES.profit) + '">' + fmt(c.profit) + '</td>' +
     '<td class="r">' + (c.pending ? pend : fmt(c.h)) + '</td>' +
@@ -2090,9 +2094,10 @@ function renderBoq() {
       '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-sp">项目特征</th>' +
       '<th class="c-un c">单位</th><th class="c-qty r">工程量</th>' +
       '<th class="c-pr r">人工单价</th><th class="c-mp r">主材单价</th>' +
-      // 集团口径损耗率恒不适用，该列位借给 E 机械（与子目行同款列位安排，T5 既定设计语言）
-      (gMode ? '<th class="c-waste r" title="E 机械：集团 h = A人工 + 主材 + D辅材 + E机械 + F管理 + G利润">机械费</th>' : '<th class="c-waste r">主材损耗率</th>') +
+      // 集团口径损耗率恒不适用 → 整列撤下（非借位）；E 机械独立成列置于辅材费后（列数恒 16，colspan 链零改动）
+      (gMode ? '' : '<th class="c-waste r">主材损耗率</th>') +
       '<th class="c-mat r">主材费</th><th class="c-aux r">辅材费</th>' +
+      (gMode ? '<th class="c-mech r" title="E 机械：集团 h = A人工 + 主材 + D辅材 + E机械 + F管理 + G利润">机械费</th>' : '') +
       '<th class="c-mgmt r">管理费</th><th class="c-profit r">利润</th><th class="c-usp r">综合单价</th><th class="c-total r">定额合价</th>' +
       '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead><tbody>';
 
@@ -2178,13 +2183,14 @@ function renderBoq() {
               ? (matPend?'<span style="color:var(--yel);font-size:10px;font-weight:600" title="本行有多个子目，请指定该主材价属于哪个子目">待分配</span>':fmt(effRowMatPrice(r)))
               : '<input class="cof-i" style="width:60px;font-size:10px" type="text" inputmode="decimal" value="'+(parseFloat(r.matPrice)||0)+'" placeholder="0" onchange="updRowMat('+r.id+',this.value)" title="主材单价（尚无可挂子目时为行级录入；套价后自动分配到子目）">')) +
           '</td>' +
-          (gMode ? '<td class="r" title="E 机械：Σ 集团子目机械费×系数（单价级，已含在综合单价内）">' + (gagg.ready && gagg.mech ? '<span class="grp-cell-lbl">E机械</span>' : '') + gCell(gagg.mech) + '</td>' : wrCell) +
+          (gMode ? '' : wrCell) +
           '<td class="r">'+(gMode
             ? gCell(gagg.mat)
             : fmt(matCost)+(matStaged
             ? ' <span class="conf-mid" title="本行已录入主材价，但尚未套价，这笔价暂时不计入主材费。请先点「✨ AI 一键套价」，套价后系统会自动把价格分配到子目（唯一子目自动分配，多个子目需手工指定）">⚠️ 待套价</span>'
             : ''))+'</td>' +
           '<td class="r"><span style="color:var(--tx2);font-variant-numeric:tabular-nums">'+(gMode?gCell(gagg.aux):fmt(r.auxCost))+'</span></td>' +
+          (gMode ? '<td class="r" title="E 机械：Σ 集团子目机械费×系数（单价级，已含在综合单价内）">' + (gagg.ready && gagg.mech ? '<span class="grp-cell-lbl">E机械</span>' : '') + gCell(gagg.mech) + '</td>' : '') +
           '<td class="r">'+(gMode?gCell(gagg.mgmt):fmt((up||0)*(globalMgmtRate/100)))+'</td>' +
           '<td class="r">'+(gMode?gCell(gagg.profit):fmt((up||0)*(globalProfitRate/100)))+'</td>' +
           '<td class="r-total r">'+(gMode?gCell(compUnitPrice(r)):fmt(compUnitPrice(r)))+'</td>' +
