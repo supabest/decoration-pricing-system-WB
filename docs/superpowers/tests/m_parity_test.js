@@ -176,6 +176,28 @@ same('品类识别（文件名+内容）', run(A, DC(`'石材报价单.xlsx',['S
 same('品类识别（无关键词）', run(A, DC(`'报价.xlsx',['Sheet1'],' abc '`)), run(B, DC(`'报价.xlsx',['Sheet1'],' abc '`)));
 same('表头打分（主材/综合/人工）', run(A, `JSON.stringify([qHeaderScore('主材单价'),qHeaderScore('综合单价'),qHeaderScore('人工费'),qHeaderScore('工程量')])`), run(B, `JSON.stringify([qHeaderScore('主材单价'),qHeaderScore('综合单价'),qHeaderScore('人工费'),qHeaderScore('工程量')])`));
 
+/* ──【5】F3 gtype 护栏对偶：集团子目不被 matPrice 写入（纯集团行 + 混合行，两个入口）── */
+console.log('\n【5】F3 gtype 护栏：集团子目不被 matPrice 写入（两端对偶）');
+const GUARD_CODE = `(function(){
+  groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[
+    Object.assign(makeRow({name:'集团行', unit:'m2', qty:'1'}), {id:910, matPrice:0, matName:'', subs:[{bid:'ZS02-A-009',bsh:'ZS02-A',gtype:'group',coef:1,conv:1,lab:61.65,aux:0,mech:0,matName:'',matPrice:0,wasteRate:0,mats:[{name:'瓷砖',price:null,consumption:1.4469}]}]}),
+    Object.assign(makeRow({name:'混合行', unit:'m2', qty:'1'}), {id:911, matPrice:0, matName:'瓷砖', subs:[{bid:'NS-015',bsh:'泥水班组',coef:1,conv:1,matName:'瓷砖',matPrice:0,wasteRate:5},{bid:'ZS02-D-003',bsh:'ZS02-D',gtype:'group',coef:1,conv:1,lab:1.51,aux:0,mech:0,matPrice:0,wasteRate:0,mats:[]}]})
+  ]}]}];
+  rebuildRowMap();
+  var st1 = routeRowMat(findRow(910), 100, '瓷砖', 'over');   // 纯集团行：连 over 模式也不落点
+  var st2 = routeRowMat(findRow(911), 100, '瓷砖', 'over');   // 混合行（内部+集团）：整行不落点
+  findRow(910).matPrice = 88; syncRowMat(910);                // 行级暂存价分配入口
+  findRow(911).matPrice = 66; syncRowMat(911);
+  return JSON.stringify({st1:st1, st2:st2, g910:findRow(910).subs.map(s=>s.matPrice), g911:findRow(911).subs.map(s=>s.matPrice)});
+})()`;
+const gA = run(A, GUARD_CODE), gB = run(B, GUARD_CODE);
+same('routeRowMat/syncRowMat gtype 护栏两端行为一致', gA, gB);
+const GJ = JSON.parse(gA);
+function okD(name, cond, detail) { if (cond) { pass++; console.log('  ✓ ' + name); } else { fail++; console.log('  ✗ ' + name + ' → ' + detail); } }
+okD('护栏：两行均返回 kept（不落点、原值不动）', GJ.st1 === 'kept' && GJ.st2 === 'kept', gA);
+okD('护栏：集团子目 matPrice 未被写入（纯集团行/混合行均为 0）',
+  GJ.g910.length === 1 && GJ.g910[0] === 0 && GJ.g911.length === 2 && GJ.g911[0] === 0 && GJ.g911[1] === 0, gA);
+
 console.log('\n────────────────────────────');
 console.log('两端一致 ' + pass + ' / ' + (pass + fail) + (fail ? '  ❌ 差异 ' + fail : '  ✅ 无差异（电脑端零改动，仅读取）'));
 process.exit(fail ? 1 : 0);

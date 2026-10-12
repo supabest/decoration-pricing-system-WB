@@ -608,6 +608,10 @@ function routeRowMat(r, price, cat, mode) {
     if (cat && !(r.matName || '').trim()) r.matName = cat;
     return 'staged';
   }
+  // F3 gtype 隔离护栏（镜像 tool.html 同名护栏）：行内只要有任一条集团子目，整行不落点、原值不动。
+  // 集团口径主材价只认 mats[].price（null=甲供待询价），行级报价写进子目 matPrice 会静默无效，
+  // 又被内部 rowMatCost 读到 → 与内部口径双计。
+  if (subs.some(s => s && s.gtype === 'group')) return 'kept';
   if (cat && MAT_CAT_KEYWORDS[cat]) {
     const cands = subs.map(s => ({s: s, sc: subCategoryScore(s, cat)})).filter(x => x.sc > 0);
     if (cands.length) {
@@ -630,6 +634,9 @@ function routeRowMat(r, price, cat, mode) {
 }
 function syncRowMat(rid, catArg) {
   const r = findRow(rid); if (!r) return;
+  // F3 gtype 隔离护栏（镜像 tool.html 同名护栏）：行内存在集团子目 → 整行跳过主材分配，
+  // 行级暂存价不往子目 matPrice 分配（集团主材价只认 mats[].price）。
+  if ((r.subs||[]).some(s => s && s.gtype === 'group')) return;
   const rowPrice = parseFloat(r.matPrice) || 0;
   if (!rowPrice || !(r.subs || []).length) return;
   routeRowMat(r, rowPrice, catArg || (r.matName || '').trim(), 'fill');
