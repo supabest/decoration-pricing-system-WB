@@ -167,6 +167,16 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 - 迁移：`data/migrations/group_benchmark_migration.sql` + `data/migrations/projects_fitout_fees_migration.sql`（后者补 `projects.fitout_area/overtime_fee/contract_change_fee/inflation_fee` 四列——**缺列会使草稿自动保存静默失败**，须在 Dashboard 执行）
 - 源表已知异常：A-069/070 的 Excel H 公式漏算续行主材、B-100~106 手填费率隐含 15/10——引擎一律以 T01 公式（17/12）重算为准，`raw_composite` 仅留档供集团对账
 
+**上线顺序（P1 发布硬依赖，严格按序）**：
+
+1. `data/migrations/group_benchmark_migration.sql`（集团两表）
+2. `data/migrations/projects_fitout_fees_migration.sql`（projects 四列）
+3. `python scripts/import_group_benchmark.py --dry-run`（审计 0 未登记异常才可继续）
+4. `python scripts/import_group_benchmark.py --write`（导入 296 条基准价 + 费率种子）
+5. 前端发布（docs/tool.html / frontend 同步）
+
+注：**前端先于迁移 1/2 发布**会使内部模式草稿静默失效（PostgREST 未知列 400：`fitout_area` 等四列与集团两表不存在），不是集团模式用户也不会报错——只有控制台里的失败请求。
+
 ### 对内成本测算（与对外报价严格分离，不进入任何导出）
 
 ```

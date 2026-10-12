@@ -4439,6 +4439,7 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape'){closePicker();clos
 
 // ═══════════ 云端自动保存（草稿，is_draft=true）═══════
 let _autoSaveTimer = null;
+let _autoSaveWarned = false;   // F6：首次失败弹一次 ⚠️ toast，避免每 30s 重复噪音；成功后复位
 
 // 数据变化后调用：停止操作 3 秒后自动上传工作区（含未套价项）
 function scheduleAutoSave() {
@@ -4495,9 +4496,11 @@ async function doAutoSave() {
       : await fetch(SUPABASE_URL + '/rest/v1/projects', {
           method: 'POST', headers: { ...h, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload),
         });
-    if (resp.ok) console.log('✅ 云端自动保存成功（草稿 ' + payload.row_count + ' 条）');
-    else { const et = await resp.text().catch(() => ''); console.warn('⚠️ 自动保存失败 HTTP ' + resp.status + ': ' + String(et).substring(0, 200)); }
-  } catch(e) { console.warn('⚠️ 自动保存异常', e); }
+    if (resp.ok) { console.log('✅ 云端自动保存成功（草稿 ' + payload.row_count + ' 条）'); _autoSaveWarned = false; }
+    else { const et = await resp.text().catch(() => ''); console.warn('⚠️ 自动保存失败 HTTP ' + resp.status + ': ' + String(et).substring(0, 200));
+      if (!_autoSaveWarned) { _autoSaveWarned = true; toast('⚠️ 自动保存失败（HTTP ' + resp.status + '），数据仍在本页，请及时手动保存'); } }
+  } catch(e) { console.warn('⚠️ 自动保存异常', e);
+    if (!_autoSaveWarned) { _autoSaveWarned = true; toast('⚠️ 自动保存异常，数据仍在本页，请及时手动保存'); } }
 }
 
 // 页面加载完成后检测是否有云端草稿，提示恢复
@@ -4563,12 +4566,17 @@ async function saveProject() {
     } catch(e) { return []; }
   })();
   const dup = exist?.find(p => p.name === projName);
+  // F6 保存假成功收口：_post/_patch 不返回 response 且本体不得改（共享封装铁律），
+  // 仅此两处调用点改同型直接 fetch（URL/method/Prefer 与封装逐字一致）并校验状态码。
+  const h = _h(); h['Prefer'] = 'return=minimal';
+  let resp;
   if (dup) {
     if (!confirm('已存在同名方案「'+projName+'」，是否覆盖？')) return;
-    await _patch('projects', dup.id, payload);
+    resp = await fetch(SUPABASE_URL + '/rest/v1/projects?id=eq.' + dup.id, { method: 'PATCH', headers: h, body: JSON.stringify(payload) });
   } else {
-    await _post('projects', payload);
+    resp = await fetch(SUPABASE_URL + '/rest/v1/projects', { method: 'POST', headers: h, body: JSON.stringify(payload) });
   }
+  if (!resp.ok) { toast('✗ 保存失败（HTTP ' + resp.status + '），方案未持久化'); return; }
   deleteDraft();   // 正式保存后清除云端草稿，避免统计重复
   toast('✓ 方案已保存：' + projName);
 }

@@ -1142,6 +1142,19 @@ ok('F5b renderBoq 内部「＋ 挂子目」与集团按钮互斥渲染：group �
   /pricingMode !== 'group' \? '<button class="addsub-btn" onclick="openPicker\(/.test(RB_SRC) &&
   /pricingMode === 'group' \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB_SRC));
 
+/* ── F6 保存假成功收口（源码级：保存链走真实 fetch，不进沙箱） ── */
+const SP_SRC = grabAnyFn(TOOL, 'saveProject');
+ok('F6a saveProject 不再吞掉失败：同型直接 fetch + 非 2xx 提示「✗ 保存失败（HTTP xxx）」并返回，不走 _post/_patch',
+  !/_post\(|_patch\(/.test(SP_SRC) && /if \(!resp\.ok\)/.test(SP_SRC) &&
+  /✗ 保存失败（HTTP /.test(SP_SRC) && /'Prefer'\] = 'return=minimal'/.test(SP_SRC), SP_SRC.slice(0, 120));
+const ADS_SRC = grabAnyFn(TOOL, 'doAutoSave');
+ok('F6b doAutoSave 失败首次追加 ⚠️ toast（once 标志双分支：HTTP 失败 + 异常），成功复位',
+  /_autoSaveWarned/.test(ADS_SRC) && (ADS_SRC.match(/if \(!_autoSaveWarned\)/g) || []).length === 2 &&
+  /_autoSaveWarned = false/.test(ADS_SRC) && /⚠️ 自动保存失败（HTTP /.test(ADS_SRC));
+ok('F6c _post/_patch 共享封装本体逐字零改动（内部模式零行为铁律）',
+  TOOL.includes("const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};") &&
+  TOOL.includes("const _patch=async(t,id,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t+'?id=eq.'+id,{method:'PATCH',headers:h,body:JSON.stringify(b)})};"));
+
 /* ── F1 镜像夹具：一行挂 2 个集团子目、其一 pending → 子目级排除（与后端 group_summary_export.compute 同口径） ── */
 console.log('\n  · F1：一行两子目其一待询价 —— 子目级剔除，兄弟子目照常进 part1（双向钉镜像后端）');
 run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
