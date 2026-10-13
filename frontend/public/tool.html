@@ -2013,7 +2013,7 @@ function grpTotal(g) { return g.sections.reduce((a,s)=>a+secTotal(s),0); }
 // 措施分部（gkind='measure'）：标准 BOQ 管线渲染（16 列人材机/管理/利润），两 section 脚手架工程/成品保护费；
 //   行内挂 ZS02-D 集团子目→引擎按集团公式算价，disc='D' 既有路由自然进第二部分（零新算路）。
 // 其他分部（gkind='other'）：简表预置 T02 六项标准行（+赶工共 7 项），三态：locked=集团不计取、auto=引擎自算只读、input=手工金额；
-//   另保留「＋ 手工补录行」作库外临时项兑底。仅 group 模式存在；内部模式 renderBoq 直接跳过 gkind 分部（零变更）。
+//   另保留「＋ 手工补录行」作库外临时项兜底。仅 group 模式存在；内部模式 renderBoq 直接跳过 gkind 分部（零变更）。
 //   不参与绿安/包干基数（与 D 类同口径）。
 const OTH_STD_ROWS = [
   {key:'provisional_sum',      name:'暂列金额',           basis:'——',                        mode:'locked'},  // 集团规定不予计取
@@ -2134,7 +2134,7 @@ function renderManualGroupHtml(g) {
       '<td class="c"><button class="btn btn-del" onclick="delRow(' + r.id + ')">✕</button></td>' +
       '</tr>';
   });
-  h += '<tr class="addsub-tr"><td colspan="8"><button class="addsub-btn grp" onclick="addManualRow(' + g.id + ')">＋ 手工补录行（库外临时项兑底）</button></td></tr>';
+  h += '<tr class="addsub-tr"><td colspan="8"><button class="addsub-btn grp" onclick="addManualRow(' + g.id + ')">＋ 手工补录行（库外临时项兜底）</button></td></tr>';
   h += '</tbody></table>';
   return h;
 }
