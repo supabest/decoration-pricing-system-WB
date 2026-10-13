@@ -524,7 +524,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 <div class="modal-ov hidden" id="pickerMod">
   <div class="modal" style="width:560px;max-height:78vh">
     <div class="modal-hdr"><span class="modal-ttl">挂子目 — 选择基准价子目</span><button class="modal-x" onclick="closePicker()">×</button></div>
-    <div class="modal-srch"><input id="pkSrch" type="text" placeholder="搜索子目名称、编号…" oninput="_deb('pk',renderPicker,200)"></div>
+    <div class="modal-srch"><input id="pkSrch" type="text" placeholder="搜索子目名称、编号…（输入完整编号回车直接挂入）" oninput="_deb('pk',renderPicker,200)" onkeydown="pkSrchKey(event)"></div>
     <div class="modal-list" id="pkList" style="max-height:calc(78vh - 110px)"></div>
   </div>
 </div>
@@ -532,7 +532,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
 <div class="modal-ov hidden" id="groupPickerMod">
   <div class="modal" style="width:760px;max-height:80vh">
     <div class="modal-hdr"><span class="modal-ttl">挂载集团基准价子目 — ZS02（对甲报价）</span><button class="modal-x" onclick="closeGroupPicker()">×</button></div>
-    <div class="modal-srch"><input id="gpSrch" type="text" placeholder="搜索名称 / 特征 / 编码…" oninput="_deb('gp',renderGroupPicker,200)"></div>
+    <div class="modal-srch"><input id="gpSrch" type="text" placeholder="搜索名称 / 特征 / 编码…（输入完整编号回车直接挂入）" oninput="_deb('gp',renderGroupPicker,200)" onkeydown="gpSrchKey(event)"></div>
     <div class="modal-list" id="gpList" style="max-height:calc(80vh - 118px)"></div>
   </div>
 </div>
@@ -4229,9 +4229,18 @@ function openPicker(rid) {
   renderPicker(); setTimeout(()=>document.getElementById('pkSrch').focus(),50);
 }
 function closePicker() { document.getElementById('pickerMod').classList.add('hidden'); pickerRowId=null; }
+// 搜索过滤（编号/名称/班组 includes 匹配，与旧 renderPicker 行为逐字等价）。
+// 抽成函数是因为「回车快挂」要与列表展示同一口径，不能两处各写一份筛选条件。
+function pkFilterItems(q) {
+  const kw = String(q === null || q === undefined ? '' : q).trim().toLowerCase();
+  const src = Array.isArray(ALL) ? ALL : [];
+  if (!kw) return src.slice();
+  return src.filter(i => String(i.name || '').toLowerCase().includes(kw) ||
+    String(i.id || '').toLowerCase().includes(kw) || String(i.trade || '').toLowerCase().includes(kw));
+}
 function renderPicker() {
   const q=document.getElementById('pkSrch').value.trim().toLowerCase();
-  const items=q?ALL.filter(i=>i.name.toLowerCase().includes(q)||i.id.toLowerCase().includes(q)||i.trade.includes(q)):ALL;
+  const items=pkFilterItems(q);
   const list=document.getElementById('pkList');
   if(!items.length){list.innerHTML='<div style="padding:20px;text-align:center;font-size:12px;color:var(--tx3)">未找到</div>';return;}
   list.innerHTML=items.slice(0,300).map(it=>
@@ -4257,6 +4266,28 @@ function pkSel(id,sh) {
     addSub(pickerRowId, id, sh);
     closePicker();
   }
+}
+// 回车快挂（内部库）：完整编号精确命中优先（忽略大小写/首尾空格），否则取当前筛选第一条。
+// 只回结论不碰 DOM，方便沙箱真跑；toast 文案由 pkSrchKey 统一发出。
+function pkMountByEnter(kw) {
+  const q = String(kw || '').trim();
+  if (!q) return { status: 'empty' };                       // 空输入不响应，防手滑挂上列表第一条
+  if (!(pendingBatch && pendingBatch.length) && pickerRowId === null) return { status: 'noRow' };  // 未绑行/未批量时 pkSel 会静默 no-op，先短路
+  const items = pkFilterItems(q);                            // 与面板列表同一口径，精确判定也在这堆里做
+  const exact = items.find(i => String((i && i.id) || '').toLowerCase() === q.toLowerCase());
+  const cand = exact || items[0];
+  if (!cand) return { status: 'notfound', q: q };
+  pkSel(cand.id, cand.sheet);
+  return { status: 'mounted', code: cand.id, total: items.length, exact: !!exact };
+}
+function pkSrchKey(e) {
+  if (!e || e.key !== 'Enter' || e.isComposing || e.shiftKey) return;   // 输入法候选词回车不抢
+  if (e.preventDefault) e.preventDefault();
+  const si = document.getElementById('pkSrch');
+  const r = pkMountByEnter(si ? si.value : '');
+  if (r.status === 'empty' || r.status === 'noRow') return;
+  if (r.status === 'notfound') { toast('⚠️ 未找到编号或关键词：' + r.q); return; }
+  if (!r.exact) toast('✓ 已挂载 ' + r.code + '（非编号精确匹配，命中 ' + r.total + ' 条中的第一条）');
 }
 function batchApplySub(rowIds) {
   pendingBatch = rowIds;
@@ -4345,6 +4376,29 @@ function gpPick(code) {
   const added = addGroupSub(rid, code);
   if (added) closeGroupPicker();
   return added;
+}
+// 回车快挂（ZS02 库）：完整编号精确命中优先（忽略大小写/首尾空格），否则取当前筛选第一条；
+// 只回结论不碰 DOM（沙箱可直跑），toast 由 gpSrchKey 统一发。重复挂载/未知编号由
+// addGroupSub 自己弹 toast并保持面板开着，这里归为 failed 不另外提示。
+function gpMountByEnter(kw) {
+  const q = String(kw || '').trim();
+  if (!q) return { status: 'empty' };                       // 空输入不响应，防手滑挂上列表第一条
+  if (groupPickerRowId === null || groupPickerRowId === undefined) return { status: 'noRow' };
+  const items = groupPickerItems(q);                         // 与面板列表同一口径（多关键词 AND），精确判定也在这堆里做
+  const exact = items.find(it => String((it && it.code) || '').toLowerCase() === q.toLowerCase());
+  const cand = exact || items[0];
+  if (!cand) return { status: 'notfound', q: q };
+  return gpPick(cand.code) ? { status: 'mounted', code: cand.code, total: items.length, exact: !!exact }
+                          : { status: 'failed', code: cand.code };
+}
+function gpSrchKey(e) {
+  if (!e || e.key !== 'Enter' || e.isComposing || e.shiftKey) return;   // 输入法候选词回车不抢
+  if (e.preventDefault) e.preventDefault();
+  const si = document.getElementById('gpSrch');
+  const r = gpMountByEnter(si ? si.value : '');
+  if (r.status === 'empty' || r.status === 'noRow' || r.status === 'failed') return;
+  if (r.status === 'notfound') { toast('⚠️ ZS02 库未找到编号或关键词：' + r.q); return; }
+  if (!r.exact) toast('✓ 已挂载 ' + r.code + '（非编号精确匹配，命中 ' + r.total + ' 条中的第一条）');
 }
 
 // ═══════════ COEF MODAL ═══════════

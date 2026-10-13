@@ -107,7 +107,8 @@ const TOASTS = [];  // toast 文案
 /* ── 沙箱：group 数据基座 + T4 公式层 + 内部计价引擎（回归双夹具要真跑原公式），
  *    内部模式的费率/系数状态一并声明用于污染检查 ── */
 const LINES = ['let pricingMode', 'let groupDataLoaded', 'let groupBenchLoaded', 'let groupRulesLoaded',
-  'let _groupLoading', 'let rowMap', 'let groupPickerRowId', 'let shFilter', 'let drag'];
+  'let _groupLoading', 'let rowMap', 'let groupPickerRowId', 'let pickerRowId', 'let pendingBatch',
+  'let shFilter', 'let drag'];
 const DECLS = ['let GROUP_RATES', 'let groupBenchMap', 'let groupBenchRows', 'const GROUP_RULE_KEY_MAP',
   'const MAT_CAT_KEYWORDS',   // T5 护栏测试要真跑 syncRowMat→routeRowMat 链（品类识别依赖）
   'const EXP_COLS',           // T5 契约：管理费/利润列的 group 分支直接取数验证
@@ -134,6 +135,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'addMeasureRow', 'legacyMeasureRowHtml', 'applyPendingStdFees',
   'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
   'groupPickerRetry', 'gpPick',
+  // ── L 段：弹窗「输编号回车快挂」（两端弹窗同一决策，只回结论不碰 DOM）──
+  'pkFilterItems', 'pkMountByEnter', 'pkSrchKey', 'gpMountByEnter', 'gpSrchKey',
   // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
   'rebuildLibTabs', 'groupLibItems', 'getLibItems', 'renderLib', 'setSheet', 'libClick', 'libGroupRetry',
   'onDragStart', 'onDragEnd', 'onRowDrop',
@@ -1358,6 +1361,70 @@ ok('K14 旧草稿兼容：legacyMeasureRowHtml 渲染警示条（携金额与删
 ok('K15 PENDING_STD_FEES 回填：旧草稿 projects 列值落 OTH 标准行并清空；行内已有值不覆盖',
   run('(function(){pricingMode="group";groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=900;PENDING_STD_FEES={overtime_fee:1200,contract_change_fee:null,inflation_fee:0};ensureManualGroups();var og=groups.find(function(g){return g.gkind==="other";});var ot=og.sections[0].rows.find(function(r){return r.stdKey==="overtime";});return ot.usp==="1200" && PENDING_STD_FEES===null;})()') === true &&
   run('(function(){pricingMode="group";groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=950;PENDING_STD_FEES=null;ensureManualGroups();var og=groups.find(function(g){return g.gkind==="other";});var ot=og.sections[0].rows.find(function(r){return r.stdKey==="overtime";});ot.usp="500";PENDING_STD_FEES={overtime_fee:9999};ensureManualGroups();return ot.usp==="500" && PENDING_STD_FEES===null;})()') === true);
+
+console.log('\n── L. 弹窗「输编号回车快挂」：编号精确优先 → 筛选首条兜底；空/未找到/未绑行/重复 一律不误挂（两端弹窗同一决策）──');
+const gFix = uid => 'pricingMode="group";rebuildGroupBenchMap([G009,D003]);' +
+  'groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];' +
+  'uid=' + uid + ';var r=makeRow({name:"瓷砖地面",unit:"m2",qty:"1"});var rid=r.id;' +
+  'groups[0].sections[0].rows.push(r);rebuildRowMap();groupPickerRowId=rid;';
+ok('L1 ZS02 精确命中（忽略大小写/首尾空格）→ 真挂 ZS02-D-003 并关面板（groupPickerRowId 置 null）',
+  run('(function(){' + gFix(1100) + 'var res=gpMountByEnter("  zs02-d-003 ");' +
+    'return res.status==="mounted" && res.exact===true && res.code==="ZS02-D-003" &&' +
+    'findRow(rid).subs.length===1 && findRow(rid).subs[0].bid==="ZS02-D-003" && groupPickerRowId===null;})()') === true);
+ok('L2 非精确关键词→取当前筛选第一条（真挂）并标 exact:false/total，不谎称精确匹配',
+  run('(function(){' + gFix(1120) + 'var res=gpMountByEnter("ZS02");' +
+    'return res.status==="mounted" && res.exact===false && res.total===2 && res.code==="ZS02-A-009" &&' +
+    'findRow(rid).subs[0].bid==="ZS02-A-009";})()') === true);
+ok('L3 空输入/零命中/未绑行 三态一律不挂（subs 恒 0，不打后端）',
+  run('(function(){' + gFix(1140) + 'var a=gpMountByEnter("   ");var b=gpMountByEnter("查无此编号zz");' +
+    'var c=(groupPickerRowId=null,gpMountByEnter("ZS02-D-003"));' +
+    'return a.status==="empty" && b.status==="notfound" && b.q==="查无此编号zz" && c.status==="noRow" &&' +
+    'findRow(rid).subs.length===0;})()') === true);
+ok('L4 重复挂同一编号：status=failed、子目不翻倍、面板不被误关（addGroupSub 保持接口原义）',
+  run('(function(){' + gFix(1160) + 'gpMountByEnter("ZS02-D-003");' +
+    'groupPickerRowId=rid;document.getElementById("groupPickerMod").classList.remove("hidden");' +
+    'var f=gpMountByEnter("ZS02-D-003");' +
+    'return f.status==="failed" && f.code==="ZS02-D-003" && findRow(rid).subs.length===1 &&' +
+    '!document.getElementById("groupPickerMod").classList.contains("hidden");})()') === true);
+ok('L5 gpSrchKey 真跑：回车即挂并 preventDefault；非精确额外 toast 明示挂了哪条/命中几条，精确只留「子目已挂载」',
+  (function(){ reset();
+    const s = run('(function(){' + gFix(1180) + 'document.getElementById("gpSrch").value="ZS02";var pd=0;' +
+      'gpSrchKey({key:"Enter",preventDefault:function(){pd++;}});' +
+      'return JSON.stringify([pd,findRow(rid).subs[0].bid,TOASTS.join("|")]);})()');
+    const a = JSON.parse(s);
+    reset();
+    const t = run('(function(){' + gFix(1181) + 'document.getElementById("gpSrch").value="ZS02-D-003";' +
+      'gpSrchKey({key:"Enter",preventDefault:function(){}});' +
+      'return JSON.stringify([findRow(rid).subs[0].bid,TOASTS.join("|")]);})()');
+    const b = JSON.parse(t);
+    return a[0] === 1 && a[1] === 'ZS02-A-009' && /非编号精确匹配/.test(a[2]) && /命中 2 条/.test(a[2]) &&
+      b[0] === 'ZS02-D-003' && /子目已挂载/.test(b[1]) && !/非编号精确匹配/.test(b[1]); })());
+ok('L6 gpSrchKey 守卫：输入法候选回车 / Shift+Enter / 普通键 都不挂也不 preventDefault',
+  run('(function(){' + gFix(1200) + 'var pd=0;var ev={preventDefault:function(){pd++;}};' +
+    'gpSrchKey(Object.assign({key:"Enter",isComposing:true},ev));' +
+    'gpSrchKey(Object.assign({key:"Enter",shiftKey:true},ev));' +
+    'gpSrchKey(Object.assign({key:"a"},ev));' +
+    'return pd===0 && findRow(rid).subs.length===0;})()') === true);
+ok('L7 内部库 pkMountByEnter：精确/首条/空/零命中/未绑行 五态一致（pkSel 桩接，验证 id+sheet 透传不错位）',
+  run('(function(){ALL=[{id:"NS-015",sheet:"泥水班组",name:"地砖铺贴",trade:"泥水"},{id:"JD-145",sheet:"木工班组",name:"门槛石",trade:"木作"}];' +
+    'var calls=[];pkSel=function(id,sh){calls.push([id,sh]);return true;};pickerRowId=99;pendingBatch=null;' +
+    'var a=pkMountByEnter(" ns-015 ");var b=pkMountByEnter("门槛");var c=pkMountByEnter("");' +
+    'var d=pkMountByEnter("查无此编号zz");var e=(pickerRowId=null,pkMountByEnter("JD-145"));' +
+    'return a.status==="mounted" && a.exact===true && calls.length===2 && calls[0][0]==="NS-015" && calls[0][1]==="泥水班组" &&' +
+    'b.status==="mounted" && b.exact===false && b.code==="JD-145" && b.total===1 &&' +
+    'c.status==="empty" && d.status==="notfound" && e.status==="noRow" && calls.length===2;})()') === true);
+ok('L8 pkFilterItems 与旧 renderPicker 筛选逐字等价（name/id/trade 三路 includes；空词返回全量新数组不改原引用）',
+  run('(function(){ALL=[{id:"NS-015",sheet:"泥水班组",name:"地砖铺贴",trade:"泥水"},{id:"JD-145",sheet:"木工班组",name:"门槛石",trade:"木作"}];' +
+    'return pkFilterItems("NS").length===1 && pkFilterItems("ns-015").length===1 &&' +
+    'pkFilterItems("泥水").length===1 && pkFilterItems("地砖").length===1 &&' +
+    'pkFilterItems("").length===2 && pkFilterItems("   ").length===2 && pkFilterItems("")!==ALL &&' +
+    'pkFilterItems(null).length===2 && pkFilterItems("zzz").length===0;})()') === true &&
+  /const items=pkFilterItems\(q\);/.test(grabAnyFn(TOOL, 'renderPicker')) &&
+  !/ALL\.filter\(/.test(grabAnyFn(TOOL, 'renderPicker')));
+ok('L9 弹窗接线（源码钩）：两个搜索框都挂 onkeydown，placeholder 明示「输入完整编号回车直接挂入」',
+  /id="gpSrch"[^>]*onkeydown="gpSrchKey\(event\)"/.test(TOOL) &&
+  /id="pkSrch"[^>]*onkeydown="pkSrchKey\(event\)"/.test(TOOL) &&
+  (TOOL.match(/输入完整编号回车直接挂入/g) || []).length === 2);
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
