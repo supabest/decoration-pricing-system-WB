@@ -13,6 +13,9 @@
  *   · 绿安/baogan 基数只含分部分项人工+机械 · coordFee=null≠0 · 费率全取 GROUP_RATES 不硬编码 · perSqm 除零守护）
  *   collectGroupSummaryPayload（后端请求体：raw 14 字段 items · 不下发前端 h · rates/manual_fees 顶层键）
  *   评审修复回归：M-1 面积/手工费负值钳到 ≥0 不倒扣 part3 · M-1b 采集点（汇总 opts / 后端 payload / 持久化列）同源下钳 · M-6 payload.rates 浅拷贝不共享 GROUP_RATES 活引用
+ * 覆盖「对甲报价 AI 一键套价」：startAiPricing 门改分流（不再 groupModeBlock）· targets 双口径判据 ·
+ *   priceOne 透传 mode · aiApplyGroup 落点唯一走 addGroupSub（只选子目不代填价、mats 深拷、待补价 note）·
+ *   一致性校验块 group 下不可达 · flowCounts/updateFlowSteps 集团口径
  * 运行：node docs/superpowers/tests/group_pricing_test.js
  */
 const fs = require('fs');
@@ -137,6 +140,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'groupPickerRetry', 'gpPick',
   // ── L 段：弹窗「输编号回车快挂」（两端弹窗同一决策，只回结论不碰 DOM）──
   'pkFilterItems', 'pkMountByEnter', 'pkSrchKey', 'gpMountByEnter', 'gpSrchKey',
+  // ── M 段：对甲报价 AI 一键套价（落点纯函数 + 顺序引导计数）──
+  'aiApplyGroup', 'flowCounts', 'updateFlowSteps',
   // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
   'rebuildLibTabs', 'groupLibItems', 'getLibItems', 'renderLib', 'setSheet', 'libClick', 'libGroupRetry',
   'onDragStart', 'onDragEnd', 'onRowDrop',
@@ -1155,11 +1160,15 @@ ok('F4b 客户端预检：needsArea 在 await fetch 之前 toast 拦截不发请
   /pre\.needsArea/.test(DGE_SRC) && DGE_SRC.indexOf('pre.needsArea') < DGE_SRC.indexOf('await fetch') &&
   /buildGroupSummary\(getAllRows\(\), getGroupSummaryOpts\(\)\)/.test(DGE_SRC));
 
-/* ── F5 集团模式下 AI 套价与内部 picker 关门（源码级：两函数不进沙箱） ── */
+/* ── F5 集团模式下 AI 套价与内部 picker 关门（源码级：两函数不进沙箱）
+ *    F5a 已被「对甲报价 AI 一键套价」本轮重新裁定：原「AI 仅支持对内」的拦截拆掉，
+ *    改成 pricingMode 分流到后端 mode='group'（候选池/校验见 M7–M9）；导出/对账的拦截仍在位（M13）。 ── */
 const SAP_SRC = grabAnyFn(TOOL, 'startAiPricing');
-ok('F5a startAiPricing 首行 groupModeBlock 拦截（AI 套价仅支持对内模式）',
-  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1).trim().startsWith("if (groupModeBlock('AI 套价仅支持对内模式，请切回对内成本')) return;"),
-  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1, SAP_SRC.indexOf('{') + 130));
+ok('F5a（拆掉拦截）startAiPricing 首行不再是 groupModeBlock，入口第一件事就是 gMode 分流（先定口径再取 key）',
+  !/groupModeBlock/.test(SAP_SRC) &&
+  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1).replace(/\/\/[^\n]*\n/g, '').trimStart()
+    .startsWith("const gMode = (pricingMode === 'group');"),
+  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1, SAP_SRC.indexOf('{') + 160));
 const RB_SRC = grabAnyFn(TOOL, 'renderBoq');
 ok('F5b renderBoq 内部「＋ 挂子目」与集团按钮互斥渲染：group 下隐藏、内部模式原样（F7 后复用 gMode 守卫变量）',
   /const gMode = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(RB_SRC) &&
@@ -1425,6 +1434,97 @@ ok('L9 弹窗接线（源码钩）：两个搜索框都挂 onkeydown，placehold
   /id="gpSrch"[^>]*onkeydown="gpSrchKey\(event\)"/.test(TOOL) &&
   /id="pkSrch"[^>]*onkeydown="pkSrchKey\(event\)"/.test(TOOL) &&
   (TOOL.match(/输入完整编号回车直接挂入/g) || []).length === 2);
+
+console.log('\n── M. 对甲报价（集团口径）AI 一键套价：门改分流、落点唯一走 addGroupSub、只选子目不代填价 ──');
+const mFix = uid => 'pricingMode="group";rebuildGroupBenchMap([G009,D003]);' +
+  'groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];' +
+  'uid=' + uid + ';var r=makeRow({name:"瓷砖地面",spec:"SA级600×600",unit:"m2",qty:"1"});var rid=r.id;' +
+  'groups[0].sections[0].rows.push(r);rebuildRowMap();';
+const fcFix = 'groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[' +
+  '{id:501,subs:[]},{id:502,subs:[{bid:"NS-01",bsh:"泥水班组"}]},' +
+  '{id:503,subs:[{bid:"ZS02-A-009",bsh:"ZS02-A",gtype:"group"}]},' +
+  '{id:504,name:"赶工措施费",manual:"other",qty:"1",usp:"",subs:[]}]}]}];';
+const SAP = grabAnyFn(TOOL, 'startAiPricing');
+const PR1 = grabAnyFn(TOOL, 'priceOne');
+
+ok('M1 aiApplyGroup 真跑：合法 ZS02 编号逐条挂入（gtype/bsh 同 addGroupSub），待补主材进 note 且跨子目去重',
+  run('(function(){' + mFix(1300) +
+    'var res=aiApplyGroup(findRow(rid),[{id:"ZS02-A-009",pending_mats:["瓷砖","1:3干硬性水泥砂浆"]},' +
+    '{id:"ZS02-D-003",pending_mats:["瓷砖"]}],{note:"已按分部匹配"});' +
+    'var s=findRow(rid).subs;' +
+    'return res.added===2 && s.length===2 && s[0].gtype==="group" && s[0].bid==="ZS02-A-009" && s[0].bsh==="ZS02-A" &&' +
+    's[1].bid==="ZS02-D-003" && s[1].bsh==="ZS02-D" && res.pend.join("、")==="瓷砖、1:3干硬性水泥砂浆" &&' +
+    'res.note.indexOf("已按分部匹配")===0 &&' +
+    'res.note.indexOf("待补主材：瓷砖、1:3干硬性水泥砂浆（未补价前不入汇总）")>0;})()') === true);
+ok('M2 库外编号/内部编号/重复挂 三态：added=0 且不翻倍，batchMode 下不刷「该子目已添加」逐条 toast',
+  (function(){ reset();
+    return run('(function(){' + mFix(1320) +
+      'var a=aiApplyGroup(findRow(rid),[{id:"ZS02-A-999"},{id:"NS-015"},{id:"ZY-01"}],{});' +
+      'var n0=findRow(rid).subs.length;' +
+      'var b=aiApplyGroup(findRow(rid),[{id:"ZS02-D-003"}],{});' +
+      'var c=aiApplyGroup(findRow(rid),[{id:"zs02-d-003"}],{});' +
+      'return a.added===0 && n0===0 && b.added===1 && c.added===0 && findRow(rid).subs.length===1;})()') === true &&
+      TOASTS.join('|').indexOf('该子目已添加') < 0; })());
+ok('M3 只选子目、绝不代填价：不碰行级暂存价（matName/matPrice 原样），mats 深拷不反写库行，batchMode 复位且全程零逐条重渲',
+  (function(){ const before = run('_render');
+    return run('(function(){' + mFix(1340) +
+      'var rr=findRow(rid);rr.matName="瓷砖";rr.matPrice=99;var n0=_render;' +
+      'var res=aiApplyGroup(rr,[{id:"ZS02-A-009"}],{});' +
+      'var s=rr.subs[0];s.mats[0].price=100;' +
+      'return res.added===1 && rr.matName==="瓷砖" && rr.matPrice===99 &&' +
+      's.mats!==G009.mats && G009.mats[0].price===null && getGroupBench("ZS02-A-009").mats[0].price===null &&' +
+      'batchMode===false && _render===n0;})()') === true && run('_render') === before; })());
+ok('M4 note 兜底：后端未给 note 时拼接 AI reason；未标 pending_mats 就不贴「待补主材」（待询价判据只信后端，前端不拿本地库价再推一遍）；matched 为空只回结论不抛',
+  run('(function(){' + mFix(1360) +
+    'var a=aiApplyGroup(findRow(rid),[{id:"ZS02-D-003",reason:"成品保护，单位一致"},{id:"ZS02-A-009",reason:"瓷砖地面"}],{});' +
+    'var b=aiApplyGroup(findRow(rid),null,undefined);' +
+    'return a.added===2 && findRow(rid).subs[1].mats[0].price===null &&' +
+    'a.pend.length===0 && a.note.indexOf("成品保护，单位一致；瓷砖地面")===0 && a.note.indexOf("待补主材")<0 &&' +
+    'b.added===0 && b.pend.length===0 && b.note==="";})()') === true);
+ok('M5 flowCounts 双口径：集团只数能挂子目的行（OTH 手工金额行不进分母，否则永远到不了 ✓），内部口径连手工行一起数（原行为）',
+  run('(function(){' + fcFix + 'pricingMode="group";var g=flowCounts();' +
+    'pricingMode="internal";var i=flowCounts();' +
+    'return g.total===3 && g.priced===1 && i.total===4 && i.priced===2;})()') === true);
+ok('M5b 空清单不炸（total=0 / priced=0，引导条走 early return）',
+  run('(function(){groups=[];pricingMode="group";var f=flowCounts();return f.total===0 && f.priced===0;})()') === true);
+ok('M6 引导条真跑：集团口径第③步改指「展开子目行补主材价」，内部口径仍是「可导入主材询价」',
+  (function(){
+    run(fcFix + 'pricingMode="group";updateFlowSteps();');
+    const gh = run('document.getElementById("flowSteps").innerHTML');
+    run(fcFix + 'pricingMode="internal";updateFlowSteps();');
+    const ih = run('document.getElementById("flowSteps").innerHTML');
+    return /已套价 1\/3 · ③ 展开子目行补主材价/.test(gh) && !/导入主材询价/.test(gh) &&
+      /已套价 2\/4 · ③ 可导入主材询价/.test(ih); })());
+ok('M7 门改为分流（源码钩）：startAiPricing 不再调用 groupModeBlock，首行换成 gMode 常量',
+  !/groupModeBlock/.test(SAP) && /const gMode = \(pricingMode === 'group'\);/.test(SAP));
+ok('M8 targets 判据双轨（源码钩）：集团看「非手工金额行且行内无集团子目」，对内原样 subs.length===0；空集与确认文案分模式且内部原文逐字未改',
+  SAP.indexOf("allRows.filter(r=>!isManualRow(r) && !(r.subs||[]).some(s=>s&&s.gtype==='group'))") >= 0 &&
+  SAP.indexOf("allRows.filter(r=>r.subs.length===0)") >= 0 &&
+  SAP.indexOf("gMode?'所有行均已挂集团子目':'所有行均已套价'") >= 0 &&
+  SAP.indexOf('条未套价清单行进行AI自动套价，是否继续？') >= 0 &&
+  /不代填主材价格，含待询价主材的行需补价后才入汇总/.test(SAP));
+ok('M9 priceOne 透传 mode（源码钩）：只多一个 mode 字段，item 三键入参逐字不变（m.html 不传仍是 internal）',
+  /mode: pricingMode\}/.test(PR1) &&
+  PR1.indexOf("item:{name:r.name, spec:r.spec||'', unit:r.unit||''}") >= 0);
+ok('M10 一致性校验块在集团口径下不可达（源码钩）：if (!gMode) try 包住整个 check-consistency；auto_fix 浅拷行原样保留供对内使用',
+  /if \(!gMode\) try \{/.test(SAP) &&
+  SAP.indexOf('if (!gMode) try {') < SAP.indexOf('check-consistency') &&
+  (SAP.match(/check-consistency/g) || []).length === 1 &&
+  SAP.indexOf('targetRow.subs = refRow.subs.map(s => ({...s}));') >= 0);
+ok('M11 集团落点接在 gMode 分支里（源码钩）：走 aiApplyGroup，对内 addSub/syncRowMat 链仍在其后原样；剔空时计入 fail',
+  (function(){ const i = SAP.indexOf('else if (gMode) {'), j = SAP.indexOf('aiApplyGroup(r, matched, res)');
+    return i >= 0 && j > i && (j - i) < 220 && SAP.indexOf('syncRowMat(r.id)') > j &&
+      /AI 返回的编号在 ZS02 库内未找到（或已全部挂过）/.test(SAP); })());
+ok('M12 收尾 toast 分模式（源码钩）：集团指向「展开子目行补主材价」，对内仍引导「📥 导入主材询价」',
+  /下一步：展开子目行补主材价（待询价行补价前不入汇总）/.test(SAP) &&
+  SAP.indexOf('下一步：📥 导入主材询价') >= 0);
+ok('M13 拆的是 AI 门不是导出门（全文钩）：四个内部导出入口的 groupModeBlock() 拦截仍在位',
+  (TOOL.match(/^  if \(groupModeBlock\(\)\) return;/gm) || []).length === 4);
+ok('M14 失败上报只在对内口径（源码钩）：pricing_failures 是内部补库统计，集团套不上价不混入；OTH 七个标准金额行（天生无子目）任何口径都不上报',
+  (function(){ const i = SAP.indexOf('const failures = allRows.filter('), j = SAP.lastIndexOf('if (!gMode) try {');
+    return j >= 0 && i > j && (i - j) < 320 &&
+      /const failures = allRows\.filter\(r => !isManualRow\(r\) && \(!r\.subs \|\| !r\.subs\.length\) && r\.name\);/.test(SAP) &&
+      SAP.indexOf('report-failure') > i && (SAP.match(/if \(!gMode\) try \{/g) || []).length === 2; })());
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');

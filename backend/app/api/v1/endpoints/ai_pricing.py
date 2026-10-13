@@ -29,7 +29,8 @@ async def price_single_item(req: PriceSingleRequest):
             req.item.spec or "",
             req.item.unit or "",
             req.api_key,
-            model=req.model
+            model=req.model,
+            mode=req.mode
         )
         return PriceResponse(**result)
     except Exception as e:
@@ -46,7 +47,8 @@ async def price_batch_items(req: PriceBatchRequest):
     failed = 0
     for item in req.items:
         try:
-            r = await svc_price_single(item.name, item.spec or "", item.unit or "", req.api_key, model=req.model)
+            r = await svc_price_single(item.name, item.spec or "", item.unit or "", req.api_key,
+                                       model=req.model, mode=req.mode)
             results.append({"name": item.name, **r})
             if r.get("matched"):
                 success += 1

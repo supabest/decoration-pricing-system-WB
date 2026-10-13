@@ -164,6 +164,7 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 - **T02 四部分汇总**：一 分部分项（**D 类不进**）→ 二 措施（=ΣD类合价 + 绿安费，绿安/包干基数只含分部分项行的 人工+机械）→ 三 其他（包干费 + 赶工/变更/涨幅手工费 + 精装修配合费=费率×面积；**暂列金额=0，集团规定不予计取**）→ 四 税金=(一+二+三)×9% → 五 总造价+单方造价(÷装修面积)
 - **导出**：`POST /api/v1/export/group-summary`（payload 下发 raw 值、后端重算，前端 h 不被信任）；黄金值锚点：ZS02-D-003 h=4.0779、A-009 补价100 h=230.6085
 - **模式隔离**：集团子目 `gtype:'group'` 挂在既有 subs 契约上（向后兼容 m.html）；group 模式下内部导出链（方式一/二、splitByTrade 对账）入口被 `groupModeBlock()` 拦截
+- **AI 一键套价双口径**：`POST /api/v1/pricing/single` 的 `mode` 字段（默认 `internal`）决定候选池——`internal` 走 497 条 `benchmark_items`+班组路由+内部 prompt；`group` 走 `group_benchmark_items`（`load_group_benchmark_data` **只读 Supabase、不做本地 JSON 兜底**，降级会把内部口径的价送进对甲报价）+ `route_disciplines`（discipline 只加分不硬过滤）+ ZS02 版 prompt + 按编号校验。**AI 只选子目、绝不代填价**：返回的 `pending_mats` 只含名称，主材价仍由用户走 `updGroupMat`；集团口径下跳过相似清单一致性校验（auto_fix 的 `{...s}` 浅拷会让两行共用同一 mats 数组）与失败上报（`pricing_failures` 统计的是内部补库缺口，OTH 手工金额行也不得上报）
 - 迁移：`data/migrations/group_benchmark_migration.sql` + `data/migrations/projects_fitout_fees_migration.sql`（后者补 `projects.fitout_area/overtime_fee/contract_change_fee/inflation_fee` 四列——**缺列会使草稿自动保存静默失败**，须在 Dashboard 执行）
 - 源表已知异常：A-069/070 的 Excel H 公式漏算续行主材、B-100~106 手填费率隐含 15/10——引擎一律以 T01 公式（17/12）重算为准，`raw_composite` 仅留档供集团对账
 

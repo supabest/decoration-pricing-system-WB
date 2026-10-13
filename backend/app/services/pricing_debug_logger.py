@@ -39,9 +39,11 @@ class PricingDebugLog:
             "total": total,
             "top10": [
                 {
-                    "code": c.get("internal_code", ""),
-                    "name": c.get("item_name", ""),
-                    "team": c.get("trade_team", ""),
+                    # 对内行用 internal_code/item_name/trade_team，集团（ZS02）行用 code/name/
+                    # discipline；两者只会出现其一，故回退取值而不是写死一套字段名。
+                    "code": c.get("internal_code") or c.get("code", ""),
+                    "name": c.get("item_name") or c.get("name", ""),
+                    "team": c.get("trade_team") or c.get("discipline", ""),
                     "unit": c.get("unit", ""),
                 }
                 for c in (candidates[:10] if isinstance(candidates, list) else [])

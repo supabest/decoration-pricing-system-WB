@@ -3675,8 +3675,15 @@ let _quoteMatched = false;  // 用户是否已点「确认识别」
 // （见 syncRowMat / rowMatStaged），用户会以为"导入没生效"。所以把这三步做成常驻状态，
 // 随时告诉用户下一步该点哪；未套价时点导入先拦一道，但留「仍然导入」的出口，不硬堵。
 function flowCounts() {
-  const all = getAllRows();
-  return { total: all.length, priced: all.filter(r => (r.subs||[]).length > 0).length };
+  // 集团口径只认集团子目：AI 套价在 group 下已开放，若还按「有任何子目」计数，
+  // 切模式前的内部子目会被报成「已套价」，而它对集团汇总引擎算不出 h。
+  const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  // OTH 标准行/手工金额行（isManualRow）按金额或费率录入，永远挂不到子目：
+  // 留在分母里引导条会永久卡在「已套价 n/N」到不了 ✓，故集团口径只数能挂子目的行。
+  const all = gMode ? getAllRows().filter(r => !isManualRow(r)) : getAllRows();
+  return { total: all.length,
+    priced: gMode ? all.filter(r => (r.subs||[]).some(s => s && s.gtype === 'group')).length
+                  : all.filter(r => (r.subs||[]).length > 0).length };
 }
 function updateFlowSteps() {
   const el = document.getElementById('flowSteps'); if (!el) return;
@@ -3692,12 +3699,15 @@ function updateFlowSteps() {
       : '上传供应商填好的主材询价单，系统自动识别材料品类与填价列，确认后回填主材价';
   }
   let txt, fg, bg, act = '';
+  // 集团口径的第三步不是「导入主材询价」：行级暂存价会被 gtype 护栏跳过，只能展开子目行填 mats[].price
+  const gMode = (typeof pricingMode !== 'undefined' && pricingMode === 'group');
+  const step3 = gMode ? '③ 展开子目行补主材价' : '③ 可导入主材询价';
   if (locked) { txt = '② 待套价 ' + total + ' 行'; fg = '#8a6100'; bg = 'var(--yel-d)'; act = 'startAiPricing()'; }
-  else if (priced < total) { txt = '② 已套价 ' + priced + '/' + total + ' · ③ 可导入主材询价'; fg = '#1d6fa5'; bg = '#e8f1fb'; }
-  else { txt = '✓ 已全部套价 · ③ 可导入主材询价'; fg = '#0a7a3d'; bg = 'var(--grn-d)'; }
+  else if (priced < total) { txt = '② 已套价 ' + priced + '/' + total + ' · ' + step3; fg = '#1d6fa5'; bg = '#e8f1fb'; }
+  else { txt = '✓ 已全部套价 · ' + step3; fg = '#0a7a3d'; bg = 'var(--grn-d)'; }
   const css = 'display:inline-block;margin-left:2px;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600;white-space:nowrap;background:' +
     bg + ';color:' + fg + ';border:1px solid ' + (act ? fg : 'transparent') + (act ? ';cursor:pointer' : '');
-  const tip = '标准顺序：① 导入清单 → ② ✨ AI 一键套价 → ③ 📥 导入主材询价' +
+  const tip = '标准顺序：① 导入清单 → ② ✨ AI 一键套价 → ③ ' + (gMode ? '子目行内补主材价' : '📥 导入主材询价') +
     (locked ? '（当前停在第②步，点这里去套价）' : '');
   el.innerHTML = '<span' + (act ? ' onclick="' + act + '"' : '') + ' title="' + tip + '" style="' + css + '">' + txt + '</span>';
 }
@@ -4442,7 +4452,9 @@ async function priceOne(r, key) {
   const model = document.getElementById('aiModel')?.value || 'deepseek-v4-pro';
   const resp = await fetch(BACKEND_URL + '/api/v1/pricing/single', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({item:{name:r.name, spec:r.spec||'', unit:r.unit||''}, api_key: key, model: model})
+    // mode 决定后端拿哪套候选池：'group' → ZS02 集团库；'internal' → 内部 497 条基准价。
+    // 不传时后端默认 internal，m.html 与对内现有调用不受影响。
+    body: JSON.stringify({item:{name:r.name, spec:r.spec||'', unit:r.unit||''}, api_key: key, model: model, mode: pricingMode})
   });
   if (!resp.ok) throw new Error('套价失败 (' + resp.status + '): 请确认 FastAPI 服务已启动');
   const data = await resp.json();
@@ -4476,15 +4488,42 @@ function showConsistencyWarnings(warnings) {
   boqMain.insertBefore(banner, boqMain.firstChild);
 }
 
+// 集团口径 AI 结果落点：逐条走 addGroupSub（与拖入 / 输编号回车挂入同一个入口，自带
+// 未知编号与重复拦截），只回结论不碰 DOM（沙箱可直跑）；toast/renderBoq 由调用方统一收尾。
+// 绝不写行级暂存价：集团主材价只认 mats[].price，null=待询价（null≠0 是集团端全局判据）。
+function aiApplyGroup(r, matched, res) {
+  let added = 0; const pend = [];
+  batchMode = true;                                  // 抑制逐条 toast/render，避免并发池里反复重渲
+  (matched || []).forEach(m => {
+    if (!m) return;
+    if (!addGroupSub(r.id, m.id || m.code || '')) return;
+    added++;
+    (m.pending_mats || []).forEach(x => { if (x && pend.indexOf(x) < 0) pend.push(x); });
+  });
+  batchMode = false;
+  const base = (res && res.note) || (matched || []).map(m => m && m.reason).filter(Boolean).join('；');
+  return { added: added, pend: pend, note: base +
+    (pend.length ? '　·　待补主材：' + pend.join('、') + '（未补价前不入汇总）' : '') };
+}
+
 async function startAiPricing() {
-  if (groupModeBlock('AI 套价仅支持对内模式，请切回对内成本')) return;   // F5：集团引擎只认基准价子目，内部套价引擎在集团口径下不开放
+  // 集团口径不再拦死：AI 从 ZS02 库里选集团子目（后端 mode='group'）。只选子目、不代填主材价。
+  const gMode = (pricingMode === 'group');
   const key=document.getElementById('aiKey').value.trim();
   if(!key){toast('请先输入 API Key（需与所选模型厂商匹配）');return;}
   const allRows=getAllRows();
   if(!allRows.length){toast('请先导入清单');return;}
-  const targets=allRows.filter(r=>r.subs.length===0);
-  if(!targets.length){toast('所有行均已套价');return;}
-  if(!confirm('即将对 '+targets.length+' 条未套价清单行进行AI自动套价，是否继续？')) return;
+  // 集团口径的「未套价」= 行内没有集团子目（而不是“没有任何子目”）：切模式前挂的内部子目
+  // 对集团汇总引擎算不出 h，同样需要重套；对内那一套 subs.length===0 判据保持原样。
+  // OTH/措施手工金额行不送 AI：它们没有可挂子目（按金额或费率录），送进去只会白烧 token，
+  // 还可能把「暂列金额/预算包干费」这类费率项挂成 ZS02 实体子目。
+  const targets = gMode
+    ? allRows.filter(r=>!isManualRow(r) && !(r.subs||[]).some(s=>s&&s.gtype==='group'))
+    : allRows.filter(r=>r.subs.length===0);
+  if(!targets.length){toast(gMode?'所有行均已挂集团子目':'所有行均已套价');return;}
+  if(!confirm(gMode
+    ? '即将对 '+targets.length+' 条清单行从集团基准价库（ZS02）AI 套价：只选子目、不代填主材价格，含待询价主材的行需补价后才入汇总。是否继续？'
+    : '即将对 '+targets.length+' 条未套价清单行进行AI自动套价，是否继续？')) return;
 
   aiRunning=true; aiStop=false;
   document.getElementById('aiBtn').disabled=true;
@@ -4514,6 +4553,14 @@ async function startAiPricing() {
 
         if(!matched.length||conf<60) {
           r.aiNote={conf,status:'low',note:res.note||'置信度不足，请手动套价'}; fail++;
+        } else if (gMode) {
+          const gr = aiApplyGroup(r, matched, res);
+          if (gr.added > 0) {
+            r.aiNote={conf,status:conf>=85?'hi':'mid',note:gr.note};
+            if(conf>=85) ok++; else warn++;
+          } else {
+            r.aiNote={conf:0,status:'low',note:'AI 返回的编号在 ZS02 库内未找到（或已全部挂过），请手动套价'}; fail++;
+          }
         } else {
           let added=0;
           matched.forEach(m=>{
@@ -4549,8 +4596,10 @@ async function startAiPricing() {
   document.getElementById('aiBtn').disabled=false;
   document.getElementById('aiStopBtn').classList.add('hidden');
 
-  // 相似清单一致性校验 + 自动补全
-  try {
+  // 相似清单一致性校验 + 自动补全（仅对内口径）：集团口径的子目差异不在内部对账
+  // 算法射程内；且 auto_fix 用 {...s} 浅拷 sub，集团子目带 mats 数组，会让两行共用同一个
+  // 数组——改一行主材价串到另一行。故 group 下整块跳过（对内行为原样保留）。
+  if (!gMode) try {
     const checkItems = allRows.map((r, i) => ({
       index: (i + 1),
       name: r.name || '',
@@ -4591,9 +4640,12 @@ async function startAiPricing() {
     }
   } catch(e) { console.warn('一致性校验跳过', e); }
 
-  // 上报失败项到后端
-  try {
-    const failures = allRows.filter(r => (!r.subs || !r.subs.length) && r.name);
+  // 上报失败项到后端（仅对内口径）：pricing_failures 统计的是「内部基准价库缺什么」，
+  // 集团口径套不上价是 ZS02 库的事，混进去会污染 admin 的内部补库决策。另：allRows 是全量清单
+  // （不是 targets），对甲模式下 ZS02-OTH 的七个标准金额行（暂列金额/预算包干费…）天生无子目，
+  // 不过滤就会每次套价白报 7 条「失败」。
+  if (!gMode) try {
+    const failures = allRows.filter(r => !isManualRow(r) && (!r.subs || !r.subs.length) && r.name);
     if (failures.length) {
       for (const r of failures) {
         fetch(BACKEND_URL + '/api/v1/pricing/report-failure', {
@@ -4608,7 +4660,12 @@ async function startAiPricing() {
 
   toast('✨ AI套价完成'+(aiStop?'（已停止）':'')+
     '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条'+
-    (getAllRows().some(r=>(r.subs||[]).length) ? '　·　下一步：📥 导入主材询价' : ''));
+    (gMode
+      // 集团口径不引导「导入主材询价」：行级暂存价不会分配到集团子目（gtype 护栏），
+      // 唯一填价入口是展开子目行里的 mats[].price。
+      ? (getAllRows().some(r=>(r.subs||[]).some(s=>s&&s.gtype==='group'))
+          ? '　·　下一步：展开子目行补主材价（待询价行补价前不入汇总）' : '')
+      : (getAllRows().some(r=>(r.subs||[]).length) ? '　·　下一步：📥 导入主材询价' : '')));
 }
 function stopAi() { aiStop=true; toast('正在停止…'); }
 
