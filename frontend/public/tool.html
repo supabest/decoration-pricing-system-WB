@@ -501,10 +501,7 @@ if (window !== window.top) { document.querySelectorAll('.iframe-hide').forEach(e
       <div id="groupSummaryPanel" class="hidden" style="margin:8px 14px 0;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--acc);border-radius:8px;font-size:11.5px;display:flex;flex-direction:column;gap:8px">
         <div id="groupSummaryBody" style="display:flex;flex-direction:column;gap:4px"></div>
         <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-          <span style="font-size:11px;color:var(--tx2);font-weight:500">其他项目费·手工录入</span>
-          <label style="display:flex;align-items:center;gap:4px">赶工措施费<input class="pi" id="manualFeeOvertimeInp" type="number" min="0" step="0.01" placeholder="0" style="width:80px;padding:3px 6px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="renderGroupSummaryPanel()">元</label>
-          <label style="display:flex;align-items:center;gap:4px">合同变更费用<input class="pi" id="manualFeeChangeInp" type="number" min="0" step="0.01" placeholder="0" style="width:80px;padding:3px 6px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="renderGroupSummaryPanel()">元</label>
-          <label style="display:flex;align-items:center;gap:4px">装修类型涨幅<input class="pi" id="manualFeeInflationInp" type="number" min="0" step="0.01" placeholder="0" style="width:80px;padding:3px 6px;border-radius:6px;border:1.5px solid var(--border);font-size:11px;text-align:right" oninput="renderGroupSummaryPanel()">元</label>
+          <span style="font-size:11px;color:var(--tx3)">其他项目费六项标准行 + 赶工费已在清单「ZS02-OTH · 其他项目」分部预置，直接填金额即可</span>
           <button class="btn btn-sm" onclick="doGroupSummaryExport()" style="margin-left:auto;padding:3px 10px;font-size:11px;border:1.5px solid var(--acc);border-radius:6px;cursor:pointer;background:transparent;color:var(--acc);font-weight:600">⬇ 导出对甲报价汇总</button>
         </div>
       </div>
@@ -2012,23 +2009,66 @@ function fmt(v,dec=2) { return (v===null||v===undefined)?'—':v.toLocaleString(
 function secTotal(s) { return s.rows.reduce((a,r)=>a+(rowTotal(r)||0),0); }
 function grpTotal(g) { return g.sections.reduce((a,s)=>a+secTotal(s),0); }
 
-// ═══════════ 对甲补录分部（措施/其他项目费手工行，用户裁定：给可见输入区而非仅提示）═══════════
-// 手工行独立于集团引擎：直接录 综合单价×工程量=合价；measure 归集第二部分、other 归集第三部分。
-// 仅 group 模式存在；内部模式 renderBoq 直接跳过 gkind 分部（零变更）。不参与绿安/包干基数（与 D 类同口径）。
+// ═══════════ 对甲补录分部（用户二次裁定：措施部要套基准价，格式与分部分项一致；其他项目按费率/单方报价，简表但项目要齐）═══════════
+// 措施分部（gkind='measure'）：标准 BOQ 管线渲染（16 列人材机/管理/利润），两 section 脚手架工程/成品保护费；
+//   行内挂 ZS02-D 集团子目→引擎按集团公式算价，disc='D' 既有路由自然进第二部分（零新算路）。
+// 其他分部（gkind='other'）：简表预置 T02 六项标准行（+赶工共 7 项），三态：locked=集团不计取、auto=引擎自算只读、input=手工金额；
+//   另保留「＋ 手工补录行」作库外临时项兑底。仅 group 模式存在；内部模式 renderBoq 直接跳过 gkind 分部（零变更）。
+//   不参与绿安/包干基数（与 D 类同口径）。
+const OTH_STD_ROWS = [
+  {key:'provisional_sum',      name:'暂列金额',           basis:'——',                        mode:'locked'},  // 集团规定不予计取
+  {key:'provisional_estimate', name:'暂估价',             basis:'暂估材料或项目费用合计',        mode:'input'},
+  {key:'coord_fee',            name:'精装修管理及配合费',  basis:'装修面积 × 配合费费率',        mode:'auto'},    // = s.coordFee
+  {key:'baogan_fee',           name:'预算包干费',          basis:'分部分项人工费+机械费 × 费率', mode:'auto'},    // = s.baogan
+  {key:'contract_change',      name:'合同变更费用',        basis:'合同变更费用合计',            mode:'input'},
+  {key:'inflation',            name:'装修类型涨幅费用',    basis:'工程计价办法相关规定',          mode:'input'},
+  {key:'overtime',             name:'赶工措施费',          basis:'赶工发生额',                  mode:'input'},
+];
+const OTH_FEE_KEY_MAP = { overtime:'overtime_fee', contract_change:'contract_change_fee', inflation:'inflation_fee' };
+let PENDING_STD_FEES = null;   // 旧草稿 projects 列手工费 → OTH 标准行预置后回填（restoreProject 设置，ensureManualGroups 消费）
+function applyPendingStdFees(og) {
+  if (!PENDING_STD_FEES || !og || !og.sections.length) return;
+  const rev = { overtime_fee:'overtime', contract_change_fee:'contract_change', inflation_fee:'inflation' };
+  Object.keys(rev).forEach(col => {
+    const v = parseFloat(PENDING_STD_FEES[col]);
+    if (!(v > 0)) return;
+    const r = og.sections[0].rows.find(x => x.stdKey === rev[col]);
+    if (r && !(parseFloat(r.usp) || 0)) r.usp = String(v);   // 行内已有值（groups_json 新格式）不覆盖
+  });
+  PENDING_STD_FEES = null;
+}
 function isManualRow(r) { return !!(r && (r.manual === 'measure' || r.manual === 'other')); }
 function manualRowTotal(r) { return isManualRow(r) ? (parseFloat(r.qty) || 0) * (parseFloat(r.usp) || 0) : 0; }
 function ensureManualGroups() {
   if (typeof pricingMode === 'undefined' || pricingMode !== 'group') return;
   if (!groups.length) return;   // 空清单（上传页）不建，待有内容再补
-  const mk = (gkind, name, secName) => ({id: uid++, sheetName: name, open: true, gkind, sections: [{id: uid++, name: secName, open: true, rows: []}]});
-  if (!groups.some(g => g.gkind === 'measure')) groups.push(mk('measure', 'ZS02-D · 措施项目', '措施项目'));
-  if (!groups.some(g => g.gkind === 'other')) groups.push(mk('other', 'ZS02-OTH · 其他项目', '其他项目'));
+  let mg = groups.find(g => g.gkind === 'measure');
+  if (!mg) { mg = {id: uid++, sheetName: 'ZS02-D · 措施项目', open: true, gkind: 'measure', sections: []}; groups.push(mg); }
+  ['脚手架工程', '成品保护费'].forEach(nm => {   // 旧草稿只有一节，补齐两节（按名幂等）
+    if (!mg.sections.some(s => s.name === nm)) mg.sections.push({id: uid++, name: nm, open: true, rows: []});
+  });
+  let og = groups.find(g => g.gkind === 'other');
+  if (!og) { og = {id: uid++, sheetName: 'ZS02-OTH · 其他项目', open: true, gkind: 'other', sections: [{id: uid++, name: '其他项目', open: true, rows: []}]}; groups.push(og); }
+  if (!og.stdSeeded) {   // 预置 T02 六项+赶工（旧草稿升级回填一次，stdSeeded 随 groups_json 持久化）
+    OTH_STD_ROWS.forEach(t => {
+      const r = makeRow({name: t.name, unit: '项', qty: '1'}); r.manual = 'other'; r.stdKey = t.key; r.usp = '';
+      og.sections[0].rows.push(r);
+    });
+    og.stdSeeded = true;
+  }
+  applyPendingStdFees(og);   // 旧草稿 projects 列手工费回填（无则空操作）
 }
 function addManualRow(gid) {
-  const g = groups.find(x => x.id === gid); if (!g || !g.gkind) return;
+  const g = groups.find(x => x.id === gid); if (!g || g.gkind !== 'other') return;   // 手工小表只剩 OTH；措施部走 addMeasureRow 标准行
   if (!g.sections.length) g.sections.push({id: uid++, name: g.sheetName, open: true, rows: []});
   const r = makeRow({}); r.manual = g.gkind; r.usp = '';
   g.sections[0].rows.push(r);
+  renderBoq();
+}
+function addMeasureRow(gid, sid) {
+  const g = groups.find(x => x.id === gid); if (!g || g.gkind !== 'measure') return;
+  const s = g.sections.find(x => x.id === sid) || g.sections[0]; if (!s) return;
+  s.rows.push(makeRow({}));
   renderBoq();
 }
 function updManual(rid, fld, val) {
@@ -2037,21 +2077,52 @@ function updManual(rid, fld, val) {
   const c = document.getElementById('mrowtot-' + rid); if (c) c.textContent = fmt(manualRowTotal(r));
   updateSum();
 }
+// 旧草稿兼容：措施部里的早期手工行（qty×usp）仍计入汇总，渲染成警示条引导换成标准行
+function legacyMeasureRowHtml(r) {
+  return '<tr class="pr" data-rid="' + r.id + '"><td class="rno c" style="color:var(--tx3)"></td>' +
+    '<td colspan="15" style="font-size:10px;color:var(--yel);padding:6px 12px">⚠ 旧版手工措施行（' + esc(r.name || '?') + '　合价 ' + fmt(manualRowTotal(r)) + '，仍计入汇总第二部分）——建议删除，改用「＋ 新增措施行」挂载 ZS02-D 集团子目　<button class="btn btn-del" style="font-size:10px" onclick="delRow(' + r.id + ')">✕ 删除</button></td></tr>';
+}
 function renderManualGroupHtml(g) {
   const rows = (g.sections[0] && g.sections[0].rows) || [];
-  const gtot = rows.reduce((a, r) => a + manualRowTotal(r), 0);
+  const stdOf = r => r.stdKey ? OTH_STD_ROWS.find(t => t.key === r.stdKey) : null;
+  let s = null;
+  try { s = buildGroupSummary(getAllRows(), getGroupSummaryOpts()); } catch (e) {}   // auto 行取引擎值；沙箱/异常时降级显示占位
+  const gtot = rows.reduce((a, r) => { const t = stdOf(r); return a + ((t && t.mode !== 'input') ? 0 : manualRowTotal(r)); }, 0);   // locked/auto 不入本部小计
   let h = '<div class="grp-row" onclick="toggleGroup(' + g.id + ')">' +
     '<span class="grp-arrow' + (g.open ? '' : ' closed') + '">▾</span>' +
     '<span class="grp-name">' + esc(g.sheetName) + '</span>' +
     '<span class="grp-meta">' + rows.length + ' 条</span>' +
     '<span class="grp-total">' + fmt(gtot) + '</span></div>';
   if (!g.open) return h;
-  h += '<table class="boq-table manual-table"><thead><tr>' +
-    '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-un c">单位</th>' +
-    '<th class="c-qty r">工程量</th><th class="c-usp r">综合单价</th><th class="c-total r">合价</th>' +
+  h += '<table class="boq-table manual-table" id="othTableAnchor"><thead><tr>' +
+    '<th class="c-no c">序号</th><th class="c-nm">项目名称</th><th class="c-un c">单位 / 计费基础</th>' +
+    '<th class="c-qty r">工程量</th><th class="c-usp r">综合单价 / 金额</th><th class="c-total r">合价</th>' +
     '<th class="c-re">备注</th><th class="c-ac c">操作</th></tr></thead><tbody>';
-  if (!rows.length) h += '<tr><td colspan="8" style="padding:10px 12px;color:var(--tx3);font-size:11px">尚无补录行——点下方「＋ 手工补录行」直接填 名称/单位/工程量/综合单价（例：垂直运输　项　1　8000）</td></tr>';
   rows.forEach((r, i) => {
+    const t = stdOf(r);
+    if (t) {
+      let amtCell, totCell, opCell = '<td class="c"></td>';
+      if (t.mode === 'locked') { amtCell = '<span style="color:var(--tx3)">—</span>'; totCell = '<span style="color:var(--tx3)">—</span>'; }
+      else if (t.mode === 'auto') {
+        const v = t.key === 'coord_fee' ? (s && s.coordFeeConfigured ? s.coordFee : null) : (s ? s.baogan : null);
+        amtCell = '<span style="font-size:10px;color:var(--tx3)" title="本行由引擎按费率自动计算，无需录入">' + (v === null ? (t.key === 'coord_fee' ? '费率未配置' : '—') : '自动') + '</span>';
+        totCell = v === null ? '<span style="color:var(--yel);font-size:10px">待配置</span>' : fmt(v);
+      } else {
+        amtCell = '<input class="qty-i" type="text" inputmode="decimal" value="' + (r.usp || '') + '" placeholder="0.00" oninput="updManual(' + r.id + ',\'usp\',this.value)">';
+        totCell = '<span id="mrowtot-' + r.id + '">' + fmt(manualRowTotal(r)) + '</span>';
+        opCell = '';
+      }
+      h += '<tr class="pr manual-row" data-rid="' + r.id + '">' +
+        '<td class="rno c">' + (i + 1) + '</td>' +
+        '<td style="font-size:11px;padding-left:8px">' + esc(t.name) + (t.mode === 'input' ? '' : ' <span style="font-size:9px;color:var(--tx3)">' + (t.mode === 'locked' ? '集团规定不计取' : '自动计算') + '</span>') + '</td>' +
+        '<td class="c" style="font-size:10px;color:var(--tx3)">' + esc(t.basis) + '</td>' +
+        '<td class="r" style="font-size:10px;color:var(--tx3)">1</td>' +
+        '<td class="r">' + amtCell + '</td>' +
+        '<td class="r-total r">' + totCell + '</td>' +
+        '<td>' + (t.mode === 'input' ? '<input class="ri ri-sm" value="' + esc(r.remark) + '" placeholder="备注" onchange="updManual(' + r.id + ',\'remark\',this.value)">' : '') + '</td>' +
+        opCell + '</tr>';
+      return;
+    }
     h += '<tr class="pr manual-row" data-rid="' + r.id + '">' +
       '<td class="rno c">' + (i + 1) + '</td>' +
       '<td><input class="ri" value="' + esc(r.name) + '" placeholder="项目名称" onchange="updManual(' + r.id + ',\'name\',this.value)"></td>' +
@@ -2063,7 +2134,7 @@ function renderManualGroupHtml(g) {
       '<td class="c"><button class="btn btn-del" onclick="delRow(' + r.id + ')">✕</button></td>' +
       '</tr>';
   });
-  h += '<tr class="addsub-tr"><td colspan="8"><button class="addsub-btn grp" onclick="addManualRow(' + g.id + ')">＋ 手工补录行</button></td></tr>';
+  h += '<tr class="addsub-tr"><td colspan="8"><button class="addsub-btn grp" onclick="addManualRow(' + g.id + ')">＋ 手工补录行（库外临时项兑底）</button></td></tr>';
   h += '</tbody></table>';
   return h;
 }
@@ -2140,7 +2211,7 @@ function renderBoq() {
 
   groups.forEach(g => {
     if (g.gkind && !gMode) return;                                   // 内部模式：补录分部不出现（零变更）
-    if (g.gkind) { html += renderManualGroupHtml(g); return; }        // 集团模式：措施/其他手工分部走独立小表
+    if (g.gkind === 'other') { html += renderManualGroupHtml(g); return; }  // OTH 简表；measure 落标准 BOQ 管线（与分部分项同格式，用户二次裁定）
     const gt = grpTotal(g), totalRows = g.sections.reduce((a,s)=>a+s.rows.length,0);
     html += '<div class="grp-row" onclick="toggleGroup('+g.id+')">' +
       '<span class="grp-arrow'+(g.open?'':' closed')+'">▾</span>' +
@@ -2171,6 +2242,7 @@ function renderBoq() {
       if (!s.open) return;
 
       s.rows.forEach(r => {
+        if (g.gkind === 'measure' && isManualRow(r)) { html += legacyMeasureRowHtml(r); return; }   // 旧草稿手工措施行：警示条展示，汇总仍计入
         globalIdx++;
         const up=rowUnitPrice(r), tot=rowTotal(r);
         // 对甲报价（T5）：行级派生单元格唯一的集团取数入口 rowGroupAgg，渲染层不再乘 globalMgmtRate/globalProfitRate
@@ -2318,6 +2390,7 @@ function renderBoq() {
             '</td></tr>';
         }
       });
+      if (g.gkind === 'measure') html += '<tr class="addsub-tr"><td colspan="16"><button class="addsub-btn grp" onclick="addMeasureRow(' + g.id + ',' + s.id + ')">＋ 新增措施行</button></td></tr>';   // 措施部专用：行加在本 section，挂 ZS02-D 子目后填工程量
     });
     html += '</tbody></table>';
   });
@@ -2954,7 +3027,9 @@ function buildGroupSummary(rows, opts) {
   let part1 = 0, dMeasures = 0, laborMechBase = 0, unpriced = 0, manualMeasure = 0, manualOther = 0;
   const secMap = {};
   list.forEach(r => {
-    if (isManualRow(r)) {                                            // 对甲补录手工行：measure→二、other→三，直接计合价（不走引擎、不入绿安/包干基数）
+    if (isManualRow(r)) {                                            // 对甲补录行：measure→二、other→三，直接计合价（不走引擎、不入绿安/包干基数）
+      // OTH 标准行除暂估价外不在此累加：赶工/变更/涨幅经 opts.manualFees 计入，auto/locked 行仅展示（防双计）
+      if (r.stdKey && r.stdKey !== 'provisional_estimate') return;
       const amt = manualRowTotal(r);
       if (r.manual === 'measure') manualMeasure += amt; else manualOther += amt;
       return;
@@ -3009,8 +3084,13 @@ function getGroupSummaryOpts() {
   };
 }
 function collectGroupManualFees() {
-  const fee = id => { const e = document.getElementById(id); return e ? Math.max(0, parseFloat(e.value) || 0) : 0; };
-  return { overtime_fee: fee('manualFeeOvertimeInp'), contract_change_fee: fee('manualFeeChangeInp'), inflation_fee: fee('manualFeeInflationInp') };
+  // 其他项目费手工项改由清单 OTH 分部标准行录入（顶部金额框退役，单一录入口）；qty 恒 1，金额取 usp，负值钳 0（与 M-1 同口径）
+  const out = { overtime_fee: 0, contract_change_fee: 0, inflation_fee: 0 };
+  groups.forEach(g => g.sections.forEach(s => s.rows.forEach(r => {
+    const k = r.stdKey && OTH_FEE_KEY_MAP[r.stdKey];
+    if (k) out[k] += Math.max(0, parseFloat(r.usp) || 0);
+  })));
+  return out;
 }
 
 // collectGroupSummaryPayload() —— 后端请求体收集（供 Task 7 端点消费）。
@@ -3024,6 +3104,9 @@ function collectGroupSummaryPayload() {
   const manual_measures = [], manual_others = [];
   getAllRows().forEach(r => {
     if (isManualRow(r)) {                                            // 手工补录行随 payload 下发，后端重算（前端值不被信任）
+      // OTH 标准行：赶工/变更/涨幅走 manual_fees，auto/locked 行走引擎，均不重复下发；暂估价空值不下发
+      if (r.stdKey && r.stdKey !== 'provisional_estimate') return;
+      if (r.stdKey === 'provisional_estimate' && !(parseFloat(r.usp) || 0)) return;
       const o = {name: r.name || '', unit: r.unit || '', qty: parseFloat(r.qty) || 0,
         usp: parseFloat(r.usp) || 0, amount: manualRowTotal(r), remark: r.remark || ''};
       (r.manual === 'measure' ? manual_measures : manual_others).push(o);
@@ -3079,12 +3162,11 @@ function jumpGroupDiscD() {
   const list = document.getElementById('libList');
   if (list && list.scrollIntoView) list.scrollIntoView({block:'start'});
 }
-// 引导跳转②：滚动聚焦顶部「赶工措施费」输入框（三个手工费框首位，用户顺势往下填）
+// 引导跳转②：滚动聚焦清单 OTH 分部简表（标准行预置在内，用户顺势往下填）
 function focusGroupManualFees() {
-  const el = document.getElementById('manualFeeOvertimeInp');
+  const el = document.getElementById('othTableAnchor');
   if (!el) return;
   if (el.scrollIntoView) el.scrollIntoView({block:'center'});
-  if (el.focus) el.focus();
 }
 function renderGroupSummaryPanel() {
   const panel = document.getElementById('groupSummaryPanel');
@@ -3100,9 +3182,9 @@ function renderGroupSummaryPanel() {
   html += '<div style="display:flex;flex-direction:column;gap:2px;margin-top:4px">';
   html += '<span>一 · 分部分项工程费 <b style="font-family:var(--mono)">' + money(s.part1) + '</b></span>' + (rowsHtml || '');
   html += '<span>二 · 措施项目费 <b style="font-family:var(--mono)">' + money(s.part2) + '</b><span style="color:var(--tx3)">（含 D 类 ' + fmt(s.dMeasures) + (s.manualMeasure ? ' + 手工补录 ' + fmt(s.manualMeasure) : '') + ' + 绿安费 ' + fmt(s.green) + '）</span></span>';
-  if (gaps.noMeasure) html += '<span style="color:var(--yel);font-weight:600">⚠ 措施项目费为 0：如合同含措施费（垂直运输/成品保护等），请在清单「ZS02-D · 措施项目」分部点「＋ 手工补录行」直接填价，或<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="jumpGroupDiscD()">去挂载</button>左侧「D措施」集团子目；确认无措施费可忽略</span>';
+  if (gaps.noMeasure) html += '<span style="color:var(--yel);font-weight:600">⚠ 措施项目费为 0：如合同含措施费（脚手架/成品保护等），请在清单「ZS02-D · 措施项目」分部点「＋ 新增措施行」，输入编号挂 ZS02-D 集团子目后填工程量，或<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="jumpGroupDiscD()">去挂载</button>左侧「D措施」集团子目；确认无措施费可忽略</span>';
   html += '<span>三 · 其他项目费 <b style="font-family:var(--mono)">' + money(s.part3) + '</b><span style="color:var(--tx3)">（预算包干 ' + fmt(s.baogan) + ' + 手工费用 ' + fmt(s.manualFees) + (s.manualOther ? ' + 手工补录行 ' + fmt(s.manualOther) : '') + ' + 配合费 ' + (s.coordFeeConfigured ? fmt(s.coordFee) + (s.needsArea ? '（暂按 0 计，待装修面积确认）' : '') : '—') + '；暂列金额集团规定不予计取）</span></span>';
-  if (gaps.noOther) html += '<span style="color:var(--yel);font-weight:600">⚠ 其他项目费仅含预算包干费：赶工/变更/涨幅等可在清单「ZS02-OTH · 其他项目」分部点「＋ 手工补录行」填入，或用下方「其他项目费·手工录入」金额框<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="focusGroupManualFees()">去填写</button>；确认无则忽略</span>';
+  if (gaps.noOther) html += '<span style="color:var(--yel);font-weight:600">⚠ 其他项目费仅含预算包干费：暂估价/合同变更/涨幅/赶工请在清单「ZS02-OTH · 其他项目」分部对应标准行填入金额，或<button class="btn btn-ghost btn-sm" style="padding:0 6px;font-size:10px" onclick="focusGroupManualFees()">去填写</button>；确认无则忽略</span>';
   if (!s.coordFeeConfigured) html += '<span style="color:var(--yel);font-weight:600">⚠️ 精装修配合费未计入——尚未配置该费率（元/m²），如需计取请在管理端录入配合费费率或联系管理员</span>';
   html += '<span>四 · 税金 <b style="font-family:var(--mono)">' + money(s.part4) + '</b><span style="color:var(--tx3)">（(一+二+三)×' + groupRateLabel(GROUP_RATES.tax) + '）</span></span>';
   html += '<span style="font-weight:700">五 · 总造价 <b style="font-family:var(--mono);color:var(--acc)">' + money(s.total) + '</b></span>';
@@ -3124,9 +3206,9 @@ async function doGroupSummaryExport() {
   const gaps = groupGapFlags(pre);
   if (gaps.noMeasure || gaps.noOther) {
     const miss = [];
-    if (gaps.noMeasure) miss.push('措施项目费为 0（「ZS02-D · 措施项目」分部无补录行且未挂 D 类子目）');
-    if (gaps.noOther) miss.push('其他项目费仅预算包干（「ZS02-OTH · 其他项目」分部无补录行）');
-    if (!confirm('⚠ ' + miss.join('；') + '。\n确认按此报价导出？（需补录请点「取消」，回清单对应分部点「＋ 手工补录行」）')) return;
+    if (gaps.noMeasure) miss.push('措施项目费为 0（「ZS02-D · 措施项目」分部未新增措施行、未挂 D 类子目）');
+    if (gaps.noOther) miss.push('其他项目费仅预算包干（「ZS02-OTH · 其他项目」分部标准行均未填金额）');
+    if (!confirm('⚠ ' + miss.join('；') + '。\n确认按此报价导出？（需补录请点「取消」，回清单对应分部补录：措施部挂 ZS02-D 子目，其他部在标准行填金额）')) return;
   }
   try {
     const h = { 'Content-Type': 'application/json' };
@@ -4636,9 +4718,7 @@ async function doAutoSave() {
       hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
       // M-1b：面积/手工费在写入持久化列前下钳 ≥0（负值不进 projects）
       fitout_area: Math.max(0, parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0),
-      overtime_fee: Math.max(0, parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0),
-      contract_change_fee: Math.max(0, parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0),
-      inflation_fee: Math.max(0, parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0),
+      ...(function(){ const f = collectGroupManualFees(); return { overtime_fee: f.overtime_fee, contract_change_fee: f.contract_change_fee, inflation_fee: f.inflation_fee }; })(),   // 标准行录入，projects 列仅作旧草稿兼容快照
       groups_json: JSON.parse(JSON.stringify(groups)),
       price_overrides: JSON.parse(JSON.stringify(userPriceOverrides || {})),
       mgmt_rate: globalMgmtRate,
@@ -4711,9 +4791,7 @@ async function saveProject() {
     hourly_rate: parseFloat(document.getElementById('hourlyRateInput')?.value || 350),
     // M-1b：面积/手工费在写入持久化列前下钳 ≥0（负值不进 projects）
     fitout_area: Math.max(0, parseFloat(document.getElementById('fitoutAreaInp')?.value) || 0),
-    overtime_fee: Math.max(0, parseFloat(document.getElementById('manualFeeOvertimeInp')?.value) || 0),
-    contract_change_fee: Math.max(0, parseFloat(document.getElementById('manualFeeChangeInp')?.value) || 0),
-    inflation_fee: Math.max(0, parseFloat(document.getElementById('manualFeeInflationInp')?.value) || 0),
+    ...(function(){ const f = collectGroupManualFees(); return { overtime_fee: f.overtime_fee, contract_change_fee: f.contract_change_fee, inflation_fee: f.inflation_fee }; })(),   // 标准行录入，projects 列仅作旧草稿兼容快照
     groups_json: JSON.parse(JSON.stringify(groups)),
     price_overrides: JSON.parse(JSON.stringify(userPriceOverrides)),
     mgmt_rate: globalMgmtRate,
@@ -4797,9 +4875,8 @@ async function restoreProject(id) {
   document.getElementById('coefBadge').textContent = '×' + globalCoef.toFixed(2);
   if (snap.hourly_rate) { const inp = document.getElementById('hourlyRateInput'); if(inp) inp.value = snap.hourly_rate; }
   { const el = document.getElementById('fitoutAreaInp'); if(el) el.value = snap.fitout_area != null ? snap.fitout_area : ''; }
-  { const el = document.getElementById('manualFeeOvertimeInp'); if(el) el.value = snap.overtime_fee != null ? snap.overtime_fee : ''; }
-  { const el = document.getElementById('manualFeeChangeInp'); if(el) el.value = snap.contract_change_fee != null ? snap.contract_change_fee : ''; }
-  { const el = document.getElementById('manualFeeInflationInp'); if(el) el.value = snap.inflation_fee != null ? snap.inflation_fee : ''; }
+  // 旧草稿：赶工/变更/涨幅存在 projects 列（顶部输入框已退役）→ 暂存，待 OTH 标准行预置后回填（行内已有值则不覆盖）
+  PENDING_STD_FEES = { overtime_fee: snap.overtime_fee, contract_change_fee: snap.contract_change_fee, inflation_fee: snap.inflation_fee };
   if (snap.price_overrides) { userPriceOverrides = snap.price_overrides; recomputeAllAux(); }
   if (snap.mgmt_rate !== undefined) { globalMgmtRate = Math.round(parseFloat(snap.mgmt_rate)||0); document.getElementById('mgmtRateInp').value = globalMgmtRate; }
   if (snap.profit_rate !== undefined) { globalProfitRate = Math.round(parseFloat(snap.profit_rate)||0); document.getElementById('profitRateInp').value = globalProfitRate; }
