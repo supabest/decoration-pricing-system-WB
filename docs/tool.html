@@ -1276,7 +1276,7 @@ function delRow(rid) {
   if(!getAllRows().length) showUpload();
   renderBoq();
 }
-function updField(rid,fld,val) { const r=findRow(rid); if(r){r[fld]=val;updateSum();} }
+function updField(rid,fld,val) { const r=findRow(rid); if(r){r[fld]=val;updateSum();renderBoq();} }
 function addSub(rid,bid,bsh) {
   const r=findRow(rid); if(!r) return false;
   if(r.subs.find(s=>s.bid===bid&&s.bsh===bsh)){ if(!batchMode) toast('该子目已添加'); return false; }
@@ -2305,7 +2305,7 @@ function renderBoq() {
               '</div></div></div></td>' +
           '<td><input class="ri ri-sm" value="'+esc(r.spec)+'" placeholder="项目特征" onchange="updField('+r.id+',\'spec\',this.value)"></td>' +
           '<td class="c"><input class="ri ri-sm ri-c" style="width:100%" value="'+esc(r.unit)+'" placeholder="单位" onchange="updField('+r.id+',\'unit\',this.value)"></td>' +
-          '<td class="r"><input class="qty-i" type="text" inputmode="decimal" value="'+r.qty+'" placeholder="0.00" oninput="updField('+r.id+',\'qty\',this.value)"></td>' +
+          '<td class="r"><input class="qty-i" type="text" inputmode="decimal" value="'+r.qty+'" placeholder="0.00" onchange="updField('+r.id+',\'qty\',this.value)"></td>' +
           '<td class="r-price r">'+(gMode?gCell(gagg.lab):fmt(up))+'</td>' +
           '<td class="r"'+(matPend?' style="background:var(--yel-d)"':'')+'>' +
             (gMode
