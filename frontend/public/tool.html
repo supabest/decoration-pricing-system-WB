@@ -2207,6 +2207,41 @@ function groupSubRowHtml(r, sub) {
     '<td class="c"><button class="btn btn-del" style="font-size:10px" onclick="delSub(' + r.id + ',' + idArg + ')">✕</button></td>' +
     '</tr>';
 }
+// ═══════════ 行内编辑焦点保全（整表重渲的代价补偿）═══════════
+// updField/updSubField 等处理器带 renderBoq() 是既有契约（派生单元格必须跟着刷新，见
+// sub_edit_refresh 回归），但整表 innerHTML 重建会把正在编辑的 input 换成新节点，
+// 焦点掉到 <body> —— Tab 逐格录入每改一格就得重新点一次。故 DOM 交换前记账、交换后回焦。
+// 定位键取内联 handler 原文：updField(4,'qty',this.value) 自带行号与字段，重渲后逐字相同，
+// 无需另加 data-* 标记。三个函数只接参数、不读全局 document，便于沙箱直跑（renderBoq 只负责接线）。
+function boqFocusKey(el) {
+  if (!el || !el.tagName || !el.getAttribute) return null;
+  const t = el.tagName;
+  if (t !== 'INPUT' && t !== 'TEXTAREA' && t !== 'SELECT') return null;
+  const h = el.getAttribute('onchange') || el.getAttribute('oninput');
+  if (!h) return null;
+  return t + '#' + (el.type || '') + '#' + h;
+}
+function saveBoqFocus(main, active) {
+  if (!main || !active || !main.contains || !main.contains(active)) return null;   // 焦点在侧栏搜索/顶部工具条：不抢
+  const key = boqFocusKey(active);
+  if (!key) return null;
+  let s = null, e = null;
+  try { s = active.selectionStart; e = active.selectionEnd; } catch (err) { /* number 等控件不支持选区 */ }
+  return { key: key, start: (s == null ? null : s), end: (e == null ? null : e) };
+}
+function restoreBoqFocus(main, saved) {
+  if (!main || !saved || !saved.key || !main.querySelectorAll) return false;
+  const list = main.querySelectorAll('input,textarea,select');
+  for (let i = 0; i < list.length; i++) {
+    if (boqFocusKey(list[i]) !== saved.key) continue;
+    if (!list[i].focus) return false;
+    list[i].focus({ preventScroll: true });   // 回焦不该把页面滚走：这一格重渲前后都在原位
+    try { if (saved.start != null) list[i].setSelectionRange(saved.start, saved.end); } catch (err) {}
+    return true;
+  }
+  return false;
+}
+
 function renderBoq() {
   const main = document.getElementById('boqMain');
   updateInternalCostPanel();
@@ -2403,7 +2438,9 @@ function renderBoq() {
     });
     html += '</tbody></table>';
   });
+  const _foc = saveBoqFocus(main, document.activeElement);   // 必须在 innerHTML 交换之前取
   main.innerHTML = html;
+  restoreBoqFocus(main, _foc);
   updateSum();
   scheduleAutoSave();
 }

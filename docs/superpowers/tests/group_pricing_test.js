@@ -144,6 +144,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'aiApplyGroup', 'flowCounts', 'updateFlowSteps',
   // ── N 段：内部引擎空工程量 NaN 泄漏（行合价 + 显示兜底）──
   'computeAuxForSub', 'computeAuxForRow', 'getAuxDetailForSub',
+  // ── O 段：整表重渲后恢复行内编辑焦点（三个决策函数均为纯函数，不读全局 DOM）──
+  'boqFocusKey', 'saveBoqFocus', 'restoreBoqFocus',
   // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
   'rebuildLibTabs', 'groupLibItems', 'getLibItems', 'renderLib', 'setSheet', 'libClick', 'libGroupRetry',
   'onDragStart', 'onDragEnd', 'onRowDrop',
@@ -1557,6 +1559,56 @@ ok('N5 集团口径不受影响：groupRowTotal 空量→ 0（原有 isNaN 护�
       'var r={name:"X",unit:"m2",qty:"",auxCost:0,subs:[{bid:"ZS02-D-003",bsh:"ZS02-D",gtype:"group",coef:1,conv:1}]};' +
       'var t=groupRowTotal(r),u=rowTotal(r);pricingMode="internal";' +
       'return t===0 && !(t<0||t>0) && u===t;})()') === true && run('_render') === before; })());
+
+/* ══ O 段：行内编辑即时刷新不得吃掉键盘焦点 ══
+   背景：updField 等处理器带 renderBoq()（既有契约，派生单元格必须跟着刷新），
+   而整表 innerHTML 重建会把旧 input 换成新节点 → 焦点掉到 <body>，Tab 逐格录入被打断（浏览器实测坐实）。
+   定位键取内联 handler 原文（updField(4,'qty',this.value) 自带行号+字段，重渲后逐字相同），
+   故无需给每个格子另加 data-* 标记。三个函数只接参数不读全局 document，以便沙箱直跑。 */
+const mkInp = (h, extra) => Object.assign({
+  tagName: 'INPUT', type: 'text', value: '',
+  getAttribute: a => (a === 'onchange' ? h : (a === 'oninput' ? null : null))
+}, extra || {});
+const mkMain = (ae, list) => ({ contains: el => el === ae, querySelectorAll: () => list || [] });
+ctx.mkInp = mkInp; ctx.mkMain = mkMain;   // 夹具挂进沙箱全局，供 run() 内的代码直接构造假元素
+
+ok('O1 boqFocusKey：取内联 handler 原文作键（含行号+字段，重渲前后必相同），带 type 防同键不同控件；无 handler/无元素一律 null',
+  run('(function(){var a=mkInp("updField(4,\'qty\',this.value)");' +
+    'return boqFocusKey(a)==="INPUT#text#updField(4,\'qty\',this.value)" &&' +
+    'boqFocusKey(mkInp("updField(4,\'qty\',this.value)"))===boqFocusKey(a) &&' +
+    'boqFocusKey(mkInp("updField(4,\'name\',this.value)"))!==boqFocusKey(a) &&' +
+    'boqFocusKey({tagName:"BUTTON",getAttribute:function(){return null;}})===null &&' +
+    'boqFocusKey(null)===null;})()') === true,
+  run('(function(){try{return String(boqFocusKey(mkInp("x")));}catch(e){return "throw:"+e.message;}})()'));
+ok('O2 saveBoqFocus 只在焦点确实落在清单容器内时才记账：侧栏搜索/顶部工具条一律不抢（返回 null）',
+  run('(function(){var ae=mkInp("updField(4,\'qty\',this.value)");' +
+    'var inMain=saveBoqFocus(mkMain(ae,[]),ae);' +
+    'var outside=mkInp("updField(9,\'qty\',this.value)");' +
+    'return inMain!==null && inMain.key===boqFocusKey(ae) &&' +
+    'saveBoqFocus(mkMain(null,[]),outside)===null && saveBoqFocus(null,ae)===null && saveBoqFocus(mkMain(ae,[]),null)===null;})()') === true);
+ok('O3 saveBoqFocus 容错：selection 不支持的控件（getter 抛错）不炸，键仍记下；能取则原样带上光标起止',
+  run('(function(){var bad=mkInp("updField(4,\'qty\',this.value)");' +   // 不能用 Object.assign 传 accessor：它会先读 getter 把错抛在夹具里
+    'Object.defineProperty(bad,"selectionStart",{get:function(){throw new Error("not selectable");}});' +
+    'Object.defineProperty(bad,"selectionEnd",{get:function(){throw new Error("not selectable");}});' +
+    'var s1=saveBoqFocus(mkMain(bad,[]),bad);' +
+    'var good=mkInp("updField(4,\'name\',this.value)",{selectionStart:2,selectionEnd:5});' +
+    'var s2=saveBoqFocus(mkMain(good,[]),good);' +
+    'return s1!==null && s1.start===null && s2.start===2 && s2.end===5;})()') === true);
+ok('O4 restoreBoqFocus 真跑：按键在新节点里找回同一格、preventScroll 聚焦不跳滚动、光标复位；找回不了返回 false 且不抛',
+  run('(function(){var old=mkInp("updField(4,\'qty\',this.value)");' +
+    'var saved=saveBoqFocus(mkMain(old,[]),old);' +
+    'var hits=0,focusArg=null,sel=null;' +
+    'var decoy={tagName:"INPUT",type:"text",getAttribute:function(a){return a==="onchange"?"updField(4,\'name\',this.value)":null;},focus:function(){hits++;}};' +
+    'var fresh={tagName:"INPUT",type:"text",getAttribute:function(a){return a==="onchange"?"updField(4,\'qty\',this.value)":null;},' +
+    'focus:function(o){hits++;focusArg=o;},setSelectionRange:function(a,b){sel=[a,b];}};' +
+    'var ok1=restoreBoqFocus(mkMain(null,[decoy,fresh]),{key:saved.key,start:1,end:1});' +
+    'var ok2=restoreBoqFocus(mkMain(null,[decoy]),{key:saved.key,start:null,end:null});' +
+    'var ok3=restoreBoqFocus(null,saved)===false && restoreBoqFocus(mkMain(null,[]),null)===false;' +
+    'return ok1===true && hits===1 && focusArg&&focusArg.preventScroll===true && sel[0]===1 && ok2===false && ok3===true;})()') === true);
+ok('O5 renderBoq 接线（源码钩）：记账在 innerHTML 交换之前、回焦在其后且先于 updateSum（否则合计又成陈值）',
+  (function(){ const src = grabAnyFn(TOOL, 'renderBoq');
+    const a = src.indexOf('saveBoqFocus('), b = src.indexOf('main.innerHTML = html'), c = src.indexOf('restoreBoqFocus('), d = src.indexOf('updateSum();', b);
+    return a >= 0 && b > a && c > b && d > c; })());
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
