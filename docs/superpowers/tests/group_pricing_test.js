@@ -1,0 +1,1617 @@
+/* 对甲报价（集团基准价 ZS02）数据基座验证：库可查 + 集团费率映射 + 模式开关状态机（懒加载）
+ * 只读 tool.html 源码（不修改它），沿用 quote_import_test.js 的抽函数沙箱模式：
+ * grabFn/closeIdx 抽顶层函数声明 → vm 沙箱执行 → DOM/_get/toast 打桩。
+ * 覆盖 Task 3 契约：pricingMode / groupBenchMap / getGroupBench / GROUP_RATES /
+ *   loadGroupBenchmark / loadGroupPricingRules / ensureGroupData / setPricingMode
+ * 覆盖 Task 4 契约：groupSubPrice / addGroupSub / groupRowUnitPrice / groupRowTotal /
+ *   groupRowComp / rowUnitPrice·rowTotal·compUnitPrice 的 group 分支 / updateGroupRateHint
+ *   （含内部公式回归双夹具：同数据 internal 模式下逐分不变）
+ * 覆盖 Task 5 契约：rowGroupAgg / rowGroupPending / rowGroupSubs / groupSubCells / updGroupMat /
+ *   groupPickerItems·openGroupPicker·renderGroupPicker·closeGroupPicker·gpPick·groupPickerRetry /
+ *   EXP_COLS 管理费利润列的 group 分支 / renderBoq 集团子目分流 / syncRowMat 的 gtype 隔离护栏
+ * 覆盖 Task 6 契约：buildGroupSummary（T02 四部分汇总勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1
+ *   · 绿安/baogan 基数只含分部分项人工+机械 · coordFee=null≠0 · 费率全取 GROUP_RATES 不硬编码 · perSqm 除零守护）
+ *   collectGroupSummaryPayload（后端请求体：raw 14 字段 items · 不下发前端 h · rates/manual_fees 顶层键）
+ *   评审修复回归：M-1 面积/手工费负值钳到 ≥0 不倒扣 part3 · M-1b 采集点（汇总 opts / 后端 payload / 持久化列）同源下钳 · M-6 payload.rates 浅拷贝不共享 GROUP_RATES 活引用
+ * 覆盖「对甲报价 AI 一键套价」：startAiPricing 门改分流（不再 groupModeBlock）· targets 双口径判据 ·
+ *   priceOne 透传 mode · aiApplyGroup 落点唯一走 addGroupSub（只选子目不代填价、mats 深拷、待补价 note）·
+ *   一致性校验块 group 下不可达 · flowCounts/updateFlowSteps 集团口径
+ * 运行：node docs/superpowers/tests/group_pricing_test.js
+ */
+const fs = require('fs');
+const vm = require('vm');
+
+const TOOL = fs.readFileSync(__dirname + '/../../tool.html', 'utf8');
+
+/* ── 抽取器（与 quote_import_test.js 同一套：先跳参数表再配对花括号，抽完即编译校验）── */
+function closeIdx(src, open, oCh, cCh) {
+  let depth = 0, i = open;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (c === '\\') { i++; continue; }
+    if (c === oCh) depth++;
+    else if (c === cCh) { depth--; if (!depth) return i; }
+  }
+  throw new Error('配对失败 ' + oCh + ' @' + open);
+}
+function grabFn(src, name) {
+  const key = 'function ' + name + '(';
+  const i = src.indexOf(key);
+  if (i < 0) throw new Error('未找到 function ' + name);
+  const pClose = closeIdx(src, i + key.length - 1, '(', ')');
+  const open = src.indexOf('{', pClose);
+  const close = closeIdx(src, open, '{', '}');
+  const code = src.slice(i, close + 1);
+  try { new Function(code); } catch (e) { throw new Error('抽取 ' + name + ' 语法不完整: ' + e.message); }
+  return code;
+}
+/* async 版本的抽取器：loader 都是 async function，若先按 'function name(' 抽、再补前缀，
+ * grabFn 内部的编译校验会先因为「函数体内有 await」报错，所以这里从源头带上 async 再校验 */
+function grabAnyFn(src, name) {
+  const key = (src.indexOf('async function ' + name + '(') >= 0 ? 'async function ' : 'function ') + name + '(';
+  const i = src.indexOf(key);
+  if (i < 0) throw new Error('未找到 ' + key);
+  const pClose = closeIdx(src, i + key.length - 1, '(', ')');
+  const open = src.indexOf('{', pClose);
+  const close = closeIdx(src, open, '{', '}');
+  const code = src.slice(i, close + 1);
+  try { new Function(code); } catch (e) { throw new Error('抽取 ' + name + ' 语法不完整: ' + e.message); }
+  return code;
+}
+function grabDecl(src, decl) {
+  const i = src.indexOf(decl);
+  if (i < 0) throw new Error('未找到 ' + decl);
+  const b = src.indexOf('[', i), o = src.indexOf('{', i);
+  const open = (b >= 0 && (o < 0 || b < o)) ? b : o;
+  const openCh = src[open];
+  const close = closeIdx(src, open, openCh, openCh === '{' ? '}' : ']');
+  const code = src.slice(i, close + 1) + ';';
+  try { new Function(code); } catch (e) { throw new Error('抽取 ' + decl + ' 语法不完整: ' + e.message); }
+  return code;
+}
+/* 标量声明（let pricingMode = 'internal'; 这类）：整行取出，证明默认值来自源码本身 */
+function grabLine(src, key) {
+  const i = src.indexOf(key);
+  if (i < 0) throw new Error('未找到 ' + key);
+  const s = src.lastIndexOf('\n', i) + 1;
+  const e = src.indexOf('\n', i);
+  const code = src.slice(s, e);
+  try { new Function(code); } catch (err) { throw new Error('抽取 ' + key + ' 行不完整: ' + err.message); }
+  return code;
+}
+
+/* ── DOM 打桩：getElementById 惰性建元素，宿主侧可直接读 disabled/checked/textContent ──
+ * 弹窗类断言需要真实 classList（add/remove/contains）+ 操作流水（_clsOps），
+ * 否则「remove(\'hidden\') 到底有没有发生」在断言里不可见 ── */
+const els = {};
+const DOMCFG = { gone: false };   // 置 true 可模拟「元素不存在」的精简 DOM
+function mkEl(id) {
+  const cls = new Set();
+  const ops = { added: [], removed: [] };
+  const el = { id, value: '', checked: false, disabled: false, title: '', className: '', textContent: '',
+    style: {}, focus() {}, dataset: {}, children: [], appendChild(c) { this.children.push(c); },
+    classList: { add(c) { cls.add(c); ops.added.push(c); }, remove(c) { cls.delete(c); ops.removed.push(c); },
+      toggle(c) { cls.has(c) ? cls.delete(c) : cls.add(c); }, contains(c) { return cls.has(c); } },
+    _cls: cls, _clsOps: ops };
+  let _html = '';
+  Object.defineProperty(el, 'innerHTML', { get: () => _html, set: v => { _html = v; el.children.length = 0; } });  // 真 DOM 语义：写 innerHTML 替换子节点（stub 里重建 tabs 不累积）
+  return el;
+}
+const document = {
+  getElementById: id => (DOMCFG.gone ? null : (els[id] || (els[id] = mkEl(id)))),
+  querySelector: () => mkEl('qs'),
+  querySelectorAll: () => [],
+  createElement: () => mkEl('created'),
+  addEventListener: () => {},
+};
+const GETS = [];    // _get 请求过的表名（宿主数组，沙箱内 push 可直接观测）
+const TOASTS = [];  // toast 文案
+
+/* ── 沙箱：group 数据基座 + T4 公式层 + 内部计价引擎（回归双夹具要真跑原公式），
+ *    内部模式的费率/系数状态一并声明用于污染检查 ── */
+const LINES = ['let pricingMode', 'let groupDataLoaded', 'let groupBenchLoaded', 'let groupRulesLoaded',
+  'let _groupLoading', 'let rowMap', 'let groupPickerRowId', 'let pickerRowId', 'let pendingBatch',
+  'let shFilter', 'let drag'];
+const DECLS = ['let GROUP_RATES', 'let groupBenchMap', 'let groupBenchRows', 'const GROUP_RULE_KEY_MAP',
+  'const MAT_CAT_KEYWORDS',   // T5 护栏测试要真跑 syncRowMat→routeRowMat 链（品类识别依赖）
+  'const EXP_COLS',           // T5 契约：管理费/利润列的 group 分支直接取数验证
+  'const GROUP_DISC_TABS',    // I 段：侧栏双库 discipline 标签
+  'const OTH_STD_ROWS', 'const OTH_FEE_KEY_MAP', 'let PENDING_STD_FEES'];   // K 段二次裁定：OTH 标准行预置 + 旧草稿回填
+const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGroupBenchmark',
+  'loadGroupPricingRules', 'loadGroupDataOnce', 'ensureGroupData', 'setPricingMode',
+  // ── T4：集团公式引擎 ──
+  'groupSubPrice', 'groupRowUnitPrice', 'groupRowTotal', 'groupRowComp', 'addGroupSub', 'updateGroupRateHint',
+  // ── 内部引擎原路径（回归双夹具）──
+  'rebuildBenchMap', 'getBench', 'effPrice', 'rowMatCost', 'rowUnitPrice', 'compUnitPrice', 'rowTotal',
+  'getAllRows', 'rebuildRowMap', 'findRow', 'makeRow',
+  // ── 子目字段处理器（T4 契约：复用不改，bid+bsh 定位对集团子目同样有效）──
+  'updCoef', 'updConv', 'updSubField',
+  // ── T5：派生聚合 / 挂载面板 / gtype 隔离护栏 ──
+  'rowGroupSubs', 'rowGroupAgg', 'rowGroupPending', 'groupExportFee', 'groupSubCells', 'groupSubRowHtml', 'updGroupMat',
+  // ── T6：T02 四部分汇总预览计算 + 导出 payload 收集 ──
+  'buildGroupSummary', 'collectGroupSummaryPayload', 'collectGroupManualFees', 'getGroupSummaryOpts',
+  'groupModeBlock',              // F2 防御收口：混合态拦截逻辑断言（restoreProject 接线另为源码级）
+  'groupGapFlags',               // K 段：补录缺口引导（措施/其他费）纯函数真跑
+  'jumpGroupDiscD', 'focusGroupManualFees', // K 段：引导跳转真跑（DOM stub 下降级到 shFilter 兜底）
+  // ── K 段：对甲补录分部（措施标准 BOQ 管线 + OTH 预置标准行）──
+  'isManualRow', 'manualRowTotal', 'ensureManualGroups', 'addManualRow', 'updManual', 'renderManualGroupHtml',
+  'addMeasureRow', 'legacyMeasureRowHtml', 'applyPendingStdFees',
+  'groupPickerItems', 'groupMatPending', 'openGroupPicker', 'closeGroupPicker', 'renderGroupPicker',
+  'groupPickerRetry', 'gpPick',
+  // ── L 段：弹窗「输编号回车快挂」（两端弹窗同一决策，只回结论不碰 DOM）──
+  'pkFilterItems', 'pkMountByEnter', 'pkSrchKey', 'gpMountByEnter', 'gpSrchKey',
+  // ── M 段：对甲报价 AI 一键套价（落点纯函数 + 顺序引导计数）──
+  'aiApplyGroup', 'flowCounts', 'updateFlowSteps',
+  // ── N 段：内部引擎空工程量 NaN 泄漏（行合价 + 显示兜底）──
+  'computeAuxForSub', 'computeAuxForRow', 'getAuxDetailForSub',
+  // ── O 段：整表重渲后恢复行内编辑焦点（三个决策函数均为纯函数，不读全局 DOM）──
+  'boqFocusKey', 'saveBoqFocus', 'restoreBoqFocus',
+  // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
+  'rebuildLibTabs', 'groupLibItems', 'getLibItems', 'renderLib', 'setSheet', 'libClick', 'libGroupRetry',
+  'onDragStart', 'onDragEnd', 'onRowDrop',
+  'delSub', 'addSub', 'syncRowMat', 'routeRowMat', 'subCategoryScore', 'normKey', 'rowMatPending', 'fmt', 'esc'];
+
+let ctx;
+const HEAD = [
+  '// 对内引擎状态：模式开关不得触碰',
+  'let globalCoef=1.0, globalMgmtRate=10, globalProfitRate=15;',
+  '// 内部引擎依赖的库/清单状态（T4 回归夹具用）',
+  'let DB={}, benchMap={}, groups=[], uid=1, ALL=[];',
+  'let SHEETS=["泥水班组","油漆班组"];',   // I 段：内部侧栏 tabs 重建用
+  'let hourlyRate=350, batchMode=false;',
+  '// renderBoq/updateSum 用计数器桩：本测试只验开关接线与公式，不跑真实渲染',
+  'let _render=0, _sum=0; function renderBoq(){_render++;} function updateSum(){_sum++;}',
+  'function toast(m){TOASTS.push(m);}',
+  'let RESP={}; let _get=async function(t,p){GETS.push(t); return (RESP[t]||[]).slice();};',
+];
+function buildSandbox() {
+  ctx = vm.createContext({
+    console, JSON, Math, Number, parseFloat, parseInt, String, Object, Array, isNaN, Set, Map, Date, RegExp, Promise,
+    document, GETS, TOASTS, DOMCFG,
+    setTimeout: () => 0,   // 弹窗聚焦等 UI 定时器在沙箱里不执行（只验接线，不验时序）
+  });
+  vm.runInContext(
+    HEAD.join('\n') + '\n' +
+    LINES.map(l => grabLine(TOOL, l)).join('\n') + '\n' +
+    DECLS.map(d => grabDecl(TOOL, d)).join('\n') + '\n' +
+    FNS.map(n => grabAnyFn(TOOL, n)).join('\n'),
+    ctx);
+}
+const run = code => vm.runInContext(code, ctx);
+const runA = code => vm.runInContext('(async () => { ' + code + ' })()', ctx);   // 宿主 await 沙箱 promise 可行
+
+let pass = 0, fail = 0;
+function ok(name, cond, detail) {
+  if (cond) { pass++; console.log('  ✓ ' + name); }
+  else { fail++; console.log('  ✗ ' + name + (detail ? '  → ' + detail : '')); }
+}
+const reset = () => { GETS.length = 0; TOASTS.length = 0; };
+
+(async function main() {
+buildSandbox();   // 抽取即编译校验：工具函数/声明缺失会在此抛错（RED）
+
+/* ══ 夹具：模拟 group_benchmark_items 两行（甲供未定价 + 已定价），字段照 T1 迁移列 ══ */
+const G009 = { code: 'ZS02-A-009', discipline: 'A', section_name: '楼地面工程', name: '瓷砖地面',
+  spec: 'SA级600×600', unit: 'm2', work_type: '泥水', lab_price: 61.65,
+  mats: [{ name: '瓷砖', price: null, unit: 'm2', consumption: 1.4469 },
+         { name: '1:3干硬性水泥砂浆', price: null, unit: 'm3', consumption: 0.0147 }],
+  aux_cost: 1.98, mech_cost: 0, is_owner_supply: false, raw_composite: null, source_row: 146 };
+const D003 = { code: 'ZS02-D-003', discipline: 'D', section_name: '单价措施项目', name: '成品保护-PVC保护膜',
+  spec: '厚2mm', unit: 'm2', work_type: '油漆', lab_price: 1.51,
+  mats: [{ name: 'PVC保护膜', price: 2, unit: 'm2', consumption: 0.95 }],
+  aux_cost: 0.23, mech_cost: 0, is_owner_supply: false, raw_composite: null, source_row: 300 };
+const RULES_SEED = [
+  { key: 'mgmt_rate', label: '管理费率', value: 0.17, unit: '×(人工+机械)', kind: 'rate' },
+  { key: 'profit_rate', label: '利润率', value: 0.12, unit: '×(人工+机械)', kind: 'rate' },
+  { key: 'green_safety_rate', label: '绿色施工安全防护措施费率', value: 0.13, unit: '×∑(分部分项人工+机械)', kind: 'rate' },
+  { key: 'lump_sum_rate', label: '预算包干费率', value: 0.03, unit: '×∑(分部分项人工+机械)', kind: 'rate' },
+  { key: 'tax_rate', label: '税金率', value: 0.09, unit: '×(一+二+三)', kind: 'rate' },
+  { key: 'fitout_coordination_fee', label: '精装修管理及配合费', value: null, unit: '元/m2(装修面积,admin必填)', kind: 'fee' },
+  { key: 'overtime_fee', label: '赶工措施费', value: null, unit: '手工金额', kind: 'fee' },
+  { key: 'contract_change_fee', label: '合同变更费用', value: null, unit: '手工金额', kind: 'fee' },
+  { key: 'inflation_fee', label: '装修类型涨幅费用', value: null, unit: '手工金额', kind: 'fee' },
+];
+run('var G009 = ' + JSON.stringify(G009) + '; var D003 = ' + JSON.stringify(D003) +
+    '; var RULES_SEED = ' + JSON.stringify(RULES_SEED) + ';');
+
+/* ────────────── A. ZS02 库夹具：建 map 后可按 code 查原样行 ────────────── */
+console.log('\n── A. groupBenchMap / getGroupBench：表行原样入 map ──');
+run('rebuildGroupBenchMap([G009, D003])');
+ok('A1 getGroupBench 命中同一对象引用（字段不改名，T4 直接读 lab_price/mats/aux_cost/mech_cost）',
+  run('getGroupBench("ZS02-A-009") === G009'));
+ok('A2 第二行同样可查', run('getGroupBench("ZS02-D-003") === D003'));
+ok('A3 未入库编码返回 null（不是 undefined，调用方只需判 !x）', run('getGroupBench("ZS02-A-999") === null'));
+ok('A4 map 键 = code', Object.keys(run('groupBenchMap')).join(',') === 'ZS02-A-009,ZS02-D-003',
+  Object.keys(run('groupBenchMap')).join(','));
+const matsA = run('getGroupBench("ZS02-A-009").mats');
+ok('A5 甲供未定价位 mats[].price 仍是 null（T4「待询价」判据依赖，不能被成 0）',
+  matsA.length === 2 && matsA[0].price === null && matsA[1].price === null, JSON.stringify(matsA));
+ok('A6 消耗量口径原样保留（1.4469 不四舍五入）', run('getGroupBench("ZS02-A-009").mats[0].consumption') === 1.4469);
+ok('A7 groupBenchRows 留有序数组（map 丢序，分部小计/导出要按 code 顺序）',
+  run('groupBenchRows.length') === 2 && run('groupBenchRows[0].code') === 'ZS02-A-009');
+run('rebuildGroupBenchMap([D003])');
+ok('A8 重建不累积脏键（库刷新后旧 code 查不到）',
+  run('getGroupBench("ZS02-A-009") === null') && run('Object.keys(groupBenchMap).length') === 1);
+run('rebuildGroupBenchMap([])');
+ok('A9 空数组入参不抛异常（离线/未建表路径）', run('getGroupBench("ZS02-D-003")') === null);
+run('rebuildGroupBenchMap([G009, D003])');   // 还原夹具
+
+/* ────────────── B. 两个 loader 的数据契约 ────────────── */
+console.log('\n── B. loadGroupBenchmark / loadGroupPricingRules：表名、兜底解析、失败返回 false ──');
+reset();
+run('RESP = {group_benchmark_items: [G009, D003]};');
+ok('B1 表名逐字 group_benchmark_items', await runA('return loadGroupBenchmark();') === true && GETS[0] === 'group_benchmark_items', JSON.stringify(GETS));
+ok('B2 成功后库可查且行原样', run('getGroupBench("ZS02-A-009") === G009'));
+ok('B3 loader 自身不动幂等标志（幂等由 ensureGroupData 统一管）', run('groupDataLoaded') === false);
+reset();
+run('RESP = {};');
+ok('B4 未建表/离线：返回 false 并 toast 提示，不抛异常', await runA('return loadGroupBenchmark();') === false);
+ok('B5 失败提示点名表名，便于排障', TOASTS.some(t => String(t).includes('group_benchmark_items')), JSON.stringify(TOASTS));
+reset();
+const G_STR = Object.assign({}, G009, { mats: JSON.stringify(G009.mats) });   // JSONB 以文本回传的兜底场景
+run('RESP = {group_benchmark_items: ' + JSON.stringify([G_STR]) + '};');
+await runA('return loadGroupBenchmark();');
+ok('B6 mats 为 JSON 文本时解析成数组（消费侧只认数组）',
+  run('Array.isArray(getGroupBench("ZS02-A-009").mats)') === true && run('getGroupBench("ZS02-A-009").mats.length') === 2);
+run('RESP = {group_benchmark_items: [{code:"ZS02-B-001",mats:"{坏JSON"}]};');
+await runA('return loadGroupBenchmark();');
+ok('B7 mats 非法 JSON → 置空数组而不是崩掉整库', run('getGroupBench("ZS02-B-001").mats.length') === 0);
+run('RESP = {group_benchmark_items: [{code:"ZS02-B-002"}]};');
+await runA('return loadGroupBenchmark();');
+ok('B8 无 mats 字段行兜底为 []', run('Array.isArray(getGroupBench("ZS02-B-002").mats)') && run('getGroupBench("ZS02-B-002").mats.length') === 0);
+
+console.log('\n  · 费率 key → GROUP_RATES 短键映射');
+const RATES_DEFAULT = { mgmt: 0.17, profit: 0.12, green: 0.13, baogan: 0.03, tax: 0.09, coordFee: null };
+ok('B9 GROUP_RATES 初值即 T01 标准费率六键（离线/未建表时预览口径不变）',
+  JSON.stringify(run('GROUP_RATES')) === JSON.stringify(RATES_DEFAULT), JSON.stringify(run('GROUP_RATES')));
+ok('B10 断言式复核：mgmt 0.17 且 green 0.13', run('GROUP_RATES.mgmt') === 0.17 && run('GROUP_RATES.green') === 0.13);
+reset();
+run('RESP = {group_pricing_rules: RULES_SEED};');
+ok('B11 表名逐字 group_pricing_rules', await runA('return loadGroupPricingRules();') === true && GETS[0] === 'group_pricing_rules', JSON.stringify(GETS));
+ok('B12 五个 rate 键取库值', run('[GROUP_RATES.mgmt,GROUP_RATES.profit,GROUP_RATES.green,GROUP_RATES.baogan,GROUP_RATES.tax].join()') === '0.17,0.12,0.13,0.03,0.09',
+  run('[GROUP_RATES.mgmt,GROUP_RATES.profit,GROUP_RATES.green,GROUP_RATES.baogan,GROUP_RATES.tax].join()'));
+ok('B13 fee 类 NULL 记为 null 而非 0（coordFee 属 admin 必填拦截项）', run('GROUP_RATES.coordFee') === null);
+ok('B14 未识别 key 忽略（手工金额行不进 GROUP_RATES，键数恒为六）', run('Object.keys(GROUP_RATES).length') === 6,
+  run('JSON.stringify(Object.keys(GROUP_RATES))'));
+reset();
+run('RESP = {group_pricing_rules: [{key:"mgmt_rate",value:0.15},{key:"tax_rate",value:0.1}]};');
+ok('B15 库值覆盖默认（改库即改口径，前端不写死）', await runA('return loadGroupPricingRules();') === true && run('GROUP_RATES.mgmt') === 0.15 && run('GROUP_RATES.tax') === 0.1);
+ok('B16 未下发的键保持原值（profit 仍是 0.12，不会被清空）', run('GROUP_RATES.profit') === 0.12);
+reset();
+run('RESP = {};');
+run('GROUP_RATES.mgmt = 0.15;');
+ok('B17 空表：返回 false + toast，且 GROUP_RATES 保持既有值不被清',
+  await runA('return loadGroupPricingRules();') === false && run('GROUP_RATES.mgmt') === 0.15 && TOASTS.length >= 1);
+run('RESP = {group_pricing_rules: [{key:"fitout_coordination_fee",value:null},{key:"overtime_fee",value:null}]};');
+ok('B18 全 NULL 表：返回 false（无有效数值，保留再次触发加载的机会）', await runA('return loadGroupPricingRules();') === false);
+run('GROUP_RATES = {mgmt:0.17,profit:0.12,green:0.13,baogan:0.03,tax:0.09,coordFee:null};');   // 复位标准费率
+ok('B19 groupRateLabel：0.17 → 17%（禁用提示/后续费率展示用）', run('groupRateLabel(0.17)') === '17%');
+ok('B20 groupRateLabel：null → — 而不是 NaN%', run('groupRateLabel(null)') === '—', run('groupRateLabel(null)'));
+
+/* ────────────── C. 懒加载状态机 ────────────── */
+console.log('\n── C. 懒加载：内部模式启动零请求，切入 group 才加载，失败可重试、成功幂等 ──');
+ok('C1 pricingMode 默认 internal（源码声明原样搬进沙箱）', run('pricingMode') === 'internal');
+ok('C2 三个幂等标志初值均 false', run('groupDataLoaded') === false && run('groupBenchLoaded') === false && run('groupRulesLoaded') === false);
+reset();
+run('RESP = {};');
+ok('C3 沙箱求值期未发任何 group 请求（数据只在显式调用时加载）', GETS.length === 0, JSON.stringify(GETS));
+const BOOT_ANCHOR = '⚡ 所有数据请求并行加载';
+const bootIdx = TOOL.indexOf(BOOT_ANCHOR);
+if (bootIdx < 0) throw new Error('未找到启动并行加载块锚点：' + BOOT_ANCHOR);
+const bootBlock = TOOL.slice(bootIdx, bootIdx + 700);
+ok('C4 页面启动并行加载块未含 group loader / ensureGroupData（内部启动路径零改动）',
+  !/loadGroup|ensureGroupData/.test(bootBlock), bootBlock.slice(0, 200));
+
+reset();
+run('setPricingMode("group");');
+await runA('return ensureGroupData();');
+ok('C5 首次切入 group：两张表各请求一次', GETS.filter(t => t === 'group_benchmark_items').length === 1 && GETS.filter(t => t === 'group_pricing_rules').length === 1, JSON.stringify(GETS));
+ok('C6 加载失败仍完成模式切换（不回滚 pricingMode，用户看得见数据问题）', run('pricingMode') === 'group' && run('groupDataLoaded') === false);
+ok('C7 失败向用户 toast（不静默）', TOASTS.some(t => /集团|基准价|费率/.test(String(t))), JSON.stringify(TOASTS));
+reset();
+run('setPricingMode("internal"); setPricingMode("group");');
+await runA('return ensureGroupData();');
+ok('C8 失败后再次触发会重发请求（幂等标志未被误置 true）', GETS.length === 2, JSON.stringify(GETS));
+reset();
+run('RESP = {group_benchmark_items: [G009, D003], group_pricing_rules: RULES_SEED};');
+await runA('return ensureGroupData();');
+ok('C9 数据就绪后 groupDataLoaded 置 true', run('groupDataLoaded') === true && run('groupBenchLoaded') === true && run('groupRulesLoaded') === true);
+ok('C10 库数据落进 map（getGroupBench 可查 A-009）', run('getGroupBench("ZS02-A-009") === G009'));
+reset();
+run('setPricingMode("internal");');
+run('setPricingMode("group");');
+await runA('return ensureGroupData();');
+ok('C11 成功后再切不再请求（懒加载幂等，来回切不重复打库）', GETS.length === 0, JSON.stringify(GETS));
+reset();
+run('groupDataLoaded=false; groupBenchLoaded=false; groupRulesLoaded=false; _groupLoading=null;');
+run('setPricingMode("group"); setPricingMode("group"); setPricingMode("group");');
+await runA('return ensureGroupData();');
+ok('C12 同一轮连点开关只发一组请求（并发去重）', GETS.length === 2, JSON.stringify(GETS));
+
+/* ────────────── D. 开关与对内控件的互斥/污染防线 ────────────── */
+console.log('\n── D. setPricingMode：状态迁移 + 管理费/利润输入框 disabled 互斥 + 对内状态零污染 ──');
+reset();
+run('_render=0; _sum=0;');
+run('setPricingMode("group");');
+ok('D1 pricingMode === "group"', run('pricingMode') === 'group');
+ok('D2 group 模式：管理费/利润输入框同时置灰（17%/12% 由 group_pricing_rules 驱动，不许手填）',
+  run('document.getElementById("mgmtRateInp").disabled') === true && run('document.getElementById("profitRateInp").disabled') === true);
+ok('D3 两输入框都有解释性 title（点名费率来源）',
+  els['mgmtRateInp'].title.includes('group_pricing_rules') && els['profitRateInp'].title.includes('group_pricing_rules'), els['mgmtRateInp'].title);
+ok('D4 radio 勾选态跟随（程序化调用也保持一致，且互斥）',
+  els['modeGroupInp'].checked === true && els['modeInternalInp'].checked === false);
+ok('D5 徽标文案切到「对甲报价」', String(els['pricingModeBadge'].textContent).includes('对甲报价'), els['pricingModeBadge'].textContent);
+ok('D6 切换后重渲染清单与总计（renderBoq + updateSum 各一次）', run('_render') === 1 && run('_sum') === 1, 'render=' + run('_render') + ' sum=' + run('_sum'));
+
+run('setPricingMode("internal");');
+ok('D7 pricingMode === "internal"', run('pricingMode') === 'internal');
+ok('D8 internal 模式：两输入框恢复可编辑（与 D2 互斥）',
+  els['mgmtRateInp'].disabled === false && els['profitRateInp'].disabled === false);
+ok('D9 radio 恢复「对内成本」勾选', els['modeInternalInp'].checked === true && els['modeGroupInp'].checked === false);
+ok('D10 徽标回到「对内成本」', String(els['pricingModeBadge'].textContent).includes('对内成本'));
+ok('D11 internal 模式不再触发任何加载（幂等标志已 true，也不该重发）', GETS.length === 0, JSON.stringify(GETS));
+
+const coefBefore = run('globalCoef'), mgmtBefore = run('globalMgmtRate'), profitBefore = run('globalProfitRate');
+reset();
+run('setPricingMode("group"); setPricingMode("internal");');
+ok('D12 模式来回切换不触碰对内公式参数（coef/管理费率/利润率原值）',
+  run('globalCoef') === coefBefore && run('globalMgmtRate') === mgmtBefore && run('globalProfitRate') === profitBefore,
+  [run('globalCoef'), run('globalMgmtRate'), run('globalProfitRate')].join('/'));
+run('document.getElementById("mgmtRateInp"); document.getElementById("profitRateInp");');
+els['mgmtRateInp'].value = '10'; els['profitRateInp'].value = '15';
+run('setPricingMode("group"); setPricingMode("internal");');
+ok('D13 切换不改写两输入框的既有数值（只切 disabled，快照/导出口径不受影响）',
+  els['mgmtRateInp'].value === '10' && els['profitRateInp'].value === '15',
+  els['mgmtRateInp'].value + '/' + els['profitRateInp'].value);
+ok('D14 脏值归一：未知 mode 落回 internal（防 URL/快照带入野值）',
+  run('setPricingMode("whatever"), pricingMode') === 'internal');
+ok('D15 未知 mode 的输入框状态与 internal 一致（不残留灰态）',
+  els['mgmtRateInp'].disabled === false && els['profitRateInp'].disabled === false);
+DOMCFG.gone = true;
+ok('D16 元素缺失时不抛异常（精简 DOM / 手机版复用同一状态机）',
+  run('(function(){ try { setPricingMode("group"); setPricingMode("internal"); return true; } catch(e) { return "throw: " + e.message; } })()') === true);
+DOMCFG.gone = false;
+run('setPricingMode("group");');
+ok('D17 group 模式暴露给 T4：pricingMode/getGroupBench/GROUP_RATES 均为顶层可读写',
+  run('pricingMode') === 'group' && typeof run('getGroupBench') === 'function' && run('typeof GROUP_RATES') === 'object');
+
+/* ────────────── E. 评审发现修复：rate 键 NULL 守护（F1）+ 数据到达后补渲染（F2） ────────────── */
+console.log('\n── E. rate 键缺失守护（保留 T01 默认 + 判失败可重试）/ 数据到达后补渲染 ──');
+const RATE_RESET = 'GROUP_RATES = {mgmt:0.17,profit:0.12,green:0.13,baogan:0.03,tax:0.09,coordFee:null};';
+const FLAG_RESET = 'groupDataLoaded=false; groupBenchLoaded=false; groupRulesLoaded=false; _groupLoading=null;';
+const tick = () => new Promise(r => setTimeout(r, 0));   // 排空沙箱内 .then 微任务
+
+// F1-1：单个 rate 键被 admin 置 NULL，其余有效
+reset();
+run(FLAG_RESET + ' ' + RATE_RESET);
+run('RESP = {group_pricing_rules: [{key:"mgmt_rate",value:null},{key:"profit_rate",value:0.11},'
+  + '{key:"green_safety_rate",value:0.13},{key:"lump_sum_rate",value:0.03},{key:"tax_rate",value:0.09},'
+  + '{key:"fitout_coordination_fee",value:null}]};');
+ok('E1 rate 键遇 NULL：loader 判失败返回 false（不再「成功加载」地放行）',
+  await runA('return loadGroupPricingRules();') === false);
+ok('E2 GROUP_RATES.mgmt 保留 T01 默认 0.17，未被库 NULL 覆盖（T4 里管理费不会静默归零）',
+  run('GROUP_RATES.mgmt') === 0.17, 'mgmt=' + run('GROUP_RATES.mgmt'));
+ok('E3 同批有效 rate 键照常覆盖库值（守护是逐键的，不整批丢弃）', run('GROUP_RATES.profit') === 0.11,
+  'profit=' + run('GROUP_RATES.profit'));
+ok('E4 缺失 toast 点名缺失键并声明保持 T01 默认',
+  TOASTS.some(t => /集团费率缺失/.test(String(t)) && /保持 T01 默认/.test(String(t))), JSON.stringify(TOASTS));
+reset();
+run(FLAG_RESET + ' ' + RATE_RESET);
+run('RESP = {group_benchmark_items: [G009, D003], group_pricing_rules: [{key:"mgmt_rate",value:null}]};');
+ok('E5 经整条加载链：一个 rate 键缺失则 loadGroupDataOnce 返回 false，且两个幂等标志均不置位（可重试）',
+  (await runA('return loadGroupDataOnce();')) === false && run('groupRulesLoaded') === false && run('groupDataLoaded') === false);
+ok('E5b 但基准价库那一组自身成功（分项标志只锁失败的那组）', run('groupBenchLoaded') === true);
+run(FLAG_RESET);
+
+// F1-2：NaN 坏值同属「坏值」，与 NULL 同等守护
+reset();
+run(RATE_RESET);
+run('RESP = {group_pricing_rules: [{key:"mgmt_rate",value:0.17},{key:"profit_rate",value:0.12},{key:"green_safety_rate",value:0.13},{key:"lump_sum_rate",value:0.03},{key:"tax_rate",value:"abc"}]};');
+ok('E6 rate 键坏值（parseFloat → NaN）：返回 false 且 tax 保持 0.09',
+  await runA('return loadGroupPricingRules();') === false && run('GROUP_RATES.tax') === 0.09, 'tax=' + run('GROUP_RATES.tax'));
+
+// F1-3：仅 fee 类允许写 null —— coordFee 为 NULL 不构成缺失
+reset();
+run(RATE_RESET);
+run('RESP = {group_pricing_rules: RULES_SEED};');
+ok('E7 五个 rate 键有效 + 仅 coordFee(fee 类) 为 NULL：加载成功且 coordFee 记 null',
+  await runA('return loadGroupPricingRules();') === true && run('GROUP_RATES.coordFee') === null && run('GROUP_RATES.mgmt') === 0.17);
+ok('E8 GROUP_RATES 六键中无任何 rate 键被写成 null（报价命脉全数值）',
+  run('[GROUP_RATES.mgmt,GROUP_RATES.profit,GROUP_RATES.green,GROUP_RATES.baogan,GROUP_RATES.tax].every(function(v){return typeof v === "number" && !isNaN(v);})') === true);
+
+// F2：异步数据到达后补一次渲染
+reset();
+run(FLAG_RESET + ' ' + RATE_RESET + ' _render=0; _sum=0;');
+run('RESP = {group_benchmark_items: [G009, D003], group_pricing_rules: RULES_SEED};');
+run('setPricingMode("group");');
+ok('E9 首切 group 先同步渲染一次（不阻塞等数据）', run('_render') === 1 && run('_sum') === 1,
+  'render=' + run('_render') + ' sum=' + run('_sum'));
+await runA('return ensureGroupData();');
+await tick();
+ok('E10 数据真正到达后 renderBoq 与 updateSum 各被再调一次（清单不再停在「数据未到」）',
+  run('_render') === 2 && run('_sum') === 2, 'render=' + run('_render') + ' sum=' + run('_sum'));
+ok('E11 补渲染发生在数据就绪之后：groupDataLoaded 已 true', run('groupDataLoaded') === true);
+
+reset();
+run(FLAG_RESET + ' _render=0; _sum=0;');
+run('RESP = {};');
+run('setPricingMode("group");');
+await runA('return ensureGroupData();');
+await tick();
+ok('E12 加载失败不补渲染（避免无数据的空重排；失败仍只保留首轮那一次）',
+  run('_render') === 1 && run('_sum') === 1, 'render=' + run('_render') + ' sum=' + run('_sum'));
+
+run('setPricingMode("internal");');
+
+/* ═══════════ F. Task 4：集团公式引擎 + subs 契约 ═══════════ */
+console.log('\n── F. groupSubPrice / addGroupSub / 行级 group 分支（黄金值 4.0779 · 81.5085）──');
+function near(name, a, b, tol) {
+  const good = typeof a === 'number' && isFinite(a) && Math.abs(a - b) <= (tol === undefined ? 1e-9 : tol);
+  if (good) { pass++; console.log('  ✓ ' + name + ' = ' + a); }
+  else { fail++; console.log('  ✗ ' + name + '  → 实得 ' + JSON.stringify(a) + ' / 期望 ' + b + ' (tol ' + (tol === undefined ? 1e-9 : tol) + ')'); }
+}
+run(RATE_RESET + ' globalCoef=1.0; batchMode=false; hourlyRate=350;');
+run('rebuildGroupBenchMap([G009, D003]);');
+
+/* ── F① groupSubPrice：黄金值 + 分量 + 基数口径 ── */
+run(`var S_D003 = {gtype:'group', coef:1, conv:1, lab:1.51, aux:0.23, mech:0,
+  mats:[{name:'PVC保护膜', price:2, unit:'m2', consumption:0.95}]};`);
+const PD = run('(function(){var p=groupSubPrice(S_D003);return JSON.stringify(p);})()');
+ok('F1 groupSubPrice 返回八字段契约 {h,lab,mat,aux,mech,mgmt,profit,pending}',
+  JSON.stringify(Object.keys(JSON.parse(PD)).sort()) === JSON.stringify(['aux', 'h', 'lab', 'mat', 'mech', 'mgmt', 'pending', 'profit']), PD);
+ok('F2 D-003 已定价：pending=false', run('groupSubPrice(S_D003).pending') === false, PD);
+near('F2b D-003 黄金值 h=1.51+2×0.95+0.23+0+(1.51+0)×.17+(1.51+0)×.12', run('groupSubPrice(S_D003).h'), 4.0779, 0.001);
+near('F3 分量 lab', run('groupSubPrice(S_D003).lab'), 1.51);
+near('F4 分量 mat = Σ(price×consumption) 消耗量口径（2×0.95、不乘损耗率/换算）', run('groupSubPrice(S_D003).mat'), 1.9);
+near('F5 分量 aux（D 辅材）', run('groupSubPrice(S_D003).aux'), 0.23);
+near('F6 分量 mech（E 机械）', run('groupSubPrice(S_D003).mech'), 0);
+near('F7 分量 mgmt = (lab+mech)×0.17', run('groupSubPrice(S_D003).mgmt'), 0.2567);
+near('F8 分量 profit = (lab+mech)×0.12', run('groupSubPrice(S_D003).profit'), 0.1812);
+near('F9 勾稽：h = lab+mat+aux+mech+mgmt+profit', run('(function(){var p=groupSubPrice(S_D003);return p.h-(p.lab+p.mat+p.aux+p.mech+p.mgmt+p.profit);})()'), 0, 1e-12);
+
+console.log('\n  · pending 判据：存在 price:null 才待询价');
+run(`var S_A009 = {gtype:'group', coef:1, conv:1, lab:61.65, aux:1.98, mech:0,
+  mats:[{name:'瓷砖', price:null, unit:'m2', consumption:1.4469},
+        {name:'1:3干硬性水泥砂浆', price:null, unit:'m3', consumption:0.0147}]};`);
+ok('F10 A-009 甲供未定价 → pending=true', run('groupSubPrice(S_A009).pending') === true);
+near('F10b pending 时 h 仍按甲供 0 计（仅供显示，行价另判）：黄金值 81.5085', run('groupSubPrice(S_A009).h'), 81.5085, 0.001);
+ok('F11 mats==[]（源表「——」已入导入过滤）是合法常态 → 不 pending',
+  run('groupSubPrice({gtype:\'group\',lab:1,aux:0,mech:0,mats:[]}).pending') === false);
+ok('F12 price=0 是有效价 → 不 pending（与「未询价」不同义）',
+  run('groupSubPrice({gtype:\'group\',lab:1,aux:0,mech:0,mats:[{price:0,consumption:2}]}).pending') === false &&
+  run('groupSubPrice({gtype:\'group\',lab:1,aux:0,mech:0,mats:[{price:0,consumption:2}]}).mat') === 0);
+ok('F13 多主材其一 null → pending（整条子目不许半套价）',
+  run('groupSubPrice({gtype:\'group\',lab:1,aux:0,mech:0,mats:[{price:5,consumption:1},{price:null,consumption:1}]}).pending') === true);
+ok('F14 mats 缺字段/非数组 → 不抛异常且不 pending（库行兜底 [] 后仍可用）',
+  run('(function(){try{return groupSubPrice({lab:1,aux:0,mech:0}).pending===false && groupSubPrice({lab:1,mats:"坏字符串"}).pending===false;}catch(e){return "throw:"+e.message;}})()') === true);
+
+console.log('\n  · 费率不写死：GROUP_RATES 驱动 + 基数只认人工+机械');
+run('GROUP_RATES.mgmt = 0.15;');
+near('F15 mgmt 改库值 0.15 即随行变（前端不硬编码 17）', run('groupSubPrice(S_D003).mgmt'), 1.51 * 0.15);
+near('F15b h 同步变为 4.0477', run('groupSubPrice(S_D003).h'), 4.0477, 0.001);
+run(RATE_RESET);
+near('F15c 复位 0.17 后 h 回到黄金值', run('groupSubPrice(S_D003).h'), 4.0779, 0.001);
+run(`var S_MECH = {gtype:'group', coef:1, conv:1, lab:1.51, aux:0.23, mech:10, mats:[{price:2,consumption:0.95}]};`);
+near('F16 管理费基数 = 人工+机械（主材/辅材不进基数）', run('groupSubPrice(S_MECH).mgmt'), (1.51 + 10) * 0.17);
+near('F16b 利润基数同', run('groupSubPrice(S_MECH).profit'), (1.51 + 10) * 0.12);
+
+/* ── F② 行级：rowUnitPrice / rowTotal / compUnitPrice 的 group 分支 ── */
+run(`function _mkRows() {
+  groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+  uid = 100;
+  var rg = makeRow({name:'瓷砖地面对甲', unit:'m2', qty:'3'});        // id 100
+  var rd = makeRow({name:'成品保护对甲', unit:'m2', qty:'10'});       // id 101
+  var ru = makeRow({name:'单位不一致行', unit:'m', qty:'1'});         // id 102
+  var r2 = makeRow({name:'平方米行', unit:'㎡', qty:'1'});            // id 103
+  var ru2 = makeRow({name:'批量行', unit:'m2', qty:'1'});             // id 104
+  var ri = makeRow({name:'石材墙面（内部夹具）', unit:'m2', qty:'3'}); // id 105
+  ri.auxCost = 5; ri.matPrice = 100; ri.matName = '石材';
+  ri.subs = [
+    {bid:'NS-020', bsh:'泥水班组', coef:2.0, conv:1.5, matName:'石材', matPrice:100, wasteRate:3},
+    {bid:'NS-030', bsh:'泥水班组', coef:1.0, conv:1.0, matName:'', matPrice:20, wasteRate:0}
+  ];
+  groups[0].sections[0].rows = [rg, rd, ru, r2, ru2, ri];
+  rebuildRowMap();
+}`);
+run('pricingMode = "group";');
+run('_mkRows();');
+ok('F17 group 模式无子目 → 行单价 null（同内部「未套价」语义）', run('rowUnitPrice(findRow(100))') === null);
+run('addGroupSub(100, "ZS02-D-003"); addGroupSub(101, "ZS02-D-003"); addGroupSub(100, "ZS02-A-009");');
+ok('F18 挂载后 subs 长度 2（D-003 + A-009）', run('findRow(100).subs.length') === 2);
+ok('F19 任一子目 pending → 整行单价 null（不拼假值）', run('rowUnitPrice(findRow(100))') === null);
+ok('F20 行合价同步 0（pending 不计假值）', run('rowTotal(findRow(100))') === 0);
+near('F21 行单价 = Σ h×coef×conv（单子目 D-003）', run('rowUnitPrice(findRow(101))'), 4.0779, 0.001);
+run('updCoef(101, "ZS02-D-003", "ZS02-D", "2"); updConv(101, "ZS02-D-003", "ZS02-D", "1.5");');
+near('F22 coef=2 × conv=1.5 参与行单价（子目级系数/换算复用 updCoef/updConv）',
+  run('rowUnitPrice(findRow(101))'), 4.0779 * 2 * 1.5, 0.001);
+near('F23 行合价 = 行单价 × qty（qty=10）', run('rowTotal(findRow(101))'), 4.0779 * 2 * 1.5 * 10, 0.005);
+near('F24 综合单价 = 行单价（h 已含管理费/利润，不叠加内部 mgmt/profit 与行主材费）',
+  run('compUnitPrice(findRow(101))'), run('rowUnitPrice(findRow(101))'), 0.001);
+ok('F24b 且不等于内部加成值（10%/15% 未乘上）', run('compUnitPrice(findRow(101)) < rowUnitPrice(findRow(101)) * 1.2') === true);
+run('findRow(101).hourlyMode = true;');
+near('F25 时工模式在 group 下被忽略（group 分支先于 hourlyMode 判定，不吃 hourlyRate）',
+  run('rowUnitPrice(findRow(101))'), 4.0779 * 2 * 1.5, 0.001);
+run('findRow(101).hourlyMode = false; globalCoef = 2;');
+near('F26 内部人工系数 globalCoef 不污染集团行价', run('rowUnitPrice(findRow(101))'), 4.0779 * 2 * 1.5, 0.001);
+run('globalCoef = 1.0;');
+run('findRow(100).subs[1].mats = [{price:100, consumption:1.4469}, {price:300, consumption:0.0147}];');
+near('F27 甲供补齐价后整行出数：h(A-009)=230.6085 ×1 + h(D-003)=4.0779 ×1',
+  run('rowUnitPrice(findRow(100))'), 230.6085 + 4.0779, 0.001);
+ok('F28 补齐后 pending 消除', run('groupSubPrice(findRow(100).subs[1]).pending') === false);
+run('findRow(100).subs.push({bid:"NS-020", bsh:"泥水班组", coef:1, conv:1, matName:"石材", matPrice:100, wasteRate:3});');
+near('F29 混合行（内部子目 + 集团子目）group 模式只认集团子目，内部子目 h=0 不双计',
+  run('rowUnitPrice(findRow(100))'), 230.6085 + 4.0779, 0.001);
+run('_mkRows();');
+
+/* ── F③ addGroupSub 契约 ── */
+console.log('\n  · addGroupSub：字段映射 / 深拷贝 / 拦截 / 单位 toast');
+reset();
+run('batchMode=false; _render=0;');
+ok('F30 挂载成功返回 true 且展开行（r.open=true）、触发一次 renderBoq',
+  run('addGroupSub(102, "ZS02-D-003")') === true && run('findRow(102).open') === true && run('_render') === 1);
+const GSUB = JSON.parse(run('JSON.stringify(findRow(102).subs[0])'));
+ok('F31 字段映射表→sub：bid=code / bsh=\'ZS02-\'+discipline / gtype=\'group\' / coef=conv=1.0',
+  GSUB.bid === 'ZS02-D-003' && GSUB.bsh === 'ZS02-D' && GSUB.gtype === 'group' && GSUB.coef === 1.0 && GSUB.conv === 1.0,
+  JSON.stringify(GSUB));
+ok('F32 workType/lab/aux/mech 取自表行（work_type/lab_price/aux_cost/mech_cost）',
+  GSUB.workType === '油漆' && GSUB.lab === 1.51 && GSUB.aux === 0.23 && GSUB.mech === 0, JSON.stringify(GSUB));
+ok('F33 sub 字段全集 = 契约八字段（不多不少：无 matPrice/wasteRate 等内部字段）',
+  JSON.stringify(Object.keys(GSUB).sort()) === JSON.stringify(['aux', 'bid', 'bsh', 'coef', 'conv', 'gtype', 'lab', 'mats', 'mech', 'workType'].sort()),
+  JSON.stringify(Object.keys(GSUB)));
+ok('F34 bsh 随 discipline：A 类挂 ZS02-A', run('addGroupSub(100,"ZS02-A-009"), findRow(100).subs[0].bsh') === 'ZS02-A');
+ok('F35 mats 深拷贝：值与库行一致但不是同一引用',
+  run('findRow(100).subs[0].mats[0].price === G009.mats[0].price') === true &&
+  run('findRow(100).subs[0].mats === G009.mats') === false &&
+  run('findRow(100).subs[0].mats[0] === G009.mats[0]') === false);
+run('findRow(100).subs[0].mats[0].price = 88;');
+ok('F36 修改 sub.mats 不反写库行（getGroupBench 仍为原值，不脏化基准价库）',
+  run('G009.mats[0].price') === null && run('getGroupBench("ZS02-A-009").mats[0].price') === null, 'G009.mats[0].price=' + run('G009.mats[0].price'));
+run('_mkRows();');
+reset();
+ok('F37 重复挂载拦截：首次 true、第二次 false 且不新增',
+  run('addGroupSub(102,"ZS02-D-003")') === true &&
+  run('addGroupSub(102,"ZS02-D-003")') === false && run('findRow(102).subs.length') === 1);
+ok('F38 拦截 toast 沿用 addSub 文案「该子目已添加」', TOASTS.some(t => String(t).includes('该子目已添加')), JSON.stringify(TOASTS));
+run('_mkRows();');   // F37 在 102 上留了子目，重建后才验得出「未知 code 不写空 sub」
+reset();
+ok('F39 未知 code：返回 false + 点名 toast，不写空 sub',
+  run('addGroupSub(102,"ZS02-A-999")') === false && run('findRow(102).subs.length') === 0 &&
+  TOASTS.some(t => String(t).includes('ZS02-A-999')), JSON.stringify(TOASTS));
+ok('F40 不存在的 rid：返回 false 不抛', run('(function(){try{return addGroupSub(9999,"ZS02-D-003");}catch(e){return "throw:"+e.message;}})()') === false);
+reset();
+run('_mkRows(); addGroupSub(102, "ZS02-D-003");');
+ok('F41 单位不一致 toast（行 m / 表 m2）沿用 addSub 语义',
+  TOASTS.some(t => /单位不一致/.test(String(t)) && /换算系数/.test(String(t))), JSON.stringify(TOASTS));
+reset();
+run('addGroupSub(103, "ZS02-D-003");');
+ok('F42 ㎡/m2 归一化后不误报警（同 addSub L1096 做法）',
+  !TOASTS.some(t => /单位不一致/.test(String(t))) && TOASTS.some(t => String(t).includes('子目已挂载')), JSON.stringify(TOASTS));
+reset();
+run('_mkRows(); findRow(101).matPrice = 500; findRow(101).matName = "PVC膜"; addGroupSub(101, "ZS02-D-003");');
+ok('F43 不走 syncRowMat：集团子目无 matPrice 字段，行级暂存价不被分配（主材价只存 mats[].price）',
+  run('findRow(101).subs[0].matPrice') === undefined && run('findRow(101).matPrice') === 500);
+reset();
+run('batchMode = true; _render=0; addGroupSub(105, "ZS02-D-003");');
+ok('F44 batchMode 抑制 toast/render（沿用 addSub 批量语义）', run('_render') === 0 && TOASTS.length === 0, JSON.stringify(TOASTS));
+run('batchMode = false; findRow(105).subs = [];');
+reset();
+run('addGroupSub(102, "ZS02-D-003");');   // F44 的 batchMode 与后续 _mkRows 会重建行，这里重新挂一次
+ok('F45 挂载后 updSubField/updCoef 按 bid+bsh 可定位（既有处理器零改动复用）',
+  run('updCoef(102,"ZS02-D-003","ZS02-D","3"), findRow(102).subs[0].coef') === 3 &&
+  run('updSubField(102,"ZS02-D-003","ZS02-D","lab","2.5"), findRow(102).subs[0].lab') === '2.5');
+run('_mkRows();');
+
+/* ── F④ 内部公式回归双夹具：同数据 internal 模式逐分不变 ── */
+console.log('\n  · 内部公式回归双夹具（qty=3 / coef=2 / conv=1.5 / 损耗 3%）');
+run('setPricingMode("internal");');
+run(`DB = { '泥水班组': [
+  {id:'NS-020', name:'墙面铺贴-石材', unit:'m2', price:120, waste_rate:3, auxType:'', auxFixedK:0, auxRateDetail:null},
+  {id:'NS-030', name:'墙面基层-抹灰', unit:'m2', price:28,  waste_rate:0, auxType:'', auxFixedK:0, auxRateDetail:null}
+]};`);
+run('rebuildBenchMap();');
+ok('F46 internal 模式入口：pricingMode 已切回', run('pricingMode') === 'internal');
+near('F47 夹具行 rowUnitPrice = 120×2×1×1.5 + 28×1×1×1 = 388（原 effPrice 口径）', run('rowUnitPrice(findRow(105))'), 388);
+near('F48 夹具行 rowMatCost = 100×1.03×2×1.5 + 20×1×1 = 329', run('rowMatCost(findRow(105))'), 329);
+near('F49 夹具行 compUnitPrice = 388+329+5+38.8+58.2 = 819（管 10%/利 15% 基数=人工）', run('compUnitPrice(findRow(105))'), 819);
+near('F50 夹具行 rowTotal = (388+329+5+38.8+58.2)×3 = 2457', run('rowTotal(findRow(105))'), 2457);
+const SNAP_I = run('JSON.stringify([rowUnitPrice(findRow(105)),rowMatCost(findRow(105)),compUnitPrice(findRow(105)),rowTotal(findRow(105))])');
+run('addGroupSub(105, "ZS02-D-003");');
+const SNAP_G = run('JSON.stringify([rowUnitPrice(findRow(105)),rowMatCost(findRow(105)),compUnitPrice(findRow(105)),rowTotal(findRow(105))])');
+ok('F51 双夹具②：同一行挂上集团子目后，internal 三件套数值逐分不变（内部语句未被改写）',
+  SNAP_I === SNAP_G, SNAP_I + ' vs ' + SNAP_G);
+ok('F52 internal 时工分支仍生效（group 守卫在 internal 下不拦路）：单价 = hourlyRate',
+  run('findRow(105).hourlyMode = true, rowUnitPrice(findRow(105))') === 350);
+run('findRow(105).hourlyMode = false;');
+ok('F53 internal 无子目仍返回 null', run('_mkRows(), rowUnitPrice(findRow(100))') === null);
+ok('F54 内部子目 gtype 缺省（不被 addGroupSub 契约污染）', run('findRow(105).subs.every(function(s){return s.gtype === undefined || s.gtype === "group";})') === true);
+run('findRow(105).subs = [];');
+const rtNullQty = run('(function(){var r=findRow(105);r.qty="abc";return rowTotal(r);})()');
+// N 段裁定（推翻本断言旧版）：旧版把「脏 qty → 合价 NaN」当内部语义钉住，实为 bug 快照——
+// NaN 在 secTotal/updateSum 里虽被 ||0 兜掉、但单元格 fmt 直接上屏「NaN」（用户报障）。
+// 新契约：脏工程量与空工程量同口径，合价一律 0（与 groupRowTotal 既有护栏对齐）
+ok('F55 internal 脏 qty → 合价 0（N 段修复后新契约，旧版「原样 NaN」系 bug 快照被推翻）',
+  rtNullQty === 0, 'rowTotal=' + rtNullQty);
+run('_mkRows();');
+
+/* ── F⑤ 提示条：数字从 GROUP_RATES 动态取 ── */
+console.log('\n  · 管理费/利润旁提示条（数字取自 GROUP_RATES，不硬编码）');
+DOMCFG.gone = true;
+ok('F56 提示条元素缺失不抛（精简 DOM）',
+  run('(function(){try{updateGroupRateHint();return true;}catch(e){return "throw:"+e.message;}})()') === true);
+DOMCFG.gone = false;
+run('setPricingMode("internal");');
+ok('F57 internal 模式提示条隐藏', els['groupRateHint'].style.display === 'none', JSON.stringify(els['groupRateHint'].style));
+run('setPricingMode("group");');
+ok('F58 group 模式提示条可见且文案含写死口径',
+  els['groupRateHint'].style.display !== 'none' && /基数=人工\+机械（写死）/.test(els['groupRateHint'].textContent),
+  els['groupRateHint'].textContent);
+ok('F59 标准费率下显示 17% / 12%',
+  /管理17%\/利润12%/.test(els['groupRateHint'].textContent), els['groupRateHint'].textContent);
+run('GROUP_RATES.mgmt = 0.15; GROUP_RATES.profit = 0.11; setPricingMode("group");');
+ok('F60 费率变化后文案随行（含 15%/11%、不再含 17%）',
+  /管理15%\/利润11%/.test(els['groupRateHint'].textContent) && !/17%/.test(els['groupRateHint'].textContent),
+  els['groupRateHint'].textContent);
+run(FLAG_RESET + ' ' + RATE_RESET);
+run('RESP = {group_benchmark_items:[G009,D003], group_pricing_rules:[{key:"mgmt_rate",value:0.16},{key:"profit_rate",value:0.12},{key:"green_safety_rate",value:0.13},{key:"lump_sum_rate",value:0.03},{key:"tax_rate",value:0.09}]};');
+run('setPricingMode("group");');
+await runA('return ensureGroupData();');
+await tick();
+ok('F61 库费率落地后提示条同步刷新（不停在 T01 默认值）',
+  /管理16%/.test(els['groupRateHint'].textContent), els['groupRateHint'].textContent);
+run('setPricingMode("internal"); groupDataLoaded=false; groupBenchLoaded=false; groupRulesLoaded=false; _groupLoading=null; ' + RATE_RESET);
+
+/* ═══════════ G. Task 5：行渲染派生单元格 + 待询价态 + ZS02 挂载面板 + gtype 护栏 ═══════════ */
+console.log('\n── G. rowGroupAgg / groupSubCells / updGroupMat / groupPicker / EXP_COLS group 分支 / 护栏 ──');
+run(RATE_RESET + ' globalCoef=1.0; batchMode=false; hourlyRate=350;');
+run('rebuildGroupBenchMap([G009, D003]);');
+run('pricingMode = "group";');
+run('_mkRows(); addGroupSub(100, "ZS02-D-003"); addGroupSub(100, "ZS02-A-009");');   // 一行：已定价 + 甲供未定价
+
+/* ── G① rowGroupAgg：契约 + 待询价判定 ── */
+const AGG_KEYS = run('Object.keys(rowGroupAgg(findRow(100))).sort().join(",")');
+ok('G1 rowGroupAgg 返回八字段契约 {lab,mat,aux,mech,mgmt,profit,unit,ready}',
+  AGG_KEYS === 'aux,lab,mat,mech,mgmt,profit,ready,unit', AGG_KEYS);
+ok('G2 任一子目 pending → ready:false 且 unit:null（行不拼假值）',
+  run('(function(){var a=rowGroupAgg(findRow(100));return a.ready===false&&a.unit===null;})()') === true);
+ok('G2b rowGroupPending(r)===true（渲染层据此挂黄底 +「待询价」徽标）', run('rowGroupPending(findRow(100))') === true);
+near('G3 待询价时分量仍按已知值累计（子目行要显示各自的 A/D/E/F/G）：lab=1.51+61.65', run('rowGroupAgg(findRow(100)).lab'), 1.51 + 61.65);
+near('G3b mat 只含已定价部分（D-003：2×0.95）', run('rowGroupAgg(findRow(100)).mat'), 1.9);
+near('G3c aux=0.23+1.98', run('rowGroupAgg(findRow(100)).aux'), 0.23 + 1.98);
+
+console.log('\n  · 补齐甲供价后出数：各分量精确断言');
+run('findRow(100).subs[1].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+ok('G4 补齐甲供价 → ready:true', run('rowGroupAgg(findRow(100)).ready') === true);
+ok('G4b 待询价消除', run('rowGroupPending(findRow(100))') === false);
+near('G4c unit = Σ h×coef×conv（与 groupRowUnitPrice 同值）', run('rowGroupAgg(findRow(100)).unit'), run('groupRowUnitPrice(findRow(100))'), 1e-9);
+near('G4d lab = 1.51 + 61.65', run('rowGroupAgg(findRow(100)).lab'), 63.16, 1e-9);
+near('G4e mat = 2×0.95 + 100×1.4469 + 300×0.0147（消耗量口径）', run('rowGroupAgg(findRow(100)).mat'), 2 * 0.95 + 100 * 1.4469 + 300 * 0.0147, 1e-9);
+near('G4f aux = 0.23 + 1.98', run('rowGroupAgg(findRow(100)).aux'), 2.21, 1e-9);
+near('G4g mech = 0', run('rowGroupAgg(findRow(100)).mech'), 0, 1e-12);
+near('G4h mgmt = (Σlab+Σmech)×0.17', run('rowGroupAgg(findRow(100)).mgmt'), 63.16 * 0.17, 1e-9);
+near('G4i profit = (Σlab+Σmech)×0.12', run('rowGroupAgg(findRow(100)).profit'), 63.16 * 0.12, 1e-9);
+near('G4j 勾稽：unit = lab+mat+aux+mech+mgmt+profit',
+  run('(function(){var a=rowGroupAgg(findRow(100));return a.unit-(a.lab+a.mat+a.aux+a.mech+a.mgmt+a.profit);})()'), 0, 1e-9);
+
+run('_mkRows(); addGroupSub(101, "ZS02-D-003");');
+run('updCoef(101, "ZS02-D-003", "ZS02-D", "2"); updConv(101, "ZS02-D-003", "ZS02-D", "1.5");');
+near('G5 子目 coef×conv 参与聚合：lab = 1.51×3', run('rowGroupAgg(findRow(101)).lab'), 1.51 * 3, 1e-9);
+near('G5b mgmt = (1.51×0.17)×3', run('rowGroupAgg(findRow(101)).mgmt'), 1.51 * 0.17 * 3, 1e-9);
+near('G5c unit = 4.0779×3', run('rowGroupAgg(findRow(101)).unit'), 4.0779 * 3, 0.001);
+
+console.log('\n  · 「未套集团价」判定（group 模式不得显示 0.00 误导）');
+run('_mkRows();');
+ok('G6 纯内部子目行（subs 无 gtype）→ ready:false 且 unit:null',
+  run('(function(){var a=rowGroupAgg(findRow(105));return a.ready===false&&a.unit===null;})()') === true,
+  run('JSON.stringify(rowGroupAgg(findRow(105)))'));
+ok('G6b 且不算待询价（rowGroupPending false）——渲染层据此显示「—」而不是「待询价」', run('rowGroupPending(findRow(105))') === false);
+near('G6c 内部子目在集团口径无值可汇 → 分量 0', run('rowGroupAgg(findRow(105)).lab'), 0, 1e-12);
+ok('G6d 无子目行 → ready:false', run('rowGroupAgg(findRow(100)).ready') === false && run('rowGroupSubs(findRow(100)).length') === 0);
+run('_mkRows(); addGroupSub(105, "ZS02-D-003");');
+ok('G7 混合行（内部子目 + 集团子目）只聚合集团子目', run('(function(){var a=rowGroupAgg(findRow(105));return a.ready===true&&Math.abs(a.lab-1.51)<1e-12;})()') === true);
+near('G7b unit = 集团子目 h（内部子目不双计）', run('rowGroupAgg(findRow(105)).unit'), 4.0779, 0.001);
+run('GROUP_RATES.mgmt = 0.15;');
+near('G7c 费率驱动：改 GROUP_RATES 聚合随行（不硬编码 17%）', run('rowGroupAgg(findRow(105)).mgmt'), 1.51 * 0.15, 1e-9);
+run(RATE_RESET + ' _mkRows();');
+
+/* ── G② COLS（EXP_COLS）管理费/利润列：group 取 rowGroupAgg，internal 表达式原样 ── */
+console.log('\n  · EXP_COLS 管理费/利润列的模式分支');
+run('addGroupSub(105, "ZS02-D-003"); pricingMode="group"; globalMgmtRate=10; globalProfitRate=15;');
+near('G8 group 模式 mgmt 列 = rowGroupAgg(r).mgmt（不乘 globalMgmtRate）',
+  run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(105))'), 1.51 * 0.17, 1e-9);
+near('G8b group 模式 profit 列 = rowGroupAgg(r).profit',
+  run('EXP_COLS.find(function(c){return c.key==="profit"}).get(findRow(105))'), 1.51 * 0.12, 1e-9);
+run('_mkRows(); addGroupSub(100, "ZS02-A-009");');
+near('G8c 待询价行导出 mgmt = 0（ready:false 不放假值，与 rowTotal 同口径）',
+  run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(100))'), 0, 1e-12);
+near('G8d 未套集团价行导出 mgmt = 0', run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(101))'), 0, 1e-12);
+run('_mkRows(); pricingMode="internal";');
+near('G8e internal 模式表达式原样保留：(rowUnitPrice||0)×10%',
+  run('EXP_COLS.find(function(c){return c.key==="mgmt"}).get(findRow(105))'), 388 * 0.1, 1e-9);
+near('G8f internal profit 列同（×15%）', run('EXP_COLS.find(function(c){return c.key==="profit"}).get(findRow(105))'), 388 * 0.15, 1e-9);
+run('pricingMode="group";');
+
+/* ── G③ groupSubCells：集团子目派生单元格（name 来自 getGroupBench，不走 getBench） ── */
+console.log('\n  · groupSubCells：集团子目单元格派生值');
+run('_mkRows(); addGroupSub(100, "ZS02-A-009");');
+const CELLS = JSON.parse(run('JSON.stringify(groupSubCells(findRow(100).subs[0]))'));
+ok('G9 code/bsh 与 sub 一致（派生视图定位回子目靠 bid+bsh）', CELLS.code === 'ZS02-A-009' && CELLS.bsh === 'ZS02-A', JSON.stringify(CELLS));
+ok('G9b name/spec/unit/section 取自 getGroupBench 库行',
+  CELLS.name === '瓷砖地面' && CELLS.spec === 'SA级600×600' && CELLS.unit === 'm2' && CELLS.section === '楼地面工程');
+ok('G9c 工种取 sub.workType（源自表行 work_type）', CELLS.workType === '泥水', CELLS.workType);
+ok('G9d 主材逐条：name×consumption 原样，未定价位 pending + 文案「甲供待询价」',
+  CELLS.mats.length === 2 && CELLS.mats[0].consumption === 1.4469 && CELLS.mats[0].pending === true &&
+  CELLS.mats[0].label === '甲供待询价' && CELLS.mats[0].cost === 0, JSON.stringify(CELLS.mats));
+ok('G9e 整条 pending 且 h/lab/aux 分量齐备',
+  CELLS.pending === true && CELLS.lab === 61.65 && CELLS.aux === 1.98 && CELLS.mech === 0 && CELLS.h === 81.5085,
+  JSON.stringify([CELLS.lab, CELLS.h]));
+run('findRow(100).subs[0].mats[0].price = 100;');
+const CELLS2 = JSON.parse(run('JSON.stringify(groupSubCells(findRow(100).subs[0]))'));
+ok('G9f 已定价位：pending:false、price/cost 出数（100×1.4469）',
+  CELLS2.mats[0].pending === false && CELLS2.mats[0].price === 100 && Math.abs(CELLS2.mats[0].cost - 144.69) < 1e-9,
+  JSON.stringify(CELLS2.mats[0]));
+ok('G9g 其一未定价 → 整条 pending（不半套价）', CELLS2.pending === true);
+ok('G9h mats 非数组 / 缺字段 → 视图 [] 且不抛（T3 遗留守卫）',
+  run('(function(){try{return groupSubCells({gtype:"group",bid:"ZS02-X",mats:"坏字符串"}).mats.length===0 && groupSubCells({gtype:"group",bid:"ZS02-X"}).mats.length===0;}catch(e){return "throw:"+e.message;}})()') === true);
+ok('G9i rowGroupAgg 对 mats 非数组子目不抛（消费处同守卫）',
+  run('(function(){try{var r={id:9,subs:[{gtype:"group",bid:"ZS02-A-009",bsh:"ZS02-A",lab:1,aux:0,mech:0,mats:"坏字符串"}]};var a=rowGroupAgg(r);return a.ready===true&&a.lab===1;}catch(e){return "throw:"+e.message;}})()') === true);
+// T8 核对（T3 遗留 mats 非数组）：脏 mats 的唯一语义 = 兜空数组（mat 0、不算待询价，与 T3 导入过滤
+// 「——」后 mats==[] 为常态同口径）；填价入口 updGroupMat 直接拒写（Array.isArray 闸），不猜结构
+ok('G9j mats 非数组脏值全链不抛：groupSubPrice 兜 []（mat 0 / pending false / h 只剩人工+管理利润），updGroupMat 拒写返回 false',
+  run('(function(){try{var s={gtype:"group",bid:"ZS02-A-009",bsh:"ZS02-A",lab:1,aux:0,mech:0,mats:"[{\\"price\\":null}]"};var p=groupSubPrice(s);return p.pending===false&&p.mat===0&&Math.abs(p.h-1.29)<1e-9;}catch(e){return "throw:"+e.message;}})()') === true &&
+  run('(function(){_mkRows(); addGroupSub(100,"ZS02-A-009"); findRow(100).subs[0].mats="坏字符串"; return updGroupMat(100,"ZS02-A-009","ZS02-A",0,"100")===false;})()') === true);
+
+/* ── G④ updGroupMat：甲供待询价 → 填价 → 出数 ── */
+console.log('\n  · updGroupMat：待询价的唯一填价入口');
+run('_mkRows(); addGroupSub(100, "ZS02-A-009");');
+reset(); run('_render=0;');
+ok('G10 填入第 0 条主材价 → 数值写进 mats[0].price',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",0,"100"), findRow(100).subs[0].mats[0].price') === 100);
+ok('G10b 只填一条仍 pending（整条子目不许半套价）', run('rowGroupPending(findRow(100))') === true);
+run('_render=0;');
+ok('G10c updGroupMat 写值后重渲染（沿用 updSubField 同款刷新链路）',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",1,"300"), _render') === 1);
+ok('G10d 补齐 → rowGroupAgg.ready true', run('rowGroupAgg(findRow(100)).ready') === true);
+ok('G10e 清空回到待询价（空串 → null，而不是 0：0 是有效报价）',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",1,""), findRow(100).subs[0].mats[1].price') === null &&
+  run('rowGroupPending(findRow(100))') === true);
+ok('G10f 脏值（非数）同样落回 null，不产生 NaN 价',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",1,"abc"), findRow(100).subs[0].mats[1].price') === null);
+ok('G10g 库行不被反写（getGroupBench 仍为原值）', run('G009.mats[0].price') === null);
+ok('G10h 越界 idx / 非集团子目 → false 不抛',
+  run('updGroupMat(100,"ZS02-A-009","ZS02-A",9,"1")') === false &&
+  run('updGroupMat(100,"NS-020","泥水班组",0,"1")') === false);
+
+/* ── G⑤ gtype 隔离护栏 ── */
+console.log('\n  · gtype 隔离护栏：含集团子目的行一律跳过 syncRowMat');
+run('_mkRows(); addGroupSub(101, "ZS02-D-003"); findRow(101).matPrice = 500; findRow(101).matName = "PVC膜";');
+run('syncRowMat(101);');
+ok('G11 唯一子目是集团子目：syncRowMat 不写 groupSub.matPrice（八字段契约不破）',
+  run("'matPrice' in findRow(101).subs[0]") === false);
+ok('G11b 契约字段集不变（护栏被绕过就会多出 matPrice）',
+  run('Object.keys(findRow(101).subs[0]).sort().join(",")') === 'aux,bid,bsh,coef,conv,gtype,lab,mats,mech,workType',
+  run('Object.keys(findRow(101).subs[0]).sort().join(",")'));
+near('G11c 行级暂存价保持（不被消耗/清空）', run('findRow(101).matPrice'), 500);
+ok('G11d 内部 rowMatCost 不被污染（集团子目无 matPrice → 0）', run('rowMatCost(findRow(101))') === 0);
+run('addSub(101, "NS-020", "泥水班组"); syncRowMat(101);');
+ok('G11e 混合行（集团 + 内部）同样跳过：内部子目 matPrice 保持 0，不猜落点',
+  run('findRow(101).subs[1].matPrice') === 0 && run("'matPrice' in findRow(101).subs[0]") === false);
+// 主材价导入（applyQuoteImport）直接调 routeRowMat，绕过 syncRowMat 入口闸 → 护栏必须在写入点前置
+run('_mkRows(); addGroupSub(101, "ZS02-D-003");');
+ok('G11f routeRowMat 直连路径（导入主材价）也被拦：唯一集团子目不落 matPrice、行也不暂存',
+  run('routeRowMat(findRow(101), 88, "", "over")') === 'kept' &&
+  run("'matPrice' in findRow(101).subs[0]") === false && run('(parseFloat(findRow(101).matPrice)||0)') === 0);
+// T8 收尾（T5 遗留硬性项）：护栏判据是 some(gtype==='group')，与「行内还剩几条集团子目」无关——
+// 双集团子目行删掉其一（delSub→syncRowMat）后，剩下的那条仍不得被写入 matPrice
+run('_mkRows(); addGroupSub(100, "ZS02-D-003"); addGroupSub(100, "ZS02-A-009"); findRow(100).matPrice = 500; findRow(100).matName = "石材";');
+ok('G11g 双集团子目行删之前：两条子目均无 matPrice（护栏与子目条数无关）',
+  run("'matPrice' in findRow(100).subs[0]") === false && run("'matPrice' in findRow(100).subs[1]") === false);
+run('delSub(100, "ZS02-D-003", "ZS02-D");');
+ok('G11g b delSub 其一后（delSub→syncRowMat）：剩下的集团子目仍无 matPrice 键',
+  run('findRow(100).subs.length') === 1 && run("'matPrice' in findRow(100).subs[0]") === false);
+ok('G11g c 剩下子目契约八字段集不变（护栏被绕过就会多出 matPrice）',
+  run('Object.keys(findRow(100).subs[0]).sort().join(",")') === 'aux,bid,bsh,coef,conv,gtype,lab,mats,mech,workType',
+  run('Object.keys(findRow(100).subs[0]).sort().join(",")'));
+ok('G11g d 内部 rowMatCost 不被污染（0）且行级暂存价保持（删除路径不消耗）',
+  run('rowMatCost(findRow(100))') === 0 && run('findRow(100).matPrice') === 500);
+run('_mkRows(); addGroupSub(100, "ZS02-D-003"); findRow(100).matPrice = 500; findRow(100).matName = "石材"; addSub(100, "NS-020", "泥水班组");');
+run('delSub(100, "NS-020", "泥水班组");');
+ok('G12 删掉行内一个内部子目后（delSub→syncRowMat）：group sub 上仍不出现 matPrice',
+  run("'matPrice' in findRow(100).subs[0]") === false && run('findRow(100).subs.length') === 1);
+near('G12b 删除路径不动行级暂存价', run('findRow(100).matPrice'), 500);
+run('delSub(100, "ZS02-D-003", "ZS02-D");');
+ok('G12c 集团子目本身可正常删除（bid+bsh 定位复用 delSub）', run('findRow(100).subs.length') === 0);
+run('_mkRows(); findRow(100).matPrice = 200; addSub(100, "NS-020", "泥水班组");');
+ok('G13 纯内部行 syncRowMat 正常分配（护栏不伤内部路径）', run('findRow(100).subs[0].matPrice') === 200);
+run('_mkRows(); pricingMode="internal"; findRow(100).matPrice = 200; addSub(100, "NS-020", "泥水班组");');
+ok('G13b internal 模式同样正常（护栏只看 gtype，不看模式）', run('findRow(100).subs[0].matPrice') === 200);
+run('pricingMode="group"; _mkRows();');
+
+/* ── G⑥ ZS02 挂载面板 ── */
+console.log('\n  · openGroupPicker：本地模糊过滤 + 空库守卫 + 点选挂载');
+ok('G14 openGroupPicker / groupPickerItems 为顶层函数',
+  run('typeof openGroupPicker') === 'function' && run('typeof groupPickerItems') === 'function');
+run('rebuildGroupBenchMap([G009, D003]);');
+ok('G14b 空查询返回全量（296 条本地过滤，不分页）', run('groupPickerItems("").length') === 2 && run('groupPickerItems("   ").length') === 2);
+ok('G14c 按名称模糊命中', run('groupPickerItems("瓷砖").map(function(x){return x.code}).join()') === 'ZS02-A-009');
+ok('G14d 大小写不敏感（PVC → 成品保护-PVC保护膜）', run('groupPickerItems("PVC").map(function(x){return x.code}).join()') === 'ZS02-D-003');
+ok('G14e 按特征 spec 命中', run('groupPickerItems("600×600").length') === 1);
+ok('G14f 按 code 命中', run('groupPickerItems("ZS02-D-003").length') === 1);
+ok('G14g 多关键词 AND（名称+特征）', run('groupPickerItems("瓷砖 600").length') === 1 && run('groupPickerItems("瓷砖 不存在").length') === 0);
+ok('G14h 未命中返回空数组（不是 undefined）',
+  run('Array.isArray(groupPickerItems("不存在zzz"))') === true && run('groupPickerItems("不存在zzz").length') === 0);
+ok('G14i 空库（未建表/加载失败）→ 空数组不抛',
+  run('(function(){var keep=groupBenchRows.slice(); rebuildGroupBenchMap([]); try{ return groupPickerItems("瓷砖").length===0; } finally { rebuildGroupBenchMap(keep); } })()') === true);
+run('openGroupPicker(101);');
+ok('G14j 弹窗打开：groupPickerMod 去掉 hidden', els['groupPickerMod']._clsOps.removed.indexOf('hidden') >= 0, JSON.stringify(els['groupPickerMod']._clsOps));
+ok('G14k 表头列齐 code/name/unit/A人工/D辅材/E机械/甲供',
+  /A人工/.test(els['gpList'].innerHTML) && /D辅材/.test(els['gpList'].innerHTML) &&
+  /E机械/.test(els['gpList'].innerHTML) && /甲供/.test(els['gpList'].innerHTML), String(els['gpList'].innerHTML).slice(0, 200));
+ok('G14l 候选行含 code 与 name，且甲供未定价位打「待填价」tag',
+  /ZS02-A-009/.test(els['gpList'].innerHTML) && /瓷砖地面/.test(els['gpList'].innerHTML) && /待填价/.test(els['gpList'].innerHTML));
+ok('G14m 已定价行不误标（D-003 那行无「待填价」）',
+  run('groupMatPending(getGroupBench("ZS02-D-003"))') === false && run('groupMatPending(getGroupBench("ZS02-A-009"))') === true);
+run('closeGroupPicker();');
+ok('G14n 关闭加回 hidden 并清空目标行',
+  els['groupPickerMod']._clsOps.added.indexOf('hidden') >= 0 && run('groupPickerRowId') === null);
+reset();
+run('rebuildGroupBenchMap([]); openGroupPicker(101);');
+ok('G14o 空库时 picker 显示「ZS02 库未加载」+ 重试按钮',
+  /ZS02 库未加载/.test(els['gpList'].innerHTML) && /groupPickerRetry\(/.test(els['gpList'].innerHTML),
+  String(els['gpList'].innerHTML).slice(0, 160));
+run('RESP = {group_benchmark_items:[G009,D003], group_pricing_rules:RULES_SEED}; ' + FLAG_RESET);
+run('groupPickerRetry();');
+await tick();   // loadGroupDataOnce 是两张表串行 await：等微任务排空才看得到两次 _get
+ok('G14p 重试走 ensureGroupData 链路（两张表各一次，不自发 fetch）', GETS.length === 2, JSON.stringify(GETS));
+await tick();
+ok('G14q 重试成功后库可查（picker 数据源恢复）', run('groupBenchRows.length') === 2);
+run('rebuildGroupBenchMap([G009, D003]); closeGroupPicker();');
+reset();
+run('_mkRows(); _render=0; openGroupPicker(101);');
+ok('G15 点选 → addGroupSub 挂载到目标行 + 关闭弹窗',
+  run('gpPick("ZS02-D-003")') === true && run('findRow(101).subs.length') === 1 &&
+  run('findRow(101).subs[0].gtype') === 'group' && els['groupPickerMod']._clsOps.added.indexOf('hidden') >= 0);
+// 弹窗流水是全测试累加的（els 不重置）：拿长度做基线，只判「本次失败有没有新增 close」
+run('openGroupPicker(101);');
+const CLS_ADDED0 = els['groupPickerMod']._clsOps.added.length;
+ok('G15b 重复挂载：addGroupSub 拦截 → 弹窗保持开着（用户可换一条）',
+  run('gpPick("ZS02-D-003")') === false && run('findRow(101).subs.length') === 1 &&
+  els['groupPickerMod']._clsOps.added.length === CLS_ADDED0);
+ok('G15c 未知 code 同样不写 sub', run('gpPick("ZS02-A-999")') === false && run('findRow(101).subs.length') === 1);
+run('closeGroupPicker();');
+ok('G15d 未指定行（rid=null）点选不抛',
+  run('(function(){try{return gpPick("ZS02-D-003")===false;}catch(e){return "throw:"+e.message;}})()') === true);
+DOMCFG.gone = true;
+ok('G15e 精简 DOM 下开关弹窗不抛',
+  run('(function(){try{openGroupPicker(101);closeGroupPicker();groupPickerRetry();renderGroupPicker();return true;}catch(e){return "throw:"+e.message;}})()') === true);
+DOMCFG.gone = false;
+run('closeGroupPicker(); _mkRows();');
+
+/* ── groupSubRowHtml：集团子目行渲染本体（浏览器冒烟不可用的代替：在沙箱里真跑一次拼接）── */
+console.log('\n  · groupSubRowHtml 实渲：列对齐 / 待询价态 / 甲供逐条 / 既有处理器接线');
+run('addGroupSub(100, "ZS02-A-009");');
+const GH = run('groupSubRowHtml(findRow(100), findRow(100).subs[0])');
+ok('G17a 待询价集团子目行输出单个 tr，单元格数 =16（与主表 16 列对齐）',
+  /^<tr class="sub-r grp-pend"/.test(GH) && (GH.match(/<td/g) || []).length === 16 && /<\/tr>$/.test(GH),
+  (GH.match(/<td/g) || []).length + ' 个 td');
+ok('G17b 行内同时挂「集团」+「待询价」两个徽标（.zone-badge 家族，只加 modifier）',
+  /zone-badge grp/.test(GH) && /zone-badge pend/.test(GH));
+ok('G17c 主材逐条 name×consumption，未定价位显「甲供待询价」黄底输入框',
+  /瓷砖×1\.4469/.test(GH) && /1:3干硬性水泥砂浆×0\.0147/.test(GH) &&
+  (GH.match(/甲供待询价<\/span>/g) || []).length === 2 && /cof-i pend/.test(GH),
+  '待询价文案标签命中 ' + (GH.match(/甲供待询价<\/span>/g) || []).length + ' 个');
+ok('G17d 填价入口逐条带 mats 下标（updGroupMat(rid,bid,bsh,idx,value)），不走内部 updSubField',
+  /updGroupMat\(100,'ZS02-A-009','ZS02-A',0,this\.value\)/.test(GH) &&
+  /updGroupMat\(100,'ZS02-A-009','ZS02-A',1,this\.value\)/.test(GH) && !/updSubField\(/.test(GH));
+ok('G17e 系数/换算/删除沿用既有处理器（bid+bsh 定位，零改动复用）',
+  /updCoef\(100,'ZS02-A-009','ZS02-A',this\.value\)/.test(GH) &&
+  /updConv\(100,'ZS02-A-009','ZS02-A',this\.value\)/.test(GH) &&
+  /delSub\(100,'ZS02-A-009','ZS02-A'\)/.test(GH));
+ok('G17f 名称/特征/工种取自 getGroupBench（不查内部基准价库 → 不会误报缺失）',
+  /瓷砖地面/.test(GH) && /SA级600×600/.test(GH) && /泥水/.test(GH) && !/子目数据缺失/.test(GH));
+ok('G17g 待询价时金额列显「待询价」文案而不是 0.00',
+  (GH.match(/grp-pend-txt/g) || []).length >= 3);
+run('updGroupMat(100,"ZS02-A-009","ZS02-A",0,"100"); updGroupMat(100,"ZS02-A-009","ZS02-A",1,"300");');
+const GH2 = run('groupSubRowHtml(findRow(100), findRow(100).subs[0])');
+ok('G17h 补齐甲供价后不再挂待询价态，主材费出实数 144.69（100×1.4469）',
+  !/grp-pend/.test(GH2) && !/zone-badge pend/.test(GH2) && !/甲供待询价/.test(GH2) && /144\.69/.test(GH2));
+ok('G17i 已定价位输入框回显原值（不被 fmt 千分位污染，避免回写脏数据）',
+  /value="100"/.test(GH2) && /value="300"/.test(GH2));
+run('_mkRows();');
+
+/* ── G⑦ renderBoq 源码结构：集团子目绝不走「子目数据缺失」红底 ── */
+console.log('\n  · renderBoq 分流与模式门控（源码结构断言，渲染本体不进沙箱）');
+const RB_START = TOOL.indexOf('function renderBoq() {');
+const RB_END = TOOL.indexOf('\nfunction importBoq()', RB_START);
+if (RB_START < 0 || RB_END < 0) throw new Error('未找到 renderBoq 边界锚点');
+const RB = TOOL.slice(RB_START, RB_END);
+// 锚到「代码串」本身（不按四个字的通用词找）：源码注释里也会引用「子目数据缺失」，按普通词定位会先 hit 注释而假阴
+const GT_IDX = RB.indexOf("gtype === 'group'");
+const MISS_IDX = RB.indexOf('⚠️ 子目数据缺失（编号');
+const GB_IDX = RB.indexOf('getBench(sub.bid, sub.bsh)');
+ok('G16 renderBoq 存在集团子目分流', GT_IDX >= 0);
+ok('G16b 分流先于 getBench→「⚠️子目数据缺失」红底路径（集团子目不得被打红底）',
+  GT_IDX >= 0 && GT_IDX < MISS_IDX && GT_IDX < GB_IDX, 'gtype@' + GT_IDX + ' / 红底@' + MISS_IDX + ' / getBench@' + GB_IDX);
+ok('G16c 红底路径本身保留（内部子目仍需缺失告警）', MISS_IDX >= 0 && /\u26a0\ufe0f 子目数据缺失/.test(RB) && GB_IDX >= 0);
+ok('G16d 集团子目行派生单元格交给 groupSubRowHtml（渲染层不内联公式）', /groupSubRowHtml\(/.test(RB));
+ok('G16e 待询价行挂 CSS 类（黄底 + 徽标由样式层承担，不在 JS 里拼颜色）', /grp-pend/.test(RB) && /zone-badge pend|badge pend/.test(RB));
+ok('G16f 「＋ 集团子目」按钮仅 group 模式渲染（内部 UI 零变化；F7 后经 gMode 守卫变量）',
+  /const gMode = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(RB) &&
+  /\(gMode \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB), RB.slice(RB.indexOf('addsub-tr'), RB.indexOf('addsub-tr') + 420));
+ok('G16g 既有内部 picker 按钮仍无条件保留（并排而非替换）', /openPicker\('\+r.id\+'\)/.test(RB) && /挂子目（从基准价库选择）/.test(RB));
+const GSRH = TOOL.indexOf('function groupSubRowHtml');
+const GSRH_END = TOOL.indexOf('function renderBoq()', GSRH);
+ok('G16h 集团子目行主材价录入走 updGroupMat（不是内部 updSubField matPrice）',
+  GSRH >= 0 && GSRH_END > GSRH && /updGroupMat\(/.test(TOOL.slice(GSRH, GSRH_END)) &&
+  !/updSubField\([^)]*'matPrice'/.test(TOOL.slice(GSRH, GSRH_END)));
+ok('G16i group 模式行级汇总列走既有分支函数（compUnitPrice/rowTotal）',
+  /compUnitPrice\(r\)/.test(RB) && /rowTotal\(r\)/.test(RB));
+
+/* ── G⑧ updateSum 底部合计：「人工费合计」在 group 下不得拿全费用单价乘 qty（真实函数依赖整页 DOM，同按结构断言）── */
+const US_START = TOOL.indexOf('function updateSum() {');
+const US_END = TOOL.indexOf('// ═══════════ PICKER', US_START);
+if (US_START < 0 || US_END < 0) throw new Error('未找到 updateSum 边界锚点');
+const US = TOOL.slice(US_START, US_END);
+ok('G18 updateSum 有 group 分支且人工费走 rowGroupAgg(r).lab（不拿全费用单价乘 qty）',
+  /pricingMode === 'group'/.test(US) && /rowGroupAgg\(r\)\.lab \* q/.test(US), US.slice(0, 200));
+ok('G18b internal 路径原样保留（rowUnitPrice×qty）', US.indexOf('rowUnitPrice(r)||0') >= 0 && /\* q;/.test(US));
+ok('G18c 合计仍走 rowTotal（group 下自动包含待询价行计 0 的口径）', /rowTotal\(r\)\|\|0/.test(US));
+
+/* ── G⑦ T8 收尾：group 模式下旧导出入口门控（源码级：内部导出链零改动） ── */
+console.log('\n  · 旧导出入口门控：group 模式拦方式一/方式二/辅材清单/导出弹窗（内部模式恒 false）');
+const GMB_SRC = grabAnyFn(TOOL, 'groupModeBlock');
+ok('G19/F2 groupModeBlock 守卫收口：group 拦截（消息指向对甲汇总）· 混合态拦截（消息=清单中存在集团子目）· 纯内部清单恒 false',
+  /typeof pricingMode/.test(GMB_SRC) && /pricingMode === 'group'/.test(GMB_SRC) &&
+  /gtype === 'group'/.test(GMB_SRC) && /清单中存在集团子目，请在对甲报价模式下处理/.test(GMB_SRC) &&
+  /toast\(/.test(GMB_SRC) && /导出对甲报价汇总/.test(GMB_SRC));
+ok('G19b 四个用户可触发入口首行一律 groupModeBlock 拦截（含 splitByTrade 对账弹窗所在的 doConfigExport）',
+  ['showExportModal', 'doConfigExport', 'doAuxExport', 'doTemplateExport'].every(function (n) {
+    const f = grabAnyFn(TOOL, n);
+    return /if \(groupModeBlock\(\)\) return;/.test(f.slice(f.indexOf('{') + 1).split('\n').slice(0, 2).join('\n'));
+  }));
+ok('G19c 集团导出链与 EXP_COLS 零交集：doGroupSummaryExport/collectGroupSummaryPayload 不引用 EXP_COLS，lab/mat/aux/waste 列内部口径原样',
+  !/EXP_COLS/.test(grabAnyFn(TOOL, 'doGroupSummaryExport')) &&
+  !/EXP_COLS/.test(grabAnyFn(TOOL, 'collectGroupSummaryPayload')) &&
+  !/groupModeBlock|pricingMode/.test(grabAnyFn(TOOL, 'collectExportData')) &&
+  /key:'mat',\s*label:'主材费',\s*get:r=>rowMatCost\(r\)\|\|0/.test(TOOL));
+
+/* ── F2 防御收口：混合态 4 入口被拦（逻辑）+ 恢复含 gtype 数据触发切换（源码） ── */
+console.log('\n  · F2：模式守卫防御收口（混合态拦截 / 纯内部零变更 / restoreProject 自动切换）');
+run('pricingMode = "internal"; groups = [{id:1, sheetName:"S", open:true, sections:[{id:2, name:"分部", open:true, rows:[]}]}]; uid = 220;');
+run('var rg22 = makeRow({name:"集团行", unit:"m2", qty:"1"}); rg22.subs = [{bid:"ZS02-A-009",bsh:"ZS02-A",gtype:"group",coef:1,conv:1,lab:1,aux:0,mech:0,mats:[]}]; var ri22 = makeRow({name:"内部行", unit:"m2", qty:"1"}); groups[0].sections[0].rows = [rg22, ri22]; rebuildRowMap();');
+reset();
+ok('F2a 混合态（internal 模式 + 存量集团子目）→ groupModeBlock 拦下，消息可操作',
+  run('groupModeBlock()') === true && TOASTS.some(t => /清单中存在集团子目，请在对甲报价模式下处理（或先删除集团子目）/.test(t)), JSON.stringify(TOASTS));
+ok('F2b 调用方自定义 msg 优先（4 入口不改调用点的兼容前提）',
+  run('groupModeBlock("自定义")') === true && TOASTS[TOASTS.length - 1] === '自定义');
+run('groups[0].sections[0].rows = [ri22]; rebuildRowMap();');
+reset();
+ok('F2c 纯内部清单（internal 模式、无集团子目）→ 恒 false 且零 toast（内部模式零行为变更）',
+  run('groupModeBlock()') === false && TOASTS.length === 0);
+run('pricingMode = "group";');
+reset();
+ok('F2d group 模式照旧拦截，消息指向「导出对甲报价汇总」',
+  run('groupModeBlock()') === true && TOASTS.some(t => /导出对甲报价汇总/.test(t)), JSON.stringify(TOASTS));
+run('pricingMode = "internal";');
+const RP_SRC = grabAnyFn(TOOL, 'restoreProject');
+ok('F2e restoreProject 回写后扫描 gtype:\'group\' → 复用 setPricingMode(\'group\')（含懒加载路径）并 toast 已切换',
+  /gtype === 'group'/.test(RP_SRC) && /setPricingMode\('group'\)/.test(RP_SRC) && /已切换至对甲报价模式/.test(RP_SRC),
+  RP_SRC.slice(-260));
+
+/* ═══════════ H. Task 6：T02 四部分汇总预览计算 + 导出 payload 收集 ═══════════ */
+console.log('\n── H. buildGroupSummary / collectGroupSummaryPayload（勾稽：四=(一+二+三)×tax · 五=一+二+三+四 · D 类不进 part1）──');
+run(RATE_RESET + ' globalCoef=1.0; batchMode=false;');
+run('rebuildGroupBenchMap([G009, D003]);');
+run('pricingMode = "group";');
+run(`function _mkSumRows() {
+  groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+  uid = 200;
+  var ra = makeRow({name:'瓷砖地面', unit:'m2', qty:'5'});    // id200：已补价 A-009
+  var rd = makeRow({name:'成品保护', unit:'m2', qty:'10'});   // id201：D-003（行名≠库名，验证 item 取库 raw 名）
+  var rp = makeRow({name:'待询价行', unit:'m2', qty:'2'});    // id202：A-009 未补价（pending）
+  groups[0].sections[0].rows = [ra, rd, rp];
+  rebuildRowMap();
+}`);
+run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003"); addGroupSub(202,"ZS02-A-009");');
+run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+run('var OPTS = {fitoutArea:100, manualFees:{}}; var SUM = buildGroupSummary(getAllRows(), OPTS);');
+
+near('H1 黄金值：part1 = 已套价行合价 230.6085×5（A-009 唯一来源）', run('SUM.part1'), 1153.0425, 0.01);
+near('H1b 单价复核：A-009 补齐价后行 unit = T4/T5 黄金值 230.6085', run('rowGroupAgg(findRow(200)).unit'), 230.6085, 0.001);
+const SECS = JSON.parse(run('JSON.stringify(SUM.sections)'));
+ok('H2 sections 按 discipline+section 归集，只含分部分项（A 类楼地面）',
+  SECS.length === 1 && /A/.test(SECS[0].name) && /楼地面/.test(SECS[0].name), JSON.stringify(SECS));
+near('H2b 勾稽：Σsections = part1', SECS.reduce((s, x) => s + x.amount, 0), run('SUM.part1'), 0.01);
+ok('H2c D 类绝不进 part1/sections（成品保护/措施 不出现在 sections）',
+  !SECS.some(x => /D|措施|成品保护/.test(x.name)), JSON.stringify(SECS));
+near('H3 part2 = Σ D类合价(4.0779×10=40.779) + 绿安费(308.25×0.13=40.0725)', run('SUM.part2'), 80.8515, 0.01);
+near('H4 绿安/baogan 基数只含 part1 人工+机械(308.25)，不含 D 类', run('SUM.laborMechBase'), 308.25, 0.01);
+near('H5 part3 = 预算包干费 308.25×0.03（coordFee=null 不计取 · manualFees 空 · 暂列=0）', run('SUM.part3'), 9.2475, 0.01);
+near('H6 勾稽：part4 = (part1+part2+part3)×GROUP_RATES.tax',
+  run('SUM.part4'), run('(SUM.part1+SUM.part2+SUM.part3)*GROUP_RATES.tax'), 0.01);
+near('H6b 数值：四 = 1243.1415×0.09 = 111.8827', run('SUM.part4'), 111.8827, 0.01);
+near('H7 勾稽：total = 一+二+三+四', run('SUM.total'), run('SUM.part1+SUM.part2+SUM.part3+SUM.part4'), 0.01);
+near('H7b 数值：总造价 1355.0242', run('SUM.total'), 1355.0242, 0.01);
+near('H8 perSqm = total ÷ fitoutArea(100)', run('SUM.perSqm'), run('SUM.total/100'), 0.01);
+near('H8b 数值：单方造价 13.5502', run('SUM.perSqm'), 13.5502, 0.01);
+ok('H9 待询价行（202）不进 part1 且被计数 unpriced=1', run('SUM.unpriced') === 1, 'unpriced=' + run('SUM.unpriced'));
+
+console.log('\n  · 费率不硬编码：green/baogan/tax 全走 GROUP_RATES');
+run('GROUP_RATES.green = 0.20; GROUP_RATES.baogan = 0.05; GROUP_RATES.tax = 0.10; var SUM2 = buildGroupSummary(getAllRows(), OPTS);');
+near('H10 part2 随 GROUP_RATES.green 变（0.13→0.20，不写死）', run('SUM2.part2'), run('40.779 + 308.25*0.20'), 0.01);
+near('H10b part3 随 GROUP_RATES.baogan 变（0.03→0.05，不写死）', run('SUM2.part3'), run('308.25*0.05'), 0.01);
+near('H10c part4 随 GROUP_RATES.tax 变：四 =(一+二+三)×0.10（不写死 0.09）',
+  run('SUM2.part4'), run('(SUM2.part1+SUM2.part2+SUM2.part3)*0.10'), 0.01);
+run(RATE_RESET);
+
+console.log('\n  · coordFee：null≠0（未配不计取，面板标注「参数未配置」）· 配置后 = 单价×装修面积');
+run('var SUMA = buildGroupSummary(getAllRows(), OPTS);');
+ok('H11 coordFee=null → coordFeeConfigured:false（part3 不含配合费，见 H5）', run('SUMA.coordFeeConfigured') === false);
+run('GROUP_RATES.coordFee = 50; var SUMB = buildGroupSummary(getAllRows(), OPTS);');
+ok('H11b coordFee=50 → coordFeeConfigured:true', run('SUMB.coordFeeConfigured') === true);
+near('H12 coordFee=50 元/m2 × 100m2 → part3 增加 5000', run('SUMB.part3'), run('SUMA.part3 + 50*100'), 0.01);
+run(RATE_RESET + ' var SUMC = buildGroupSummary(getAllRows(), OPTS);');
+near('H12b 复位 coordFee=null 后 part3 回到不含配合费', run('SUMC.part3'), run('SUMA.part3'), 0.01);
+
+console.log('\n  · manualFees：Σ 计入 part3（赶工/变更/涨幅 手工金额）');
+run('var SUMM = buildGroupSummary(getAllRows(), {fitoutArea:100, manualFees:{overtime_fee:1000, contract_change_fee:500, inflation_fee:0}});');
+near('H14 part3 含 ΣmanualFees=1500 + 预算包干费', run('SUMM.part3'), run('SUMA.part3 + 1500'), 0.01);
+
+console.log('\n  · fitoutArea 缺失/0 → perSqm=null 不除零 + needsArea 提示');
+run('var SUM0 = buildGroupSummary(getAllRows(), {fitoutArea:0, manualFees:{}});');
+ok('H13 fitoutArea=0 → perSqm 为 null（不产生 Infinity/除零）', run('SUM0.perSqm') === null, String(run('SUM0.perSqm')));
+ok('H13b 并置 needsArea:true（面板据此提示填写装修面积）', run('SUM0.needsArea') === true);
+run('var SUMN = buildGroupSummary(getAllRows(), {});');
+ok('H13c opts 缺 fitoutArea 同样 perSqm:null（undefined 非数值）', run('SUMN.perSqm') === null);
+
+console.log('\n  · collectGroupSummaryPayload：raw 字段集 + 不下发前端 h');
+run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003");');
+run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+run('document.getElementById("projName").value="天河精装一期"; document.getElementById("fitoutAreaInp").value="100";');
+run('ensureManualGroups(); (function(){var og=groups.find(function(g){return g.gkind==="other";});og.sections[0].rows.forEach(function(r){if(r.stdKey==="overtime")r.usp="1000";});})();');   // 手工费改标准行录入（顶部 DOM 框已退役）
+const PL = run('collectGroupSummaryPayload();');
+ok('H15 顶层键 = {project_name,fitout_area,rates,manual_fees,items,manual_measures,manual_others}（对甲补录分部新增两键）',
+  JSON.stringify(Object.keys(PL).sort()) === JSON.stringify(['fitout_area', 'items', 'manual_fees', 'manual_measures', 'manual_others', 'project_name', 'rates']), JSON.stringify(Object.keys(PL)));
+ok('H15a2 无手工行时 manual_measures/manual_others 为空数组（不是 undefined）',
+  JSON.stringify(PL.manual_measures) === '[]' && JSON.stringify(PL.manual_others) === '[]', JSON.stringify([PL.manual_measures, PL.manual_others]));
+ok('H15b project_name 取项目表单，fitout_area 取新输入并数值化 100',
+  PL.project_name === '天河精装一期' && PL.fitout_area === 100, JSON.stringify([PL.project_name, PL.fitout_area]));
+ok('H15c rates = GROUP_RATES 原样六键',
+  JSON.stringify(Object.keys(PL.rates).sort()) === JSON.stringify(['baogan', 'coordFee', 'green', 'mgmt', 'profit', 'tax']), JSON.stringify(Object.keys(PL.rates)));
+ok('H15d manual_fees 三键 snake_case（赶工/变更/涨幅）',
+  JSON.stringify(Object.keys(PL.manual_fees).sort()) === JSON.stringify(['contract_change_fee', 'inflation_fee', 'overtime_fee']), JSON.stringify(PL.manual_fees));
+ok('H15e 赶工费取输入 1000，其余空为 0',
+  PL.manual_fees.overtime_fee === 1000 && PL.manual_fees.contract_change_fee === 0 && PL.manual_fees.inflation_fee === 0, JSON.stringify(PL.manual_fees));
+const ITEMS = PL.items;
+ok('H16 items = 每行×集团子目一条（本夹具两行两子目）', ITEMS.length === 2, JSON.stringify(ITEMS.length));
+const ITEM_KEYS = JSON.stringify(Object.keys(ITEMS[0]).sort());
+ok('H16b item raw 键集精确 =14 键（snake_case，不多不少）',
+  ITEM_KEYS === JSON.stringify(['aux', 'coef', 'code', 'conv', 'discipline', 'lab', 'mats', 'mech', 'name', 'qty', 'section_name', 'spec', 'unit', 'work_type'].sort()), ITEM_KEYS);
+ok('H16c 不下发前端算得的 h（后端重算）', ITEMS.every(it => !('h' in it)), JSON.stringify(Object.keys(ITEMS[0])));
+const AIT = ITEMS.find(x => x.code === 'ZS02-A-009');
+const DIT = ITEMS.find(x => x.code === 'ZS02-D-003');
+ok('H16d code=子目 bid；discipline/section_name/name/spec/unit 取库行 raw（非行名：D 行名「成品保护」→ item 取库「成品保护-PVC保护膜」）',
+  AIT && AIT.discipline === 'A' && AIT.section_name === '楼地面工程' && AIT.name === '瓷砖地面' && AIT.unit === 'm2' && AIT.spec === 'SA级600×600' &&
+  DIT && DIT.name === '成品保护-PVC保护膜', JSON.stringify(AIT));
+ok('H16e qty 取行工程量（A 行 5 / D 行 10）', AIT && AIT.qty === 5 && DIT && DIT.qty === 10);
+ok('H16f lab/mats/aux/mech/coef/conv 取子目 raw（补齐后的 mats 价原样下发）',
+  AIT && AIT.lab === 61.65 && AIT.aux === 1.98 && AIT.mech === 0 && AIT.coef === 1 && AIT.conv === 1 &&
+  AIT.mats[0].price === 100 && AIT.mats[1].price === 300, JSON.stringify(AIT && AIT.mats));
+ok('H16g work_type 取 raw 值（A 泥水 / D 油漆）', AIT && AIT.work_type === '泥水' && DIT && DIT.work_type === '油漆');
+run('_mkSumRows(); document.getElementById("fitoutAreaInp").value="";');   // _mkSumRows 重建 groups → 无 OTH 部，手工费自然归零
+const PL0 = run('collectGroupSummaryPayload();');
+ok('H17 无集团子目的行不产出 item（内部行零影响）', PL0.items.length === 0, JSON.stringify(PL0.items));
+ok('H17b fitout_area 空输入 → 数值 0（不抛、不 NaN）', PL0.fitout_area === 0, String(PL0.fitout_area));
+
+console.log('\n  · 负值钳制（M-1）：负面积/负手工费不得倒扣 part3');
+run('_mkSumRows(); addGroupSub(200,"ZS02-A-009"); addGroupSub(201,"ZS02-D-003"); addGroupSub(202,"ZS02-A-009");');
+run('findRow(200).subs[0].mats = [{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}];');
+run('GROUP_RATES.coordFee = 50; var SUMNEG = buildGroupSummary(getAllRows(), {fitoutArea:-100, manualFees:{overtime_fee:-1000, contract_change_fee:-500, inflation_fee:-200}});');
+ok('M1 负面积钳到 0 → coordAmount 不为负（按 0 面积计=0，不产生负配合费）', run('SUMNEG.coordFee') === 0 && run('SUMNEG.coordFee') >= 0, 'coordFee=' + run('SUMNEG.coordFee'));
+ok('M1b 负手工费逐项钳到 ≥0 → manualFees 汇总为 0（不被负数拉低）', run('SUMNEG.manualFees') === 0, 'manualFees=' + run('SUMNEG.manualFees'));
+near('M1c part3 不被倒扣：负面积+负手工费下 part3 = 纯预算包干费', run('SUMNEG.part3'), run('SUMNEG.laborMechBase * GROUP_RATES.baogan'), 0.01);
+run(RATE_RESET);
+
+console.log('\n  · 采集点下钳（M-1b）：负值在进汇总 opts / 后端 payload / 持久化列之前钳 0');
+run('document.getElementById("fitoutAreaInp").value="-50"; ensureManualGroups(); (function(){var og=groups.find(function(g){return g.gkind==="other";});og.sections[0].rows.forEach(function(r){if(r.stdKey==="overtime")r.usp="-1000";if(r.stdKey==="contract_change")r.usp="-500";if(r.stdKey==="inflation")r.usp="-200";});})();');   // 标准行负金额 → 采集点钳 0
+const PLNEG = run('collectGroupSummaryPayload();');
+ok('M1d 负面积/负手工费 → payload fitout_area 与 manual_fees 三键全为 0（Task 7 后端重算拿不到负数）',
+  PLNEG.fitout_area === 0 && PLNEG.manual_fees.overtime_fee === 0 && PLNEG.manual_fees.contract_change_fee === 0 && PLNEG.manual_fees.inflation_fee === 0,
+  JSON.stringify([PLNEG.fitout_area, PLNEG.manual_fees]));
+ok('M1e 钳制只改值不改键：负值 payload 顶层键集/manual_fees 键集 = 正值 payload（items 14 键契约不受影响）',
+  JSON.stringify(Object.keys(PLNEG).sort()) === JSON.stringify(Object.keys(PL).sort()) &&
+  JSON.stringify(Object.keys(PLNEG.manual_fees).sort()) === JSON.stringify(Object.keys(PL.manual_fees).sort()),
+  JSON.stringify([Object.keys(PLNEG), Object.keys(PLNEG.manual_fees)]));
+ok('M1f getGroupSummaryOpts 同源下钳（面板输入 → 汇总 opts 与 collect 不分叉）',
+  run('getGroupSummaryOpts().fitoutArea') === 0 && run('getGroupSummaryOpts().manualFees.overtime_fee') === 0,
+  JSON.stringify(run('getGroupSummaryOpts()')));
+run('document.getElementById("fitoutAreaInp").value="120.5"; (function(){var og=groups.find(function(g){return g.gkind==="other";});og.sections[0].rows.forEach(function(r){if(r.stdKey==="overtime")r.usp="800";});})();');
+ok('M1g 正值路径逐字不变：120.5 / 800 原样透传（Math.max 不裁剪正数；手工费走 OTH 标准行）',
+  run('getGroupSummaryOpts().fitoutArea') === 120.5 && run('getGroupSummaryOpts().manualFees.overtime_fee') === 800,
+  JSON.stringify(run('getGroupSummaryOpts()')));
+const SAVE_START = TOOL.indexOf('async function doAutoSave');
+const RESTORE_START = TOOL.indexOf('async function restoreProject');
+const SAVEBLK = TOOL.slice(SAVE_START, RESTORE_START);          // doAutoSave 草稿 + saveProject 正式
+const RESTOREBLK = TOOL.slice(RESTORE_START, TOOL.indexOf('async function deleteProject'));   // 写回侧
+const CLAMPED_AREA = (SAVEBLK.match(/Math\.max\(0, parseFloat\(document\.getElementById\('fitoutAreaInp'\)\?\.value\) \|\| 0\)/g) || []).length;
+const FEE_VIA_ROWS = (SAVEBLK.match(/collectGroupManualFees\(\)/g) || []).length;   // 手工费改标准行录入：保存侧唯一取数入口
+ok('M1h 两处保存 payload（doAutoSave 草稿 + saveProject 正式）：面积钳制 2/2，手工费全走 collectGroupManualFees 2/2（源码级）',
+  CLAMPED_AREA === 2 && FEE_VIA_ROWS === 2, 'area=' + CLAMPED_AREA + ',fees=' + FEE_VIA_ROWS);
+ok('M1hb 恢复写回侧：面积保持 != null ? x : \'\' 回落；手工费改 PENDING_STD_FEES 暂存待标准行回填（K15 验行为）；无负值进 groups',
+  (RESTOREBLK.match(/snap\.fitout_area != null \? snap\.fitout_area : ''/g) || []).length === 1
+  && /PENDING_STD_FEES = \{ overtime_fee: snap\.overtime_fee, contract_change_fee: snap\.contract_change_fee, inflation_fee: snap\.inflation_fee \};/.test(RESTOREBLK)
+  && RESTOREBLK.indexOf('Math.max(0, parseFloat(snap.') < 0,
+  'restore_lines=' + (RESTOREBLK.match(/snap\.(fitout_area|overtime_fee|contract_change_fee|inflation_fee) != null/g) || []).length);
+run('document.getElementById("fitoutAreaInp").value=""; (function(){var og=groups.find(function(g){return g.gkind==="other";});if(og)og.sections[0].rows.forEach(function(r){if(r.stdKey)r.usp="";});})();');
+
+console.log('\n  · payload.rates 浅拷贝（M-6）：不共享 GROUP_RATES 活引用，费率补写不回溯漂移已构造 payload');
+run('document.getElementById("projName").value="拷贝测试"; document.getElementById("fitoutAreaInp").value="100";');
+ok('M6 payload.rates 与 GROUP_RATES 非同一引用（!==）', run('collectGroupSummaryPayload().rates !== GROUP_RATES') === true);
+ok('M6b payload.rates 六键值与 GROUP_RATES 逐一相等（拷贝不失真）', run('(function(){var r=collectGroupSummaryPayload().rates;return Object.keys(GROUP_RATES).every(function(k){return r[k]===GROUP_RATES[k];}) && Object.keys(r).length===Object.keys(GROUP_RATES).length;})()') === true);
+ok('M6c 构造后改 GROUP_RATES.tax 不回写已生成 payload.rates（活引用漂移被切断）', run('(function(){var p=collectGroupSummaryPayload();var before=p.rates.tax;GROUP_RATES.tax=0.99;var drifted=(p.rates.tax!==before);GROUP_RATES.tax=before;return drifted===false;})()') === true);
+run(RATE_RESET + ' pricingMode = "internal";');
+
+/* ── M-2（T6 遗留）：汇总面板「coordFee 已配置但面积未填」补注（源码级：面板函数不在沙箱内） ── */
+const PANEL_SRC = grabAnyFn(TOOL, 'renderGroupSummaryPanel');
+ok('M2 面板预警：coordFeeConfigured 且 needsArea → 配合费行补注「暂按 0 计，待装修面积确认」（未配置时的告警行原样保留）',
+  /coordFeeConfigured\s*\?\s*fmt\(s\.coordFee\)\s*\+\s*\(s\.needsArea\s*\?\s*'（暂按 0 计，待装修面积确认）'/.test(PANEL_SRC) &&
+  /if \(!s\.coordFeeConfigured\)/.test(PANEL_SRC));
+run('pricingMode = "group";');
+
+/* ── F4 导出 400 分类补全 + 客户端预检（源码级：导出函数走真实 fetch，不进沙箱） ── */
+console.log('\n  · F4：fitout_area_required 分支 + needsArea 预检拦截');
+const DGE_SRC = grabAnyFn(TOOL, 'doGroupSummaryExport');
+ok('F4a 400 分类补全：fitout_area_required 分支存在，文案与后端闸门同源且聚焦 #fitoutAreaInp',
+  /detail\.error === 'fitout_area_required'/.test(DGE_SRC) && /请先填写装修面积（单方造价分母）/.test(DGE_SRC) &&
+  (DGE_SRC.match(/fitoutAreaInp/g) || []).length >= 2, (DGE_SRC.match(/fitoutAreaInp/g) || []).length + ' 处');
+ok('F4b 客户端预检：needsArea 在 await fetch 之前 toast 拦截不发请求',
+  /pre\.needsArea/.test(DGE_SRC) && DGE_SRC.indexOf('pre.needsArea') < DGE_SRC.indexOf('await fetch') &&
+  /buildGroupSummary\(getAllRows\(\), getGroupSummaryOpts\(\)\)/.test(DGE_SRC));
+
+/* ── F5 集团模式下 AI 套价与内部 picker 关门（源码级：两函数不进沙箱）
+ *    F5a 已被「对甲报价 AI 一键套价」本轮重新裁定：原「AI 仅支持对内」的拦截拆掉，
+ *    改成 pricingMode 分流到后端 mode='group'（候选池/校验见 M7–M9）；导出/对账的拦截仍在位（M13）。 ── */
+const SAP_SRC = grabAnyFn(TOOL, 'startAiPricing');
+ok('F5a（拆掉拦截）startAiPricing 首行不再是 groupModeBlock，入口第一件事就是 gMode 分流（先定口径再取 key）',
+  !/groupModeBlock/.test(SAP_SRC) &&
+  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1).replace(/\/\/[^\n]*\n/g, '').trimStart()
+    .startsWith("const gMode = (pricingMode === 'group');"),
+  SAP_SRC.slice(SAP_SRC.indexOf('{') + 1, SAP_SRC.indexOf('{') + 160));
+const RB_SRC = grabAnyFn(TOOL, 'renderBoq');
+ok('F5b renderBoq 内部「＋ 挂子目」与集团按钮互斥渲染：group 下隐藏、内部模式原样（F7 后复用 gMode 守卫变量）',
+  /const gMode = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(RB_SRC) &&
+  /\(!gMode \? '<button class="addsub-btn" onclick="openPicker\(/.test(RB_SRC) &&
+  /\(gMode \? ' <button class="addsub-btn grp" onclick="openGroupPicker\(/.test(RB_SRC));
+
+/* ── F6 保存假成功收口（源码级：保存链走真实 fetch，不进沙箱） ── */
+const SP_SRC = grabAnyFn(TOOL, 'saveProject');
+ok('F6a saveProject 不再吞掉失败：同型直接 fetch + 非 2xx 提示「✗ 保存失败（HTTP xxx）」并返回，不走 _post/_patch',
+  !/_post\(|_patch\(/.test(SP_SRC) && /if \(!resp\.ok\)/.test(SP_SRC) &&
+  /✗ 保存失败（HTTP /.test(SP_SRC) && /'Prefer'\] = 'return=minimal'/.test(SP_SRC), SP_SRC.slice(0, 120));
+const ADS_SRC = grabAnyFn(TOOL, 'doAutoSave');
+ok('F6b doAutoSave 失败首次追加 ⚠️ toast（once 标志双分支：HTTP 失败 + 异常），成功复位',
+  /_autoSaveWarned/.test(ADS_SRC) && (ADS_SRC.match(/if \(!_autoSaveWarned\)/g) || []).length === 2 &&
+  /_autoSaveWarned = false/.test(ADS_SRC) && /⚠️ 自动保存失败（HTTP /.test(ADS_SRC));
+ok('F6c _post/_patch 共享封装本体逐字零改动（内部模式零行为铁律）',
+  TOOL.includes("const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};") &&
+  TOOL.includes("const _patch=async(t,id,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t+'?id=eq.'+id,{method:'PATCH',headers:h,body:JSON.stringify(b)})};"));
+
+/* ── F7 pricingMode 守卫风格统一（源码级：typeof 前置守卫，缺席即视为 internal） ── */
+console.log('\n  · F7：守卫风格统一 —— updateGroupRateHint / renderBoq gMode / EXP_COLS getter 全部带 typeof 前置');
+const UGH_SRC = grabAnyFn(TOOL, 'updateGroupRateHint');
+ok('F7a updateGroupRateHint 正形 typeof 守卫（gOn），pricingMode 仅出现在 gOn 声明内、无裸引用',
+  /const gOn = \(typeof pricingMode !== 'undefined' && pricingMode === 'group'\);/.test(UGH_SRC) &&
+  /if \(!gOn\)/.test(UGH_SRC) && (UGH_SRC.match(/pricingMode/g) || []).length === 2);
+ok('F7b EXP_COLS mgmt/profit getter 带 typeof 前置守卫（且仍走 groupExportFee/internal 二分支）',
+  (TOOL.match(/typeof pricingMode !== 'undefined' && pricingMode==='group'\?groupExportFee\(r,'(mgmt|profit)'\)/g) || []).length === 2);
+ok('F7b2 renderBoq 的 gMode 声明先于两处按钮消费（守卫变量单一来源）',
+  RB_SRC.indexOf('const gMode =') < RB_SRC.indexOf('!gMode ?') && RB_SRC.indexOf('const gMode =') < RB_SRC.indexOf('gMode ?') &&
+  (RB_SRC.match(/pricingMode === 'group'/g) || []).length === 1);
+
+/* ── F1 镜像夹具：一行挂 2 个集团子目、其一 pending → 子目级排除（与后端 group_summary_export.compute 同口径） ── */
+console.log('\n  · F1：一行两子目其一待询价 —— 子目级剔除，兄弟子目照常进 part1（双向钉镜像后端）');
+run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+     uid = 210;
+     var rmix = makeRow({name:'混合待询价行', unit:'m2', qty:'5'});
+     groups[0].sections[0].rows = [rmix]; rebuildRowMap();`);
+run('addGroupSub(210,"ZS02-A-009");');   // 子目①：A-009 未补价（G009 mats 价格均 null → pending）
+run('findRow(210).subs.push({bid:"ZS02-A-009",bsh:"ZS02-A",gtype:"group",coef:1.0,conv:1.0,workType:"泥水",lab:61.65,aux:1.98,mech:0,mats:[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"1:3干硬性水泥砂浆",price:300,unit:"m3",consumption:0.0147}]});');  // 子目②：同编码已定价（addGroupSub 查重拒绝同 bid+bsh，手工入同一 subs 通道）
+run('var SUMF1 = buildGroupSummary(getAllRows(), OPTS);');
+near('F1a part1 只含已定价子目合价 230.6085×5（pending 兄弟子目不拖累整行）', run('SUMF1.part1'), 1153.0425, 0.01);
+ok('F1b unpriced 按子目级计数：1 条 pending 子目 = 1', run('SUMF1.unpriced') === 1, 'unpriced=' + run('SUMF1.unpriced'));
+near('F1c 绿安/包干基数同样子目级：laborMechBase = 61.65×5', run('SUMF1.laborMechBase'), 308.25, 1e-6);
+const SECSF1 = JSON.parse(run('JSON.stringify(SUMF1.sections)'));
+ok('F1d sections 只归集已定价子目（Σsections = part1，A·楼地面）',
+  SECSF1.length === 1 && Math.abs(SECSF1[0].amount - run('SUMF1.part1')) < 0.01 && /楼地面/.test(SECSF1[0].name), JSON.stringify(SECSF1));
+near('F1e 跨端镜像常数：part1 与后端同夹具值 1153.0425 严格一致（tol 2e-6）', run('SUMF1.part1'), 230.6085 * 5, 2e-6);
+ok('F1f 行级展示语义不变：混合行仍 ready:false + rowGroupPending:true（BOQ 黄底照旧）',
+  run('rowGroupAgg(findRow(210)).ready') === false && run('rowGroupPending(findRow(210))') === true);
+
+/* ═══════════ I. 侧栏双库（用户反馈：集团模式下左侧仍显示 497 条内部库） ═══════════ */
+console.log('\n── I. 侧栏双库：集团模式展示 ZS02 库 + discipline tabs + h 实算 + 挂载落点 ──');
+run('setPricingMode("group");');
+const TABS_GRP = run('document.getElementById("ftabs").children.map(function(b){ return b.dataset.sh + ":" + b.textContent; })');
+ok('I1 切 group 后侧栏 tabs = 全部 + A精装/B水电/C拆除/D措施',
+  /data-sh="all"/.test(run('document.getElementById("ftabs").innerHTML')) &&
+  TABS_GRP.length === 4 && TABS_GRP[0] === 'A:A精装' && TABS_GRP[3] === 'D:D措施', JSON.stringify(TABS_GRP));
+ok('I2 侧栏标题随模式切换', run('document.getElementById("sbarTitle").textContent') === '集团基准价库（ZS02）');
+run('rebuildGroupBenchMap([G009, D003]); document.getElementById("libSrch").value = ""; shFilter = "all";');
+const LVI = JSON.parse(run('JSON.stringify(getLibItems().map(function(i){ return {id:i.id, price:i.price, pend:!!i.pending, tag:i.sheet, unit:i.unit}; }))'));
+ok('I3 集团库视图：id=code、A-009 pending、discipline 中文标签',
+  LVI.length === 2 && LVI[0].id === 'ZS02-A-009' && LVI[0].pend === true && LVI[1].tag === 'D措施', JSON.stringify(LVI));
+near('I4 侧栏 h 与引擎同源：D-003 = 4.0779（黄金值，非 raw_composite 留档值）', LVI[1].price, 4.0779, 1e-6);
+ok('I5 待询价条目价格单元格显示「待询价」（renderLib 源：pending 三元）',
+  /it\.pending.*待询价/.test(grabAnyFn(TOOL, 'renderLib')));
+run('shFilter = "D";');
+ok('I6 discipline tab 筛选生效', run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZS02-D-003');
+run('shFilter = "all"; document.getElementById("libSrch").value = "瓷砖";');
+ok('I7 搜索命中名称（复用 groupPickerItems 分词链）', run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZS02-A-009');
+run('document.getElementById("libSrch").value = "zs02-d";');
+ok('I8 搜索命中编号（小写 code 包含）', run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZS02-D-003');
+run('document.getElementById("libSrch").value = "";');
+run(`groups = [{id:1, sheetName:'S', open:true, sections:[{id:2, name:'分部', open:true, rows:[]}]}];
+     uid = 230;
+     var rlib = makeRow({name:'侧栏挂载行', unit:'m2', qty:'10'});
+     groups[0].sections[0].rows = [rlib]; rebuildRowMap(); rlib.open = true;
+     getAllRows().forEach(function(r){ if (r.id !== 230) r.open = false; });`);
+run('libClick("ZS02-D-003", "D措施");');
+ok('I9 集团侧栏点击走 addGroupSub（gtype 契约与行内 picker 同源）',
+  run('findRow(230).subs.length') === 1 && run('findRow(230).subs[0].gtype') === 'group' && run('findRow(230).subs[0].bid') === 'ZS02-D-003');
+run('findRow(230).open = false; TOASTS.length = 0;');
+run('libClick("ZS02-A-009", "A精装");');
+ok('I10 无展开行时点击只提示不挂载（与内部侧栏同文案）',
+  run('findRow(230).subs.length') === 1 && TOASTS.some(m => /请先展开一条清单行/.test(m)), JSON.stringify(TOASTS));
+run('findRow(230).open = true; drag = {id:"ZS02-A-009", sh:"A精装"};');
+run('onRowDrop({preventDefault:function(){}}, 230);');
+ok('I11 集团模式行拖放走 addGroupSub（onRowDrop 分流）',
+  run('findRow(230).subs.length') === 2 && run('findRow(230).subs[1].bid') === 'ZS02-A-009' && run('findRow(230).subs[1].gtype') === 'group');
+run('rebuildGroupBenchMap([]); renderLib();');
+ok('I12 集团空库：侧栏「ZS02 库未加载」+ libGroupRetry 重试入口',
+  /ZS02 库未加载/.test(els.libList.innerHTML) && /libGroupRetry/.test(els.libList.innerHTML) && els.libCnt.textContent === '集团库未加载');
+run('rebuildGroupBenchMap([G009, D003]);');
+ok('I13 libGroupRetry 只走 ensureGroupData 既有链路（不自发 fetch）',
+  /ensureGroupData/.test(grabAnyFn(TOOL, 'libGroupRetry')) && !/_get\(/.test(grabAnyFn(TOOL, 'libGroupRetry')));
+run('setPricingMode("internal");');
+const TABS_INT = run('document.getElementById("ftabs").children.map(function(b){ return b.dataset.sh; })');
+ok('I14 切回内部：SHEETS tabs 重建 + 标题还原 + shFilter 复位',
+  /data-sh="all"/.test(run('document.getElementById("ftabs").innerHTML')) &&
+  TABS_INT.length === 2 && TABS_INT[0] === '泥水班组' &&
+  run('document.getElementById("sbarTitle").textContent') === '基准价库' && run('shFilter') === 'all');
+run('ALL = [{id:"ZY-01", name:"满堂红脚手架", trade:"其他", unit:"m3", price:30, sheet:"其他班组"}]; document.getElementById("libSrch").value = "";');
+ok('I15 内部分支 getLibItems 行为不变（ALL + 小写过滤原路径）',
+  run('getLibItems().length') === 1 && run('getLibItems()[0].id') === 'ZY-01');
+run('findRow(230).open = true; libClick("ZY-01", "其他班组");');
+ok('I16 内部侧栏点击仍走 addSub（原落点零变更，无 gtype 字段）',
+  run('findRow(230).subs.length') === 3 && run('findRow(230).subs[2].bid') === 'ZY-01' && run('!findRow(230).subs[2].gtype'));
+ok('I17 数据落地后侧栏补渲染（loadGroupDataOnce 成功点含 renderLib()）',
+  /renderLib\(\)/.test(grabAnyFn(TOOL, 'loadGroupDataOnce')));
+ok('I18 往返切换不炸（侧栏双库链路在两种模式下均无异常）',
+  run('(function(){ try { setPricingMode("group"); setPricingMode("internal"); setPricingMode("group"); setPricingMode("internal"); return true; } catch(e) { return "throw: " + e.message; } })()') === true);
+
+/* ═══════════ J. 套价表独立机械费列（用户裁定：机械费次要，放辅材费后；损耗率列集团模式整列撤下） ═══════════ */
+console.log('\n── J. 机械费独立成列：集团模式 撤损耗率列 + 辅材费后加机械费列（列数恒 16，colspan 链零改动） ──');
+ok('J1 表头换列：集团撤 waste 列、mech 列夹在辅材费与管理费之间（含 .c-mech 列宽定义）',
+  /\(gMode \? '' : '<th class="c-waste r">主材损耗率<\/th>'\)/.test(TOOL) && !/gModeH/.test(TOOL) &&
+  TOOL.indexOf('<th class="c-aux r">辅材费') < TOOL.indexOf('<th class="c-mech r"') &&
+  TOOL.indexOf('<th class="c-mech r"') < TOOL.indexOf('<th class="c-mgmt r">管理费') &&
+  /\.c-mech\{width:64px\}/.test(TOOL));
+ok('J2 行级：waste 位集团不输出（wrCell 仅内部），辅材格后接 mech td 取 gCell(gagg.mech) 三态一致',
+  /\(gMode \? '' : wrCell\)/.test(TOOL) && /gCell\(gagg\.mech\)/.test(TOOL) &&
+  TOOL.indexOf('gagg.aux') < TOOL.indexOf('gCell(gagg.mech)'));
+ok('J3 rowGroupAgg 本就聚合 mech（数据层零改动，只接渲染）', /out\.mech \+= p\.mech \* k;/.test(TOOL));
+run('findRow(230).subs.push({bid:"ZS02-X-999",bsh:"ZS02-A",gtype:"group",coef:2.0,conv:1.0,workType:"",lab:10,aux:0,mech:5,mats:[]});');
+near('J4 mech 聚合数值：Σ mech×coef×conv = 5×2 = 10（行内其余集团子目 mech=0）', run('rowGroupAgg(findRow(230)).mech'), 10, 1e-9);
+run('findRow(230).subs.pop();');
+run('setPricingMode("group"); addGroupSub(230, "ZS02-A-009");');
+const GHG = run('groupSubRowHtml(findRow(230), findRow(230).subs[findRow(230).subs.length-1])');
+ok('J5a 集团模式子目行：借位形态撤下、E机械列排在 D辅材之后（td 仍恒 16，与表头对齐）',
+  (GHG.match(/<td/g) || []).length === 16 && !/本列位展示 E 机械/.test(GHG) &&
+  GHG.indexOf('D 辅材') >= 0 && GHG.indexOf('E 机械（表行 mech_cost') > GHG.indexOf('D 辅材'),
+  (GHG.match(/<td/g) || []).length + ' 个 td');
+run('setPricingMode("internal");');
+const GHI = run('groupSubRowHtml(findRow(230), findRow(230).subs[findRow(230).subs.length-1])');
+ok('J5b 内部模式子目行保留 T5 借位形态零改动（损耗率列位展示 E 机械，无独立 mech 列，td 仍 16）',
+  (GHI.match(/<td/g) || []).length === 16 && /本列位展示 E 机械/.test(GHI) && !/E 机械（表行 mech_cost/.test(GHI));
+run('findRow(230).subs = [];');
+ok('J6 列数不变式护栏：全表无 colspan="17"／无动态 colspan 分流痕迹（换列而非加列）',
+  !/colspan="17"/.test(TOOL) && /colspan="16"/.test(TOOL) && !/colspan="\+'\(gMode/.test(TOOL));
+
+/* ── 表头结构（用户裁定·终版）：回到最初设计——每组各自成表、各自带表头；无单一大表/置顶/去重 ── */
+ok('J7 每组各自表头（初始设计）：thead 内联于每组开表串，循环尾唯一闭表；单一大表/共用表头函数/去重桩全部退役无痕',
+  /<table class="boq-table"><thead><tr>/.test(RB_SRC) &&
+  (RB_SRC.match(/<\/tbody><\/table>/g) || []).length === 1 &&
+  !/boqTheadHtml/.test(TOOL) && !/boqHeadDone/.test(TOOL) && !/showHead/.test(TOOL) && !/grp-tr/.test(TOOL));
+
+console.log('\n── K. 对甲补录分部（二次裁定）：措施部=标准 BOQ 挂 ZS02-D 子目；OTH=简表预置 T02 六项+赶工；无门槛提示 + coordFee 人话 ──');
+ok('K1 无 started 门槛（用户反馈核心：措施费空却没提示）——完全空汇总也出 noMeasure',
+  run('groupGapFlags({part1:0,dMeasures:0,manualMeasure:0,manualFees:0,manualOther:0,coordFeeConfigured:true,coordFee:100}).noMeasure') === true);
+ok('K2 措施有值即不提示：D 类引擎值 或 手工补录行 任一>0 → noMeasure=false',
+  run('groupGapFlags({part1:0,dMeasures:50,manualMeasure:0,manualFees:0,manualOther:0,coordFeeConfigured:true,coordFee:0}).noMeasure') === false &&
+  run('groupGapFlags({part1:0,dMeasures:0,manualMeasure:8000,manualFees:0,manualOther:0,coordFeeConfigured:true,coordFee:0}).noMeasure') === false);
+ok('K3 noOther 判据含手工行：手工费+manualOther=0 且（coordFee 未配置或=0）才 true；任一有金额即 false',
+  run('groupGapFlags({dMeasures:50,manualMeasure:0,manualFees:0,manualOther:0,coordFeeConfigured:false,coordFee:0}).noOther') === true &&
+  run('groupGapFlags({dMeasures:50,manualMeasure:0,manualFees:0,manualOther:3000,coordFeeConfigured:true,coordFee:0}).noOther') === false &&
+  run('groupGapFlags({dMeasures:50,manualMeasure:0,manualFees:800,manualOther:0,coordFeeConfigured:true,coordFee:0}).noOther') === false);
+ok('K4 coordFee 文案改人话：不再泄露 GROUP_RATES.coordFee=null，改为「管理端/配合费费率」指引',
+  !/GROUP_RATES\.coordFee=null/.test(PANEL_SRC) && /管理端/.test(PANEL_SRC) && /配合费费率/.test(PANEL_SRC) &&
+  !/GROUP_RATES\.coordFee=null/.test(TOOL));
+ok('K5 面板接线：part2/part3 展示手工分量 + 两提示条指名对应分部（ZS02-D·措施项目 / ZS02-OTH·其他项目）',
+  /s\.manualMeasure/.test(PANEL_SRC) && /s\.manualOther/.test(PANEL_SRC) &&
+  /ZS02-D · 措施项目/.test(PANEL_SRC) && /ZS02-OTH · 其他项目/.test(PANEL_SRC));
+ok('K6 导出确认闸文案指向分部与新录入路径：miss 提及两分部名 + 措施部「新增措施行」 + 其他部「标准行」',
+  /ZS02-D · 措施项目/.test(DGE_SRC) && /ZS02-OTH · 其他项目/.test(DGE_SRC) && /新增措施行/.test(DGE_SRC) && /标准行/.test(DGE_SRC));
+ok('K7 ensureManualGroups：措施部两 section（脚手架工程/成品保护费）走标准管线；其他部预置 7 标准行 stdSeeded；幂等；内部模式不建',
+  run('(function(){pricingMode="group";PENDING_STD_FEES=null;groups=[{id:1,sheetName:"E",open:true,sections:[{id:2,name:"s",open:true,rows:[]}]}];uid=500;ensureManualGroups();ensureManualGroups();var mg=groups.find(function(g){return g.gkind==="measure";});var og=groups.find(function(g){return g.gkind==="other";});return groups.filter(function(g){return g.gkind;}).length===2 && mg.sections.length===2 && mg.sections[0].name==="脚手架工程" && mg.sections[1].name==="成品保护费" && og.stdSeeded===true && og.sections[0].rows.length===7 && og.sections[0].rows.every(function(r){return r.stdKey&&r.manual==="other"&&r.qty==="1";});})()') === true &&
+  run('(function(){pricingMode="internal";groups=[{id:1,sheetName:"E",open:true,sections:[{id:2,name:"s",open:true,rows:[]}]}];ensureManualGroups();return groups.filter(function(g){return g.gkind;}).length;})()') === 0);
+ok('K7b 空清单（groups=[]）不建补录分部（上传页不打扰）',
+  run('(function(){pricingMode="group";groups=[];ensureManualGroups();return groups.length;})()') === 0);
+ok('K8 buildGroupSummary 纳入手工行：measure→part2、other→part3，laborMechBase/green 不变，勾稽成立',
+  run('(function(){pricingMode="group";rebuildGroupBenchMap([G009,D003]);groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=300;var re=makeRow({name:"瓷砖地面",unit:"m2",qty:"5"});groups[0].sections[0].rows.push(re);rebuildRowMap();addGroupSub(300,"ZS02-A-009");findRow(300).subs[0].mats=[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"砂浆",price:300,unit:"m3",consumption:0.0147}];var base=buildGroupSummary(getAllRows(),{fitoutArea:100,manualFees:{}});var mm=makeRow({name:"垂直运输",unit:"项",qty:"1"});mm.manual="measure";mm.usp="8000";var mo=makeRow({name:"赶工",unit:"项",qty:"2"});mo.manual="other";mo.usp="500";groups[0].sections[0].rows.push(mm,mo);rebuildRowMap();var c=buildGroupSummary(getAllRows(),{fitoutArea:100,manualFees:{}});return Math.abs(c.part2-base.part2-8000)<0.01 && Math.abs(c.part3-base.part3-1000)<0.01 && Math.abs(c.laborMechBase-base.laborMechBase)<1e-9 && Math.abs(c.part4-(c.part1+c.part2+c.part3)*GROUP_RATES.tax)<0.01;})()') === true);
+ok('K9 renderManualGroupHtml（OTH 专用）：预置 7 标准行——暂列 locked「集团规定不计取」、配合/包干 auto「自动计算」、4 个 input 行可编辑 + othTableAnchor + 兜底按钮',
+  (function(){ var mh = run('(function(){pricingMode="group";PENDING_STD_FEES=null;groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=400;ensureManualGroups();var og=groups.find(function(g){return g.gkind==="other";});return renderManualGroupHtml(og);})()');
+    return /othTableAnchor/.test(mh) && /暂列金额/.test(mh) && /集团规定不计取/.test(mh) && /暂估价/.test(mh) &&
+      /精装修管理及配合费/.test(mh) && /预算包干费/.test(mh) && /合同变更费用/.test(mh) && /装修类型涨幅费用/.test(mh) && /赶工措施费/.test(mh) &&
+      /自动计算/.test(mh) && (mh.match(/updManual\(\d+,'usp'/g) || []).length === 4 &&
+      /＋ 手工补录行/.test(mh); })());
+ok('K10a renderBoq：内部模式跳过 gkind 补录分部（源码钩）', /if \(g\.gkind && !gMode\) return;/.test(RB_SRC));
+ok('K10b renderBoq：仅集团模式 ensureManualGroups（源码钩）', /if \(gMode\) ensureManualGroups\(\);/.test(RB_SRC));
+ok('K10c renderBoq：OTH 走简表并 return（源码钩）', /if \(g\.gkind === 'other'\) \{ html \+= renderManualGroupHtml\(g\); return; \}/.test(RB_SRC));
+ok('K10d renderBoq：measure 部旧手工行走警示条（源码钩）', /if \(g\.gkind === 'measure' && isManualRow\(r\)\) \{ html \+= legacyMeasureRowHtml\(r\); return; \}/.test(RB_SRC));
+ok('K10e renderBoq：section 尾「＋ 新增措施行」按钮文案（源码钩）', /＋ 新增措施行/.test(RB_SRC), JSON.stringify(RB_SRC.slice(RB_SRC.length - 200)));
+ok('K10f renderBoq：加行按钮传 g.id / s.id 两参（源码钩，空白宽容）',
+  /addMeasureRow\('\s*\+\s*g\.id\s*\+\s*'\s*,\s*'\s*\+\s*s\.id\s*\+\s*'\s*\)/.test(RB_SRC),
+  JSON.stringify((RB_SRC.match(/.{0,10}addMeasureRow.{0,60}/g) || [])));
+ok('K11 加行器：isManualRow/manualRowTotal 不变；addManualRow 只对 OTH 生效（措施部关门）；addMeasureRow 落指定 section 且非手工行',
+  run('isManualRow({manual:"measure"})') === true && run('isManualRow({})') === false &&
+  run('manualRowTotal({manual:"other",qty:"2",usp:"500"})') === 1000 &&
+  run('(function(){pricingMode="group";PENDING_STD_FEES=null;groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=600;ensureManualGroups();var mg=groups.find(function(g){return g.gkind==="measure";});var og=groups.find(function(g){return g.gkind==="other";});addManualRow(mg.id);var mgRows=mg.sections.reduce(function(a,s){return a+s.rows.length;},0);addManualRow(og.id);var ogFree=og.sections[0].rows.filter(function(r){return !r.stdKey;});return mgRows===0 && ogFree.length===1 && ogFree[0].manual==="other";})()') === true &&
+  run('(function(){var mg=groups.find(function(g){return g.gkind==="measure";});addMeasureRow(mg.id,mg.sections[1].id);return mg.sections[0].rows.length===0 && mg.sections[1].rows.length===1 && !mg.sections[1].rows[0].manual;})()') === true);
+ok('K12 payload 同源：手工行进 manual_measures/manual_others（snake_case qty/usp 供后端重算），不入 items',
+  run('(function(){pricingMode="group";rebuildGroupBenchMap([G009,D003]);groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=300;var re=makeRow({name:"瓷砖地面",unit:"m2",qty:"5"});groups[0].sections[0].rows.push(re);rebuildRowMap();addGroupSub(300,"ZS02-A-009");findRow(300).subs[0].mats=[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469}];var mm=makeRow({name:"垂直运输",unit:"项",qty:"1"});mm.manual="measure";mm.usp="8000";var mo=makeRow({name:"赶工",unit:"项",qty:"2"});mo.manual="other";mo.usp="500";groups[0].sections[0].rows.push(mm,mo);rebuildRowMap();var p=collectGroupSummaryPayload();return p.items.length===1 && p.manual_measures.length===1 && p.manual_others.length===1 && p.manual_measures[0].name==="垂直运输" && p.manual_measures[0].qty===1 && p.manual_measures[0].usp===8000 && p.manual_others[0].qty===2 && p.manual_others[0].usp===500;})()') === true);
+ok('K13 标准行不双计：赶工经 manualFees 单通道、暂估价经 manualOther、auto/locked 行即使被塞值也不计入汇总',
+  run('(function(){pricingMode="group";PENDING_STD_FEES=null;rebuildGroupBenchMap([G009,D003]);groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=700;var re=makeRow({name:"瓷砖地面",unit:"m2",qty:"5"});groups[0].sections[0].rows.push(re);ensureManualGroups();rebuildRowMap();addGroupSub(700,"ZS02-A-009");findRow(700).subs[0].mats=[{name:"瓷砖",price:100,unit:"m2",consumption:1.4469},{name:"砂浆",price:300,unit:"m3",consumption:0.0147}];var og=groups.find(function(g){return g.gkind==="other";});og.sections[0].rows.forEach(function(r){if(r.stdKey==="overtime")r.usp="1000";if(r.stdKey==="provisional_estimate")r.usp="500";if(r.stdKey==="coord_fee")r.usp="999";if(r.stdKey==="provisional_sum")r.usp="999";});var free=makeRow({name:"库外临时",unit:"项",qty:"1"});free.manual="other";free.usp="200";og.sections[0].rows.push(free);rebuildRowMap();var s=buildGroupSummary(getAllRows(),getGroupSummaryOpts());return s.manualFees===1000 && Math.abs(s.manualOther-700)<1e-9 && Math.abs(s.part3-(s.baogan+s.manualFees+s.manualOther+(s.coordFeeConfigured?s.coordFee:0)))<0.01;})()') === true);
+ok('K13b 标准行 payload 通道：赶工/变更/涨幅走 manual_fees 不进 manual_others；暂估价有值才走 manual_others；auto/locked 不下发',
+  run('(function(){var og=groups.find(function(g){return g.gkind==="other";});og.sections[0].rows.forEach(function(r){if(r.stdKey==="contract_change")r.usp="60";if(r.stdKey==="baogan_fee")r.usp="888";});var p=collectGroupSummaryPayload();return p.manual_fees.overtime_fee===1000 && p.manual_fees.contract_change_fee===60 && p.manual_others.length===2 && p.manual_others.some(function(x){return x.name==="暂估价"&&x.usp===500;}) && p.manual_others.some(function(x){return x.name==="库外临时";});})()') === true);
+ok('K14 旧草稿兼容：legacyMeasureRowHtml 渲染警示条（携金额与删除按钮）；旧手工措施行仍计入 part2（另见 K8）',
+  (function(){ var lh = run('(function(){var r=makeRow({name:"旧行",unit:"项",qty:"1"});r.manual="measure";r.usp="8000";return legacyMeasureRowHtml(r);})()');
+    return /旧版手工措施行/.test(lh) && /仍计入汇总第二部分/.test(lh) && /colspan="15"/.test(lh) && /delRow\(/.test(lh); })());
+ok('K15 PENDING_STD_FEES 回填：旧草稿 projects 列值落 OTH 标准行并清空；行内已有值不覆盖',
+  run('(function(){pricingMode="group";groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=900;PENDING_STD_FEES={overtime_fee:1200,contract_change_fee:null,inflation_fee:0};ensureManualGroups();var og=groups.find(function(g){return g.gkind==="other";});var ot=og.sections[0].rows.find(function(r){return r.stdKey==="overtime";});return ot.usp==="1200" && PENDING_STD_FEES===null;})()') === true &&
+  run('(function(){pricingMode="group";groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];uid=950;PENDING_STD_FEES=null;ensureManualGroups();var og=groups.find(function(g){return g.gkind==="other";});var ot=og.sections[0].rows.find(function(r){return r.stdKey==="overtime";});ot.usp="500";PENDING_STD_FEES={overtime_fee:9999};ensureManualGroups();return ot.usp==="500" && PENDING_STD_FEES===null;})()') === true);
+
+console.log('\n── L. 弹窗「输编号回车快挂」：编号精确优先 → 筛选首条兜底；空/未找到/未绑行/重复 一律不误挂（两端弹窗同一决策）──');
+const gFix = uid => 'pricingMode="group";rebuildGroupBenchMap([G009,D003]);' +
+  'groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];' +
+  'uid=' + uid + ';var r=makeRow({name:"瓷砖地面",unit:"m2",qty:"1"});var rid=r.id;' +
+  'groups[0].sections[0].rows.push(r);rebuildRowMap();groupPickerRowId=rid;';
+ok('L1 ZS02 精确命中（忽略大小写/首尾空格）→ 真挂 ZS02-D-003 并关面板（groupPickerRowId 置 null）',
+  run('(function(){' + gFix(1100) + 'var res=gpMountByEnter("  zs02-d-003 ");' +
+    'return res.status==="mounted" && res.exact===true && res.code==="ZS02-D-003" &&' +
+    'findRow(rid).subs.length===1 && findRow(rid).subs[0].bid==="ZS02-D-003" && groupPickerRowId===null;})()') === true);
+ok('L2 非精确关键词→取当前筛选第一条（真挂）并标 exact:false/total，不谎称精确匹配',
+  run('(function(){' + gFix(1120) + 'var res=gpMountByEnter("ZS02");' +
+    'return res.status==="mounted" && res.exact===false && res.total===2 && res.code==="ZS02-A-009" &&' +
+    'findRow(rid).subs[0].bid==="ZS02-A-009";})()') === true);
+ok('L3 空输入/零命中/未绑行 三态一律不挂（subs 恒 0，不打后端）',
+  run('(function(){' + gFix(1140) + 'var a=gpMountByEnter("   ");var b=gpMountByEnter("查无此编号zz");' +
+    'var c=(groupPickerRowId=null,gpMountByEnter("ZS02-D-003"));' +
+    'return a.status==="empty" && b.status==="notfound" && b.q==="查无此编号zz" && c.status==="noRow" &&' +
+    'findRow(rid).subs.length===0;})()') === true);
+ok('L4 重复挂同一编号：status=failed、子目不翻倍、面板不被误关（addGroupSub 保持接口原义）',
+  run('(function(){' + gFix(1160) + 'gpMountByEnter("ZS02-D-003");' +
+    'groupPickerRowId=rid;document.getElementById("groupPickerMod").classList.remove("hidden");' +
+    'var f=gpMountByEnter("ZS02-D-003");' +
+    'return f.status==="failed" && f.code==="ZS02-D-003" && findRow(rid).subs.length===1 &&' +
+    '!document.getElementById("groupPickerMod").classList.contains("hidden");})()') === true);
+ok('L5 gpSrchKey 真跑：回车即挂并 preventDefault；非精确额外 toast 明示挂了哪条/命中几条，精确只留「子目已挂载」',
+  (function(){ reset();
+    const s = run('(function(){' + gFix(1180) + 'document.getElementById("gpSrch").value="ZS02";var pd=0;' +
+      'gpSrchKey({key:"Enter",preventDefault:function(){pd++;}});' +
+      'return JSON.stringify([pd,findRow(rid).subs[0].bid,TOASTS.join("|")]);})()');
+    const a = JSON.parse(s);
+    reset();
+    const t = run('(function(){' + gFix(1181) + 'document.getElementById("gpSrch").value="ZS02-D-003";' +
+      'gpSrchKey({key:"Enter",preventDefault:function(){}});' +
+      'return JSON.stringify([findRow(rid).subs[0].bid,TOASTS.join("|")]);})()');
+    const b = JSON.parse(t);
+    return a[0] === 1 && a[1] === 'ZS02-A-009' && /非编号精确匹配/.test(a[2]) && /命中 2 条/.test(a[2]) &&
+      b[0] === 'ZS02-D-003' && /子目已挂载/.test(b[1]) && !/非编号精确匹配/.test(b[1]); })());
+ok('L6 gpSrchKey 守卫：输入法候选回车 / Shift+Enter / 普通键 都不挂也不 preventDefault',
+  run('(function(){' + gFix(1200) + 'var pd=0;var ev={preventDefault:function(){pd++;}};' +
+    'gpSrchKey(Object.assign({key:"Enter",isComposing:true},ev));' +
+    'gpSrchKey(Object.assign({key:"Enter",shiftKey:true},ev));' +
+    'gpSrchKey(Object.assign({key:"a"},ev));' +
+    'return pd===0 && findRow(rid).subs.length===0;})()') === true);
+ok('L7 内部库 pkMountByEnter：精确/首条/空/零命中/未绑行 五态一致（pkSel 桩接，验证 id+sheet 透传不错位）',
+  run('(function(){ALL=[{id:"NS-015",sheet:"泥水班组",name:"地砖铺贴",trade:"泥水"},{id:"JD-145",sheet:"木工班组",name:"门槛石",trade:"木作"}];' +
+    'var calls=[];pkSel=function(id,sh){calls.push([id,sh]);return true;};pickerRowId=99;pendingBatch=null;' +
+    'var a=pkMountByEnter(" ns-015 ");var b=pkMountByEnter("门槛");var c=pkMountByEnter("");' +
+    'var d=pkMountByEnter("查无此编号zz");var e=(pickerRowId=null,pkMountByEnter("JD-145"));' +
+    'return a.status==="mounted" && a.exact===true && calls.length===2 && calls[0][0]==="NS-015" && calls[0][1]==="泥水班组" &&' +
+    'b.status==="mounted" && b.exact===false && b.code==="JD-145" && b.total===1 &&' +
+    'c.status==="empty" && d.status==="notfound" && e.status==="noRow" && calls.length===2;})()') === true);
+ok('L8 pkFilterItems 与旧 renderPicker 筛选逐字等价（name/id/trade 三路 includes；空词返回全量新数组不改原引用）',
+  run('(function(){ALL=[{id:"NS-015",sheet:"泥水班组",name:"地砖铺贴",trade:"泥水"},{id:"JD-145",sheet:"木工班组",name:"门槛石",trade:"木作"}];' +
+    'return pkFilterItems("NS").length===1 && pkFilterItems("ns-015").length===1 &&' +
+    'pkFilterItems("泥水").length===1 && pkFilterItems("地砖").length===1 &&' +
+    'pkFilterItems("").length===2 && pkFilterItems("   ").length===2 && pkFilterItems("")!==ALL &&' +
+    'pkFilterItems(null).length===2 && pkFilterItems("zzz").length===0;})()') === true &&
+  /const items=pkFilterItems\(q\);/.test(grabAnyFn(TOOL, 'renderPicker')) &&
+  !/ALL\.filter\(/.test(grabAnyFn(TOOL, 'renderPicker')));
+ok('L9 弹窗接线（源码钩）：两个搜索框都挂 onkeydown，placeholder 明示「输入完整编号回车直接挂入」',
+  /id="gpSrch"[^>]*onkeydown="gpSrchKey\(event\)"/.test(TOOL) &&
+  /id="pkSrch"[^>]*onkeydown="pkSrchKey\(event\)"/.test(TOOL) &&
+  (TOOL.match(/输入完整编号回车直接挂入/g) || []).length === 2);
+
+console.log('\n── M. 对甲报价（集团口径）AI 一键套价：门改分流、落点唯一走 addGroupSub、只选子目不代填价 ──');
+const mFix = uid => 'pricingMode="group";rebuildGroupBenchMap([G009,D003]);' +
+  'groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[]}]}];' +
+  'uid=' + uid + ';var r=makeRow({name:"瓷砖地面",spec:"SA级600×600",unit:"m2",qty:"1"});var rid=r.id;' +
+  'groups[0].sections[0].rows.push(r);rebuildRowMap();';
+const fcFix = 'groups=[{id:1,sheetName:"S",open:true,sections:[{id:2,name:"分部",open:true,rows:[' +
+  '{id:501,subs:[]},{id:502,subs:[{bid:"NS-01",bsh:"泥水班组"}]},' +
+  '{id:503,subs:[{bid:"ZS02-A-009",bsh:"ZS02-A",gtype:"group"}]},' +
+  '{id:504,name:"赶工措施费",manual:"other",qty:"1",usp:"",subs:[]}]}]}];';
+const SAP = grabAnyFn(TOOL, 'startAiPricing');
+const PR1 = grabAnyFn(TOOL, 'priceOne');
+
+ok('M1 aiApplyGroup 真跑：合法 ZS02 编号逐条挂入（gtype/bsh 同 addGroupSub），待补主材进 note 且跨子目去重',
+  run('(function(){' + mFix(1300) +
+    'var res=aiApplyGroup(findRow(rid),[{id:"ZS02-A-009",pending_mats:["瓷砖","1:3干硬性水泥砂浆"]},' +
+    '{id:"ZS02-D-003",pending_mats:["瓷砖"]}],{note:"已按分部匹配"});' +
+    'var s=findRow(rid).subs;' +
+    'return res.added===2 && s.length===2 && s[0].gtype==="group" && s[0].bid==="ZS02-A-009" && s[0].bsh==="ZS02-A" &&' +
+    's[1].bid==="ZS02-D-003" && s[1].bsh==="ZS02-D" && res.pend.join("、")==="瓷砖、1:3干硬性水泥砂浆" &&' +
+    'res.note.indexOf("已按分部匹配")===0 &&' +
+    'res.note.indexOf("待补主材：瓷砖、1:3干硬性水泥砂浆（未补价前不入汇总）")>0;})()') === true);
+ok('M2 库外编号/内部编号/重复挂 三态：added=0 且不翻倍，batchMode 下不刷「该子目已添加」逐条 toast',
+  (function(){ reset();
+    return run('(function(){' + mFix(1320) +
+      'var a=aiApplyGroup(findRow(rid),[{id:"ZS02-A-999"},{id:"NS-015"},{id:"ZY-01"}],{});' +
+      'var n0=findRow(rid).subs.length;' +
+      'var b=aiApplyGroup(findRow(rid),[{id:"ZS02-D-003"}],{});' +
+      'var c=aiApplyGroup(findRow(rid),[{id:"zs02-d-003"}],{});' +
+      'return a.added===0 && n0===0 && b.added===1 && c.added===0 && findRow(rid).subs.length===1;})()') === true &&
+      TOASTS.join('|').indexOf('该子目已添加') < 0; })());
+ok('M3 只选子目、绝不代填价：不碰行级暂存价（matName/matPrice 原样），mats 深拷不反写库行，batchMode 复位且全程零逐条重渲',
+  (function(){ const before = run('_render');
+    return run('(function(){' + mFix(1340) +
+      'var rr=findRow(rid);rr.matName="瓷砖";rr.matPrice=99;var n0=_render;' +
+      'var res=aiApplyGroup(rr,[{id:"ZS02-A-009"}],{});' +
+      'var s=rr.subs[0];s.mats[0].price=100;' +
+      'return res.added===1 && rr.matName==="瓷砖" && rr.matPrice===99 &&' +
+      's.mats!==G009.mats && G009.mats[0].price===null && getGroupBench("ZS02-A-009").mats[0].price===null &&' +
+      'batchMode===false && _render===n0;})()') === true && run('_render') === before; })());
+ok('M4 note 兜底：后端未给 note 时拼接 AI reason；未标 pending_mats 就不贴「待补主材」（待询价判据只信后端，前端不拿本地库价再推一遍）；matched 为空只回结论不抛',
+  run('(function(){' + mFix(1360) +
+    'var a=aiApplyGroup(findRow(rid),[{id:"ZS02-D-003",reason:"成品保护，单位一致"},{id:"ZS02-A-009",reason:"瓷砖地面"}],{});' +
+    'var b=aiApplyGroup(findRow(rid),null,undefined);' +
+    'return a.added===2 && findRow(rid).subs[1].mats[0].price===null &&' +
+    'a.pend.length===0 && a.note.indexOf("成品保护，单位一致；瓷砖地面")===0 && a.note.indexOf("待补主材")<0 &&' +
+    'b.added===0 && b.pend.length===0 && b.note==="";})()') === true);
+ok('M5 flowCounts 双口径：集团只数能挂子目的行（OTH 手工金额行不进分母，否则永远到不了 ✓），内部口径连手工行一起数（原行为）',
+  run('(function(){' + fcFix + 'pricingMode="group";var g=flowCounts();' +
+    'pricingMode="internal";var i=flowCounts();' +
+    'return g.total===3 && g.priced===1 && i.total===4 && i.priced===2;})()') === true);
+ok('M5b 空清单不炸（total=0 / priced=0，引导条走 early return）',
+  run('(function(){groups=[];pricingMode="group";var f=flowCounts();return f.total===0 && f.priced===0;})()') === true);
+ok('M6 引导条真跑：集团口径第③步改指「展开子目行补主材价」，内部口径仍是「可导入主材询价」',
+  (function(){
+    run(fcFix + 'pricingMode="group";updateFlowSteps();');
+    const gh = run('document.getElementById("flowSteps").innerHTML');
+    run(fcFix + 'pricingMode="internal";updateFlowSteps();');
+    const ih = run('document.getElementById("flowSteps").innerHTML');
+    return /已套价 1\/3 · ③ 展开子目行补主材价/.test(gh) && !/导入主材询价/.test(gh) &&
+      /已套价 2\/4 · ③ 可导入主材询价/.test(ih); })());
+ok('M7 门改为分流（源码钩）：startAiPricing 不再调用 groupModeBlock，首行换成 gMode 常量',
+  !/groupModeBlock/.test(SAP) && /const gMode = \(pricingMode === 'group'\);/.test(SAP));
+ok('M8 targets 判据双轨（源码钩）：集团看「非手工金额行且行内无集团子目」，对内原样 subs.length===0；空集与确认文案分模式且内部原文逐字未改',
+  SAP.indexOf("allRows.filter(r=>!isManualRow(r) && !(r.subs||[]).some(s=>s&&s.gtype==='group'))") >= 0 &&
+  SAP.indexOf("allRows.filter(r=>r.subs.length===0)") >= 0 &&
+  SAP.indexOf("gMode?'所有行均已挂集团子目':'所有行均已套价'") >= 0 &&
+  SAP.indexOf('条未套价清单行进行AI自动套价，是否继续？') >= 0 &&
+  /不代填主材价格，含待询价主材的行需补价后才入汇总/.test(SAP));
+ok('M9 priceOne 透传 mode（源码钩）：只多一个 mode 字段，item 三键入参逐字不变（m.html 不传仍是 internal）',
+  /mode: pricingMode\}/.test(PR1) &&
+  PR1.indexOf("item:{name:r.name, spec:r.spec||'', unit:r.unit||''}") >= 0);
+ok('M10 一致性校验块在集团口径下不可达（源码钩）：if (!gMode) try 包住整个 check-consistency；auto_fix 浅拷行原样保留供对内使用',
+  /if \(!gMode\) try \{/.test(SAP) &&
+  SAP.indexOf('if (!gMode) try {') < SAP.indexOf('check-consistency') &&
+  (SAP.match(/check-consistency/g) || []).length === 1 &&
+  SAP.indexOf('targetRow.subs = refRow.subs.map(s => ({...s}));') >= 0);
+ok('M11 集团落点接在 gMode 分支里（源码钩）：走 aiApplyGroup，对内 addSub/syncRowMat 链仍在其后原样；剔空时计入 fail',
+  (function(){ const i = SAP.indexOf('else if (gMode) {'), j = SAP.indexOf('aiApplyGroup(r, matched, res)');
+    return i >= 0 && j > i && (j - i) < 220 && SAP.indexOf('syncRowMat(r.id)') > j &&
+      /AI 返回的编号在 ZS02 库内未找到（或已全部挂过）/.test(SAP); })());
+ok('M12 收尾 toast 分模式（源码钩）：集团指向「展开子目行补主材价」，对内仍引导「📥 导入主材询价」',
+  /下一步：展开子目行补主材价（待询价行补价前不入汇总）/.test(SAP) &&
+  SAP.indexOf('下一步：📥 导入主材询价') >= 0);
+ok('M13 拆的是 AI 门不是导出门（全文钩）：四个内部导出入口的 groupModeBlock() 拦截仍在位',
+  (TOOL.match(/^  if \(groupModeBlock\(\)\) return;/gm) || []).length === 4);
+ok('M14 失败上报只在对内口径（源码钩）：pricing_failures 是内部补库统计，集团套不上价不混入；OTH 七个标准金额行（天生无子目）任何口径都不上报',
+  (function(){ const i = SAP.indexOf('const failures = allRows.filter('), j = SAP.lastIndexOf('if (!gMode) try {');
+    return j >= 0 && i > j && (i - j) < 320 &&
+      /const failures = allRows\.filter\(r => !isManualRow\(r\) && \(!r\.subs \|\| !r\.subs\.length\) && r\.name\);/.test(SAP) &&
+      SAP.indexOf('report-failure') > i && (SAP.match(/if \(!gMode\) try \{/g) || []).length === 2; })());
+
+/* ══ N 段：内部引擎「工程量空/脏」不得漏 NaN 上屏 ══
+   根因（静态审定位）：rowTotal 里 lab/mgmt/profit 三项有 (p!==null&&!isNaN(q)) 护栏，
+   而 mat=rowMatCost(r)*q、aux=parseFloat(r.auxCost)*q 两项没有——q 为 NaN（qty='' 或非数字）
+   且子目带主材价时，NaN 直接传染整个合价，渲染出口 fmt(NaN) 又只挡 null/undefined，于是上屏「NaN」。
+   makeRow 的 qty 默认就是 ''，导入 BOQ 时工程量列空白也写 ''（L2466/L3888）→ 必然路径。 */
+const nFix = 'pricingMode="internal";benchMap={"泥水班组|NS-01":{price:100}};';
+const nRow = qty => '({name:"X",unit:"m2",qty:"' + qty + '",auxCost:0,open:true,subs:[{bid:"NS-01",bsh:"泥水班组",coef:1,conv:1,matPrice:50,wasteRate:10}]})';
+
+ok('N1 rowTotal 真跑：工程量空/脏 + 子目带主材价 → 合价 0，不出 NaN（mat/aux 两项与 lab 同护栏）',
+  run('(function(){' + nFix +
+    'var e=rowTotal(' + nRow('') + '),d=rowTotal(' + nRow('abc') + ');' +
+    'return e===0 && d===0 && !(e<0||e>0) && !(d<0||d>0);})()') === true);
+ok('N2 正常路径值不变（回归基线）：qty=2 → 合价 360（人工200+主材110+管理费30+利润30，空工程量修复不得改动它）',
+  run('(function(){' + nFix + 'return rowTotal(' + nRow('2') + ')===360;})()') === true);
+ok('N3 其余内部出口本就有护栏，N 段只修 rowTotal 一处：综合单价/人工单价/辅材合价/手工行合价 空量均不出 NaN',
+  run('(function(){' + nFix + 'pricingMode="internal";var r=' + nRow('') + ';r.auxCost="";' +
+    'return compUnitPrice(r)===180 && rowUnitPrice(r)===100 && manualRowTotal(r)===0 &&' +
+    'computeAuxForRow(r).total===0;})()') === true);
+ok('N4 显示兜底：fmt(NaN) 出「—」不出字面量 NaN（上游若有漏网，宁可显示空态也不给使用者看 NaN）',
+  run('(function(){return fmt(NaN)==="—" && fmt(1234.5)==="1,234.50";})()') === true);
+ok('N5 集团口径不受影响：groupRowTotal 空量→ 0（原有 isNaN 护栏）；gMode 下 rowTotal 仍走集团分支',
+  (function(){ const before = run('_render');
+    return run('(function(){pricingMode="group";rebuildGroupBenchMap([G009,D003]);' +
+      'var r={name:"X",unit:"m2",qty:"",auxCost:0,subs:[{bid:"ZS02-D-003",bsh:"ZS02-D",gtype:"group",coef:1,conv:1}]};' +
+      'var t=groupRowTotal(r),u=rowTotal(r);pricingMode="internal";' +
+      'return t===0 && !(t<0||t>0) && u===t;})()') === true && run('_render') === before; })());
+
+/* ══ O 段：行内编辑即时刷新不得吃掉键盘焦点 ══
+   背景：updField 等处理器带 renderBoq()（既有契约，派生单元格必须跟着刷新），
+   而整表 innerHTML 重建会把旧 input 换成新节点 → 焦点掉到 <body>，Tab 逐格录入被打断（浏览器实测坐实）。
+   定位键取内联 handler 原文（updField(4,'qty',this.value) 自带行号+字段，重渲后逐字相同），
+   故无需给每个格子另加 data-* 标记。三个函数只接参数不读全局 document，以便沙箱直跑。 */
+const mkInp = (h, extra) => Object.assign({
+  tagName: 'INPUT', type: 'text', value: '',
+  getAttribute: a => (a === 'onchange' ? h : (a === 'oninput' ? null : null))
+}, extra || {});
+const mkMain = (ae, list) => ({ contains: el => el === ae, querySelectorAll: () => list || [] });
+ctx.mkInp = mkInp; ctx.mkMain = mkMain;   // 夹具挂进沙箱全局，供 run() 内的代码直接构造假元素
+
+ok('O1 boqFocusKey：取内联 handler 原文作键（含行号+字段，重渲前后必相同），带 type 防同键不同控件；无 handler/无元素一律 null',
+  run('(function(){var a=mkInp("updField(4,\'qty\',this.value)");' +
+    'return boqFocusKey(a)==="INPUT#text#updField(4,\'qty\',this.value)" &&' +
+    'boqFocusKey(mkInp("updField(4,\'qty\',this.value)"))===boqFocusKey(a) &&' +
+    'boqFocusKey(mkInp("updField(4,\'name\',this.value)"))!==boqFocusKey(a) &&' +
+    'boqFocusKey({tagName:"BUTTON",getAttribute:function(){return null;}})===null &&' +
+    'boqFocusKey(null)===null;})()') === true,
+  run('(function(){try{return String(boqFocusKey(mkInp("x")));}catch(e){return "throw:"+e.message;}})()'));
+ok('O2 saveBoqFocus 只在焦点确实落在清单容器内时才记账：侧栏搜索/顶部工具条一律不抢（返回 null）',
+  run('(function(){var ae=mkInp("updField(4,\'qty\',this.value)");' +
+    'var inMain=saveBoqFocus(mkMain(ae,[]),ae);' +
+    'var outside=mkInp("updField(9,\'qty\',this.value)");' +
+    'return inMain!==null && inMain.key===boqFocusKey(ae) &&' +
+    'saveBoqFocus(mkMain(null,[]),outside)===null && saveBoqFocus(null,ae)===null && saveBoqFocus(mkMain(ae,[]),null)===null;})()') === true);
+ok('O3 saveBoqFocus 容错：selection 不支持的控件（getter 抛错）不炸，键仍记下；能取则原样带上光标起止',
+  run('(function(){var bad=mkInp("updField(4,\'qty\',this.value)");' +   // 不能用 Object.assign 传 accessor：它会先读 getter 把错抛在夹具里
+    'Object.defineProperty(bad,"selectionStart",{get:function(){throw new Error("not selectable");}});' +
+    'Object.defineProperty(bad,"selectionEnd",{get:function(){throw new Error("not selectable");}});' +
+    'var s1=saveBoqFocus(mkMain(bad,[]),bad);' +
+    'var good=mkInp("updField(4,\'name\',this.value)",{selectionStart:2,selectionEnd:5});' +
+    'var s2=saveBoqFocus(mkMain(good,[]),good);' +
+    'return s1!==null && s1.start===null && s2.start===2 && s2.end===5;})()') === true);
+ok('O4 restoreBoqFocus 真跑：按键在新节点里找回同一格、preventScroll 聚焦不跳滚动、光标复位；找回不了返回 false 且不抛',
+  run('(function(){var old=mkInp("updField(4,\'qty\',this.value)");' +
+    'var saved=saveBoqFocus(mkMain(old,[]),old);' +
+    'var hits=0,focusArg=null,sel=null;' +
+    'var decoy={tagName:"INPUT",type:"text",getAttribute:function(a){return a==="onchange"?"updField(4,\'name\',this.value)":null;},focus:function(){hits++;}};' +
+    'var fresh={tagName:"INPUT",type:"text",getAttribute:function(a){return a==="onchange"?"updField(4,\'qty\',this.value)":null;},' +
+    'focus:function(o){hits++;focusArg=o;},setSelectionRange:function(a,b){sel=[a,b];}};' +
+    'var ok1=restoreBoqFocus(mkMain(null,[decoy,fresh]),{key:saved.key,start:1,end:1});' +
+    'var ok2=restoreBoqFocus(mkMain(null,[decoy]),{key:saved.key,start:null,end:null});' +
+    'var ok3=restoreBoqFocus(null,saved)===false && restoreBoqFocus(mkMain(null,[]),null)===false;' +
+    'return ok1===true && hits===1 && focusArg&&focusArg.preventScroll===true && sel[0]===1 && ok2===false && ok3===true;})()') === true);
+ok('O5 renderBoq 接线（源码钩）：记账在 innerHTML 交换之前、回焦在其后且先于 updateSum（否则合计又成陈值）',
+  (function(){ const src = grabAnyFn(TOOL, 'renderBoq');
+    const a = src.indexOf('saveBoqFocus('), b = src.indexOf('main.innerHTML = html'), c = src.indexOf('restoreBoqFocus('), d = src.indexOf('updateSum();', b);
+    return a >= 0 && b > a && c > b && d > c; })());
+
+console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
+console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
+process.exit(fail ? 1 : 0);
+
+})().catch(e => { console.error('\n💥 测试异常：' + (e && e.message ? e.message : e)); process.exit(1); });

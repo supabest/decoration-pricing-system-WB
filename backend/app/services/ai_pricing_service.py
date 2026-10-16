@@ -34,6 +34,23 @@ MATERIAL_KEYWORDS = {
     '其他': [],
 }
 
+# ── 集团口径（mode='group'）专属关键词表 ──
+# discipline 只作加分项不作硬过滤（与内部班组路由的关键差异）：ZS02 仅 A/B/C/D 四类，
+# 内部那条「命中 ≤2 就放开全库」的规则在这里等于不过滤，反而会让措辞含糊的清单丢掉
+# 正确候选。296 条库靠 2-gram 打分 + top80 截断收窄已足够，discipline 命中 +2 分。
+DISCIPLINE_KEYWORDS = {
+    'C': ['拆除', '拆卸', '凿除', '打拆', '破除', '移除', '清运', '垃圾', '开荒', '剔凿'],
+    'D': ['脚手架', '成品保护', '保护', '垂直运输', '二次搬运', '安全', '防护', '围挡', '临时'],
+    'B': ['给水', '排水', '排污', '水管', '管道', '电线', '电缆', '线路', '布线', '桥架', '线槽',
+          '开关', '插座', '灯具', '照明', '配电', '弱电', '强电', '空调', '通风', '消防', '喷淋', '风口'],
+    'A': ['瓷砖', '石材', '地板', '涂料', '乳胶漆', '吊顶', '天棚', '天花', '龙骨', '石膏板',
+          '饰面', '门', '窗', '踢脚', '防水', '找平', '墙面', '地面', '木饰面', '墙纸', '墙布'],
+}
+
+# 部位词 → ZS02 section_name 常见写法（section_name 拼进被匹配文本后由 2-gram 自然吃到，
+# 这里只用于日志与「地面/墙面不互串」的可解释性）
+PART_KEYWORDS = ['地面', '楼面', '墙面', '墙身', '天棚', '天花', '吊顶', '楼梯', '踢脚', '门窗', '柜']
+
 def engineering_parse(name: str, spec: str) -> dict:
     """提取工程语义：班组归属 + 工艺关键词 + 材料类型"""
     # 班组
@@ -58,6 +75,7 @@ def engineering_parse(name: str, spec: str) -> dict:
 
 # ── 加载基准价数据 ──
 _benchmark_cache = None
+_group_benchmark_cache = None
 _knowledge_cache = None
 
 
@@ -95,6 +113,35 @@ async def load_benchmark_data() -> list[dict]:
         except Exception:
             pass
     _benchmark_cache = items
+    return items
+
+
+# ── 集团基准价库（mode='group' 候选池）──
+# 无本地 JSON 兜底：对甲口径的数据只有 group_benchmark_items 一个权威源，
+# 静默降级到 benchmark_data.json（内部 497 条）会把错误口径的价送到对甲报价里。
+# 拉不到就回空列表，由 price_single 显式报「集团基准价库不可用」。
+async def load_group_benchmark_data() -> list[dict]:
+    """加载全量集团基准价（ZS02）：仅 Supabase，失败回空列表"""
+    global _group_benchmark_cache
+    if _group_benchmark_cache:
+        return _group_benchmark_cache
+    items = []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/group_benchmark_items?select=*&order=code.asc",
+                headers={"apikey": settings.SUPABASE_ANON_KEY, "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}"}
+            )
+            items = r.json() if r.status_code == 200 else []
+    except Exception:
+        pass
+    if not isinstance(items, list):
+        items = []
+    # 预拼被匹配文本：spec + section_name（「楼地面工程/墙柱面工程」这类分部名是 ZS02 区分
+    # 地面/墙面同种面层的关键信号，仅看 spec 会把它们规约成同一候选）
+    for d in items:
+        d['_group_text'] = ((d.get('spec') or '') + ' ' + (d.get('section_name') or '')).strip()
+    _group_benchmark_cache = items
     return items
 
 
@@ -142,14 +189,9 @@ def route_teams(name: str, spec: str) -> list[str]:
     return list(matched) if matched else []
 
 
-# ── 候选筛选 ──
-def build_candidates(name: str, spec: str, unit: str, benchmark_items: list[dict]) -> list[dict]:
-    teams = route_teams(name, spec)
-    if len(teams) <= 2:
-        teams = list(set(d['trade_team'] for d in benchmark_items))
-
-    all_cands = [d for d in benchmark_items if d.get('trade_team') in teams]
-
+# ── 候选筛选（对内/集团共用打分骨架）──
+def _query_terms(name: str, spec: str) -> tuple[list[str], list[str]]:
+    """清单文本 → (2-gram + ≥3 字词, 命中的工艺关键词)。对内/集团同一套切词口径。"""
     full_text = re.sub(r'[（）()\-—\/\s]+', ' ', name + ' ' + spec)
     words = []
     for i in range(len(full_text) - 1):
@@ -157,16 +199,22 @@ def build_candidates(name: str, spec: str, unit: str, benchmark_items: list[dict
         if not re.search(r'[，。、；：！？\s\d]', bigram):
             words.append(bigram)
     words.extend(w for w in full_text.split() if len(w) >= 3)
-    uniq_words = list(set(words))
+    spec_keywords = [w for w in CRAFT_KEYWORDS if w in spec.lower()]
+    return list(set(words)), spec_keywords
 
-    spec_lower = spec.lower()
-    spec_keywords = [w for w in CRAFT_KEYWORDS if w in spec_lower]
 
+def _rank_items(cands: list[dict], uniq_words: list[str], spec_keywords: list[str],
+                unit: str, name_key: str = 'item_name', spec_key: str = 'spec') -> list[tuple[dict, int]]:
+    """文本命中打分：名称含词 +2 / 特征含词 +1 / 名称含二字词 +1 / 单位一致 +3 / 工艺词命中名称 +4。
+
+    返回 (行, 分数) 降序列表，并列分保持库内原序（sort 稳定），截断交给调用方。
+    name_key / spec_key 使两个口径的字段名差异止步于参数，打分逻辑不再各写一份。
+    """
     scored = []
-    for it in all_cands:
+    for it in cands:
         score = 0
-        it_name = it.get('item_name', '')
-        it_spec = it.get('spec', '')
+        it_name = it.get(name_key, '')
+        it_spec = it.get(spec_key, '')
         for w in uniq_words:
             if w in it_name: score += 2
             if w in it_spec: score += 1
@@ -177,9 +225,37 @@ def build_candidates(name: str, spec: str, unit: str, benchmark_items: list[dict
         for w in spec_keywords:
             if w in it_name: score += 4
         scored.append((it, score))
-
     scored.sort(key=lambda x: x[1], reverse=True)
-    return [it for it, _ in scored[:80]]
+    return scored
+
+
+def build_candidates(name: str, spec: str, unit: str, benchmark_items: list[dict]) -> list[dict]:
+    teams = route_teams(name, spec)
+    if len(teams) <= 2:
+        teams = list(set(d['trade_team'] for d in benchmark_items))
+
+    all_cands = [d for d in benchmark_items if d.get('trade_team') in teams]
+
+    uniq_words, spec_keywords = _query_terms(name, spec)
+    return [it for it, _ in _rank_items(all_cands, uniq_words, spec_keywords, unit)[:80]]
+
+
+def route_disciplines(name: str, spec: str) -> list[str]:
+    """清单文本 → ZS02 discipline（A精装/B水电/C拆除/D措施），可多命中。"""
+    txt = (name + ' ' + spec).lower()
+    return [d for d, kws in DISCIPLINE_KEYWORDS.items() if any(k in txt for k in kws)]
+
+
+def build_group_candidates(name: str, spec: str, unit: str, group_items: list[dict]) -> list[dict]:
+    """集团候选：与对内共用 2-gram 打分（字段名换成 name / _group_text=spec+section_name），
+    discipline 命中 +2 作软提示而不硬过滤；top80 截断，与对内同宽度。"""
+    uniq_words, spec_keywords = _query_terms(name, spec)
+    ranked = _rank_items(group_items, uniq_words, spec_keywords, unit,
+                         name_key='name', spec_key='_group_text')
+    wanted = set(route_disciplines(name, spec))
+    adjusted = [(it, sc + (2 if it.get('discipline') in wanted else 0)) for it, sc in ranked]
+    adjusted.sort(key=lambda x: x[1], reverse=True)
+    return [it for it, _ in adjusted[:80]]
 
 
 # ── Prompt 构建 ──
@@ -241,6 +317,68 @@ def build_user_prompt(name: str, spec: str, unit: str, candidates: list[dict]) -
 
 返回JSON格式：
 {{"matched":[{{"id":"子目编号","sheet":"班组名称","confidence":85,"reason":"理由"}}],"overall_confidence":85,"note":"备注"}}"""
+
+
+# ── 集团口径 Prompt（mode='group'）──
+# 与内部版的根本差异：内部版写死了 YQ-02/NS-029/TG-08 这类内部编号与班组归属，
+# 直接沿用会让模型把内部码当候选输出（已拦：校验按 group 库过滤），且「辅材配方」
+# 在集团口径里根本不存在（子目自带 A/C/D/E 分解）。知识库里的 synonyms 仍有用
+# （扇灰→刮腻子这类名称翻译），故保留注入但注明「不得作为输出编号」。
+def build_group_system_prompt(knowledge: dict) -> str:
+    tips = '\n'.join(f"【技巧】{t['keyword']}：{t['content']}" for t in knowledge.get('tips', []))
+    syns = '\n'.join(f"【同义词】{s['keyword']} → {s['content']}" for s in knowledge.get('synonyms', []))
+    return f"""你是精装修工程造价专家，负责把清单项目匹配到**集团精装修基准价子目（ZS02 编码）**。
+
+## 目标库（只能从这里选）
+候选来自集团基准价表，编号形如 ZS02-A-009，前缀字母含义：
+- A 精装：装饰面层、基层/找平、龙骨罩面、门窗、踢脚、防水等实体工序
+- B 水电：给排水、电气、暖通、消防、弱电
+- C 拆除：打拆、凿除、清运、开荒
+- D 措施：脚手架、成品保护、垂直运输等措施性费用
+
+## 名称翻译与通用技巧（仅供理解清单措辞，其中出现的内部编号禁止当作输出）
+{syns}
+{tips}
+
+## 工序拆解原则
+1. 面层与找平/结合层是两道工序 → 分别挂对应子目
+2. 龙骨与石膏板/饰面板是两道工序（基层 + 面层）
+3. 涂料类子目已含刮腻子；清单写「扇灰/批灰」按刮腻子理解，不另外找子目
+4. 拆除类一律走 C，不得用 A 子目代替
+5. 脚手架/成品保护等只在清单单列措施项时才匹配 D
+6. 地面与墙面同种面层是不同子目（看分部名 楼地面/墙柱面），不可互串
+7. 单位不一致（清单 m2 / 子目 m 等）仍可匹配，但要在 reason 里说明需设换算系数
+
+严格规则：
+1. matched[].id 只能是候选里出现过的 ZS02 编号，禁止编造或输出内部编号
+2. 不限制子目数量，按实际工序匹配
+3. 名称含「每增减」「每增加」的增减子目，仅在清单明确写了增减尺寸时才选；基础子目与增减子目不得同时选
+4. 置信度 85+ 精确匹配，60-84 可接受，<60 不采用
+5. 找不到合适子目返回空 matched
+6. 不估价、不填主材价格（主材价由用户询价录入），note 里也不得给出金额
+7. 只返回 JSON，不含其他文字"""
+
+
+def build_group_user_prompt(name: str, spec: str, unit: str, candidates: list[dict]) -> str:
+    cand_strs = []
+    for c in candidates:
+        cand_strs.append('|'.join([
+            str(c.get('code', '')),
+            str(c.get('name', '')),
+            (c.get('spec') or '')[:120],
+            str(c.get('unit', '')),
+            str(c.get('section_name', '')),
+        ]))
+    return f"""清单项目：
+【名称】{name}
+【特征】{spec or '（无）'}
+【单位】{unit or '（未知）'}
+
+候选子目（格式：编号|名称|特征|单位|分部）：
+{chr(10).join(cand_strs)}
+
+返回JSON格式：
+{{"matched":[{{"id":"ZS02-X-NNN","confidence":85,"reason":"理由"}}],"overall_confidence":85,"note":"备注"}}"""
 
 
 # ── DeepSeek 调用 ──
@@ -411,9 +549,53 @@ def _repair_truncated_json(text: str) -> Optional[dict]:
 
 
 # ── 单行套价 ──
+def _group_pending_mats(row: dict) -> list[str]:
+    """该集团子目里价格仍为 NULL 的主材名（待询价）。
+
+    null≠0 是集团端全局判据：price=0（甲供按 0 计）合法，只有 None 才算未定价。
+    只回名称不回金额——AI 不代填价。
+    """
+    out = []
+    for m in (row.get('mats') or []):
+        if isinstance(m, dict) and m.get('price') is None and m.get('name'):
+            out.append(str(m['name']))
+    return out
+
+
+def _validate_group_matches(matched: list, group_rows: list[dict]) -> list[dict]:
+    """按集团库校验 AI 返回的编号；未知编号、编造的内部编号都在这一层被剔掉。
+
+    sheet 由服务端按库内 discipline 填 'ZS02-<discipline>'，与前端 addGroupSub 的 bsh 同形，
+    使两个口径的响应体共用同一个 MatchedSubItem 契约（前端无需区分字段集）。
+    """
+    by_code = {str(d.get('code') or '').upper(): d for d in group_rows if d.get('code')}
+    valid, seen = [], set()
+    for m in matched:
+        if not isinstance(m, dict):
+            continue
+        raw = str(m.get('id') or m.get('code') or '').strip().upper()
+        row = by_code.get(raw)
+        if not row or raw in seen:
+            continue
+        seen.add(raw)
+        item = dict(m)
+        item['id'] = row.get('code')
+        item['sheet'] = 'ZS02-' + str(row.get('discipline') or '')
+        pend = _group_pending_mats(row)
+        if pend:
+            item['pending_mats'] = pend
+        valid.append(item)
+    return valid
+
+
 async def price_single(name: str, spec: str, unit: str, api_key: str,
-                       model: Optional[str] = None, debug_log=None) -> dict:
-    benchmark = await load_benchmark_data()
+                       model: Optional[str] = None, debug_log=None,
+                       mode: str = 'internal') -> dict:
+    """单行套价。mode='internal'（默认，向后兼容）走内部 497 条基准价；'group' 走 ZS02 集团库。"""
+    is_group = (mode == 'group')
+    # 两个口径的候选池互斥加载：集团模式不拉内部库（反之亦然），避开无意义的 497 条流量
+    benchmark = [] if is_group else await load_benchmark_data()
+    group_rows = await load_group_benchmark_data() if is_group else []
     knowledge = await load_knowledge()
 
     # 🔍 调试日志
@@ -421,25 +603,32 @@ async def price_single(name: str, spec: str, unit: str, api_key: str,
         from app.services.pricing_debug_logger import PricingDebugLog
         debug_log = PricingDebugLog(name, spec, unit, api_key)
 
-    # 1. 班组路由
-    teams = route_teams(name, spec)
-    debug_log.log_route(teams)
-
-    # 2. 候选筛选
-    candidates = build_candidates(name, spec, unit, benchmark)
+    # 1~2. 路由 + 候选筛选（内部=班组过滤，集团=2-gram 打分 + discipline 加分）
+    if is_group:
+        disciplines = route_disciplines(name, spec)
+        debug_log.log_route(disciplines)
+        candidates = build_group_candidates(name, spec, unit, group_rows)
+    else:
+        teams = route_teams(name, spec)
+        debug_log.log_route(teams)
+        candidates = build_candidates(name, spec, unit, benchmark)
     debug_log.log_candidates(candidates, len(candidates))
     if not candidates:
-        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": "无候选子目"})
+        empty_note = "集团基准价库不可用（group_benchmark_items 无数据）" if is_group else "无候选子目"
+        debug_log.log_final({"matched": [], "overall_confidence": 0, "note": empty_note})
         await save_debug_log(debug_log)
-        return {"matched": [], "overall_confidence": 0, "note": "无候选子目"}
+        return {"matched": [], "overall_confidence": 0, "note": empty_note}
 
-    # 3. 工程理解
+    # 3. 工程理解（班组归属属内部口径，集团只留工艺/材料类型）
     eng = engineering_parse(name, spec)
-    debug_log.log_engineering(eng)
+    debug_log.log_engineering(
+        {'disciplines': disciplines, 'crafts': eng['crafts'], 'materials': eng['materials']}
+        if is_group else eng)
 
     # 4. Prompt 构建
-    sys_prompt = build_system_prompt(knowledge)
-    user_prompt = build_user_prompt(name, spec, unit, candidates)
+    sys_prompt = build_group_system_prompt(knowledge) if is_group else build_system_prompt(knowledge)
+    user_prompt = (build_group_user_prompt(name, spec, unit, candidates) if is_group
+                   else build_user_prompt(name, spec, unit, candidates))
     debug_log.log_prompt(sys_prompt, user_prompt)
 
     # 5. DeepSeek 调用
@@ -459,16 +648,19 @@ async def price_single(name: str, spec: str, unit: str, api_key: str,
         await save_debug_log(debug_log)
         return {"matched": [], "overall_confidence": 0, "note": f"AI返回解析失败: {raw[:100]}"}
 
-    # 6. 校验返回的子目真实存在
-    valid = []
-    for m in result.get('matched', []):
-        bid, bsh = m.get('id', ''), m.get('sheet', '')
-        found = any(
-            d.get('internal_code') == bid and d.get('trade_team') == bsh
-            for d in benchmark
-        )
-        if found:
-            valid.append(m)
+    # 6. 校验返回的子目真实存在（内部按 编号+班组 双键，集团按 ZS02 编号）
+    if is_group:
+        valid = _validate_group_matches(result.get('matched', []), group_rows)
+    else:
+        valid = []
+        for m in result.get('matched', []):
+            bid, bsh = m.get('id', ''), m.get('sheet', '')
+            found = any(
+                d.get('internal_code') == bid and d.get('trade_team') == bsh
+                for d in benchmark
+            )
+            if found:
+                valid.append(m)
 
     result['matched'] = valid
     if not valid:
@@ -481,11 +673,13 @@ async def price_single(name: str, spec: str, unit: str, api_key: str,
 
 
 # ── 批量套价 ──
-async def price_batch(items: list[dict], api_key: str, model: Optional[str] = None) -> list[dict]:
+async def price_batch(items: list[dict], api_key: str, model: Optional[str] = None,
+                      mode: str = 'internal') -> list[dict]:
     results = []
     for item in items:
         try:
-            r = await price_single(item['name'], item.get('spec', ''), item.get('unit', ''), api_key, model=model)
+            r = await price_single(item['name'], item.get('spec', ''), item.get('unit', ''),
+                                   api_key, model=model, mode=mode)
             results.append({**item, **r})
         except Exception as e:
             results.append({**item, "matched": [], "overall_confidence": 0, "note": str(e)[:100]})
