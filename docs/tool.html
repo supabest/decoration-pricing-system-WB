@@ -1455,7 +1455,16 @@ function effRowMatPrice(r) {
   return parseFloat(r.matPrice)||0;
 }
 function rowAuxCost(r) { return parseFloat(r.auxCost)||0; }
-function rowTotal(r) { if (typeof pricingMode !== 'undefined' && pricingMode === 'group') return groupRowTotal(r); const p=rowUnitPrice(r),q=parseFloat(r.qty); const lab=(p!==null&&!isNaN(q))?p*q:0; const mat=rowMatCost(r)*q; const aux=parseFloat(r.auxCost)*q||0; const mgmt=(p!==null&&!isNaN(q))?p*globalMgmtRate/100*q:0; const profit=(p!==null&&!isNaN(q))?p*globalProfitRate/100*q:0; return lab+mat+aux+mgmt+profit; }
+function rowTotal(r) {
+  if (typeof pricingMode !== 'undefined' && pricingMode === 'group') return groupRowTotal(r);
+  const p=rowUnitPrice(r),q=parseFloat(r.qty);
+  // 工程量空/脏（makeRow 默认 ''，导入时该列空白也写 ''）→ 整行合价 0：
+  // 旧写法只护了 lab/mgmt/profit 三项，mat/aux 两项会让 NaN 传染整个合价上屏（N 段回归钉死）
+  if (isNaN(q)) return 0;
+  const lab=(p!==null)?p*q:0; const mat=rowMatCost(r)*q; const aux=parseFloat(r.auxCost)*q||0;
+  const mgmt=(p!==null)?p*globalMgmtRate/100*q:0; const profit=(p!==null)?p*globalProfitRate/100*q:0;
+  return lab+mat+aux+mgmt+profit;
+}
 
 // ═══════════ 集团公式引擎（对甲报价 · ZS02 第二计价引擎）═══════════
 // 与 scripts/import_group_benchmark.py:recalc_h 同公式（集团计价办法 2024 版）：
@@ -2005,7 +2014,7 @@ function calcAuxFromRule(rule, priceLib={}) {
   }
 }
 
-function fmt(v,dec=2) { return (v===null||v===undefined)?'—':v.toLocaleString('zh-CN',{minimumFractionDigits:dec,maximumFractionDigits:dec}); }
+function fmt(v,dec=2) { return (v===null||v===undefined||v!==v)?'—':v.toLocaleString('zh-CN',{minimumFractionDigits:dec,maximumFractionDigits:dec}); }  // v!==v 即 NaN：数值上游若有漏网，显示层兜底出「—」，绝不上屏字面量 NaN
 function secTotal(s) { return s.rows.reduce((a,r)=>a+(rowTotal(r)||0),0); }
 function grpTotal(g) { return g.sections.reduce((a,s)=>a+secTotal(s),0); }
 

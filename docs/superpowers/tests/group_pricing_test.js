@@ -142,6 +142,8 @@ const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGro
   'pkFilterItems', 'pkMountByEnter', 'pkSrchKey', 'gpMountByEnter', 'gpSrchKey',
   // ── M 段：对甲报价 AI 一键套价（落点纯函数 + 顺序引导计数）──
   'aiApplyGroup', 'flowCounts', 'updateFlowSteps',
+  // ── N 段：内部引擎空工程量 NaN 泄漏（行合价 + 显示兜底）──
+  'computeAuxForSub', 'computeAuxForRow', 'getAuxDetailForSub',
   // ── I 段：侧栏双库（集团模式展示 ZS02 库，同交互挂载）──
   'rebuildLibTabs', 'groupLibItems', 'getLibItems', 'renderLib', 'setSheet', 'libClick', 'libGroupRetry',
   'onDragStart', 'onDragEnd', 'onRowDrop',
@@ -622,8 +624,11 @@ ok('F53 internal 无子目仍返回 null', run('_mkRows(), rowUnitPrice(findRow(
 ok('F54 内部子目 gtype 缺省（不被 addGroupSub 契约污染）', run('findRow(105).subs.every(function(s){return s.gtype === undefined || s.gtype === "group";})') === true);
 run('findRow(105).subs = [];');
 const rtNullQty = run('(function(){var r=findRow(105);r.qty="abc";return rowTotal(r);})()');
-ok('F55 internal 脏 qty 行为原样保留（qty 非数 → 合价 NaN，group 守卫未改写内部语义）',
-  Number.isNaN(rtNullQty) === true, 'rowTotal=' + rtNullQty);
+// N 段裁定（推翻本断言旧版）：旧版把「脏 qty → 合价 NaN」当内部语义钉住，实为 bug 快照——
+// NaN 在 secTotal/updateSum 里虽被 ||0 兜掉、但单元格 fmt 直接上屏「NaN」（用户报障）。
+// 新契约：脏工程量与空工程量同口径，合价一律 0（与 groupRowTotal 既有护栏对齐）
+ok('F55 internal 脏 qty → 合价 0（N 段修复后新契约，旧版「原样 NaN」系 bug 快照被推翻）',
+  rtNullQty === 0, 'rowTotal=' + rtNullQty);
 run('_mkRows();');
 
 /* ── F⑤ 提示条：数字从 GROUP_RATES 动态取 ── */
@@ -1525,6 +1530,33 @@ ok('M14 失败上报只在对内口径（源码钩）：pricing_failures 是内�
     return j >= 0 && i > j && (i - j) < 320 &&
       /const failures = allRows\.filter\(r => !isManualRow\(r\) && \(!r\.subs \|\| !r\.subs\.length\) && r\.name\);/.test(SAP) &&
       SAP.indexOf('report-failure') > i && (SAP.match(/if \(!gMode\) try \{/g) || []).length === 2; })());
+
+/* ══ N 段：内部引擎「工程量空/脏」不得漏 NaN 上屏 ══
+   根因（静态审定位）：rowTotal 里 lab/mgmt/profit 三项有 (p!==null&&!isNaN(q)) 护栏，
+   而 mat=rowMatCost(r)*q、aux=parseFloat(r.auxCost)*q 两项没有——q 为 NaN（qty='' 或非数字）
+   且子目带主材价时，NaN 直接传染整个合价，渲染出口 fmt(NaN) 又只挡 null/undefined，于是上屏「NaN」。
+   makeRow 的 qty 默认就是 ''，导入 BOQ 时工程量列空白也写 ''（L2466/L3888）→ 必然路径。 */
+const nFix = 'pricingMode="internal";benchMap={"泥水班组|NS-01":{price:100}};';
+const nRow = qty => '({name:"X",unit:"m2",qty:"' + qty + '",auxCost:0,open:true,subs:[{bid:"NS-01",bsh:"泥水班组",coef:1,conv:1,matPrice:50,wasteRate:10}]})';
+
+ok('N1 rowTotal 真跑：工程量空/脏 + 子目带主材价 → 合价 0，不出 NaN（mat/aux 两项与 lab 同护栏）',
+  run('(function(){' + nFix +
+    'var e=rowTotal(' + nRow('') + '),d=rowTotal(' + nRow('abc') + ');' +
+    'return e===0 && d===0 && !(e<0||e>0) && !(d<0||d>0);})()') === true);
+ok('N2 正常路径值不变（回归基线）：qty=2 → 合价 360（人工200+主材110+管理费30+利润30，空工程量修复不得改动它）',
+  run('(function(){' + nFix + 'return rowTotal(' + nRow('2') + ')===360;})()') === true);
+ok('N3 其余内部出口本就有护栏，N 段只修 rowTotal 一处：综合单价/人工单价/辅材合价/手工行合价 空量均不出 NaN',
+  run('(function(){' + nFix + 'pricingMode="internal";var r=' + nRow('') + ';r.auxCost="";' +
+    'return compUnitPrice(r)===180 && rowUnitPrice(r)===100 && manualRowTotal(r)===0 &&' +
+    'computeAuxForRow(r).total===0;})()') === true);
+ok('N4 显示兜底：fmt(NaN) 出「—」不出字面量 NaN（上游若有漏网，宁可显示空态也不给使用者看 NaN）',
+  run('(function(){return fmt(NaN)==="—" && fmt(1234.5)==="1,234.50";})()') === true);
+ok('N5 集团口径不受影响：groupRowTotal 空量→ 0（原有 isNaN 护栏）；gMode 下 rowTotal 仍走集团分支',
+  (function(){ const before = run('_render');
+    return run('(function(){pricingMode="group";rebuildGroupBenchMap([G009,D003]);' +
+      'var r={name:"X",unit:"m2",qty:"",auxCost:0,subs:[{bid:"ZS02-D-003",bsh:"ZS02-D",gtype:"group",coef:1,conv:1}]};' +
+      'var t=groupRowTotal(r),u=rowTotal(r);pricingMode="internal";' +
+      'return t===0 && !(t<0||t>0) && u===t;})()') === true && run('_render') === before; })());
 
 console.log('\n════════ 结果：' + pass + ' 通过 / ' + fail + ' 失败 ════════');
 console.log(fail ? '❌ 集团契约被破坏（库查询/费率映射/懒加载/开关互斥/公式引擎/派生单元格与挂载面板）\n' : '✅ ZS02 数据基座、模式开关状态机、集团公式引擎、派生单元格/待询价态/挂载面板与内部公式回归全部成立\n');
