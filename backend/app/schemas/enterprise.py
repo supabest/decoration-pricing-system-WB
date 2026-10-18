@@ -1,5 +1,5 @@
 """企业相关 Pydantic 模型"""
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -30,8 +30,7 @@ class EnterpriseResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EnterprisePriceCreate(BaseModel):
@@ -67,5 +66,4 @@ class EnterprisePriceResponse(BaseModel):
     version: int
     status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

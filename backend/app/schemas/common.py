@@ -1,7 +1,7 @@
 """通用 Pydantic 模型"""
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Generic, TypeVar, List, Optional
 
 T = TypeVar("T")
@@ -19,8 +19,7 @@ class Page(BaseModel, Generic[T]):
     page_size: int
     total_pages: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ApiResponse(BaseModel, Generic[T]):

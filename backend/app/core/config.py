@@ -1,5 +1,5 @@
 """应用配置管理 — 生产环境通过环境变量注入"""
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
 
@@ -67,11 +67,12 @@ class Settings(BaseSettings):
     # ── 调试 ──
     DEBUG_PRICING: bool = False
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=True,
+    )
 
 
 settings = Settings()

@@ -1,5 +1,5 @@
 """清单相关 Pydantic 模型"""
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -37,8 +37,7 @@ class BillItemResponse(BaseModel):
     computed_price: Optional[float]
     manual_adjust_price: Optional[float]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BillImportRequest(BaseModel):

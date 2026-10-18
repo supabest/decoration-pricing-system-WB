@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 
 def _blank_to(value, default):
@@ -42,8 +42,7 @@ class GroupMat(BaseModel):
     def _consumption_blank_to_zero(cls, v):
         return _blank_to(v, 0.0)
 
-    class Config:
-        extra = "ignore"   # 前端可能带 idx/pending/label/cost 等派生键
+    model_config = ConfigDict(extra="ignore")   # 前端可能带 idx/pending/label/cost 等派生键
 
 
 class GroupSummaryItem(BaseModel):
@@ -88,8 +87,7 @@ class GroupSummaryItem(BaseModel):
                 data = {**data, 'mats': []}
         return data
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
 
 class GroupRates(BaseModel):
@@ -114,8 +112,7 @@ class GroupRates(BaseModel):
     def _coord_blank_to_none(cls, v):
         return None if (v is None or (isinstance(v, str) and not v.strip())) else v
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
 
 class GroupManualFees(BaseModel):
@@ -129,8 +126,7 @@ class GroupManualFees(BaseModel):
     def _num_blank_to_zero(cls, v):
         return _blank_to(v, 0.0)
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
 
 class GroupManualLine(BaseModel):
@@ -147,8 +143,7 @@ class GroupManualLine(BaseModel):
     def _num_blank_to_zero(cls, v):
         return _blank_to(v, 0.0)
 
-    class Config:
-        extra = "ignore"   # 前端可能带 amount 等派生键（后端重算，忽略）
+    model_config = ConfigDict(extra="ignore")   # 前端可能带 amount 等派生键（后端重算，忽略）
 
 
 class GroupSummaryRequest(BaseModel):
@@ -166,5 +161,4 @@ class GroupSummaryRequest(BaseModel):
     def _area_blank_to_zero(cls, v):
         return _blank_to(v, 0.0)
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")

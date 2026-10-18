@@ -1,7 +1,7 @@
 """Excel 导出请求模型"""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Any
 
 
@@ -70,9 +70,8 @@ class ExportRequest(BaseModel):
     contract_amount: float = 0.0      # 对甲合同金额（不含暂列金额），元
     target_profit_rate: float = 0.0   # 预估目标利润率 %
 
-    class Config:
-        # 允许额外字段（前端可能发送多余数据）
-        extra = "ignore"
+    # 允许额外字段（前端可能发送多余数据）
+    model_config = ConfigDict(extra="ignore")
 
 
 class TemplateExportRequest(ExportRequest):

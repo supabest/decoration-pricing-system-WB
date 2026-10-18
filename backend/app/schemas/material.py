@@ -1,5 +1,5 @@
 """材料相关 Pydantic 模型"""
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
 
@@ -22,8 +22,7 @@ class MaterialResponse(BaseModel):
     unit: str
     brand: Optional[str]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MaterialPriceCreate(BaseModel):
@@ -46,5 +45,4 @@ class MaterialPriceResponse(BaseModel):
     price_date: str
     price_trend: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
