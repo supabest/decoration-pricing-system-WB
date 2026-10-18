@@ -1,5 +1,6 @@
 """AI 套价 API 端点"""
 import logging
+from html import escape as _esc
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import HTMLResponse
@@ -41,7 +42,6 @@ async def price_single_item(req: PriceSingleRequest):
 @router.post("/batch", response_model=PriceBatchResponse)
 async def price_batch_items(req: PriceBatchRequest):
     """批量套价：多条清单 → AI 匹配子目"""
-    from app.services.ai_pricing_service import price_single as svc_price_single
     results = []
     success = 0
     failed = 0
@@ -149,16 +149,27 @@ def _render_logs_html(logs: list[dict]) -> HTMLResponse:
         return val or {}
 
     def _ds(val):
-        """安全显示"""
+        """安全显示：先转义再进 HTML。
+
+        日志内容全是用户可控文本（清单名/特征、AI 原文、候选子目名），
+        未转义直接拼 HTML 即注入面（本页登录可见），故所有插值统一走这里。
+        """
         if isinstance(val, (dict, list)):
-            return _json.dumps(val, ensure_ascii=False, indent=2)
-        return str(val)
+            return _esc(_json.dumps(val, ensure_ascii=False, indent=2))
+        return _esc(str(val))
+
+    def _num(val):
+        """上屏数字先规约成 int：AI 返回/历史脏行可能是任意类型（含带标签的字符串）"""
+        try:
+            return int(float(val))
+        except (TypeError, ValueError):
+            return 0
 
     items_html = ""
     for log in logs:
         fn = _dv(log.get("final_result"))
         matched = fn.get("matched", []) if isinstance(fn, dict) else []
-        conf = fn.get("overall_confidence", 0) if isinstance(fn, dict) else 0
+        conf = _num(fn.get("overall_confidence", 0) if isinstance(fn, dict) else 0)
         status = "✅" if matched else "❌"
         cands = _dv(log.get("candidate_json"))
         resp = _dv(log.get("response_json"))
@@ -169,7 +180,7 @@ def _render_logs_html(logs: list[dict]) -> HTMLResponse:
         # 候选 top5
         top5 = (cands.get("top10", []) if isinstance(cands, dict) else [])[:5]
         cand_rows = "".join(
-            f'<li>{c.get("code","")} {c.get("name","")} ({c.get("team","")})</li>'
+            f'<li>{_esc(str(c.get("code","")))} {_esc(str(c.get("name","")))} ({_esc(str(c.get("team","")))})</li>'
             for c in top5 if isinstance(c, dict)
         )
 
@@ -181,17 +192,18 @@ def _render_logs_html(logs: list[dict]) -> HTMLResponse:
         if isinstance(prompt, dict):
             s = prompt.get("system", {})
             if isinstance(s, dict):
-                sys_preview = f"system: {s.get('system_length',0)} chars, user: {s.get('user_length',0)} chars<br>"
-                sys_preview += f"<pre>{s.get('system_preview','')[:800]}</pre>"
+                sys_preview = (f"system: {_num(s.get('system_length',0))} chars, "
+                               f"user: {_num(s.get('user_length',0))} chars<br>")
+                sys_preview += f"<pre>{_esc(str(s.get('system_preview',''))[:800])}</pre>"
 
         items_html += f"""
         <details style="margin:8px 0;border:1px solid #ddd;border-radius:8px;padding:12px;background:#fff">
           <summary style="cursor:pointer;font-size:14px;font-weight:600">
-            {status} [{conf}%] {log.get("item_name","?")} ({log.get("item_unit","")})
-            <span style="color:#888;font-size:11px;margin-left:8px">{str(log.get("created_at",""))[:19]}</span>
+            {status} [{conf}%] {_esc(str(log.get("item_name") or "?"))} ({_esc(str(log.get("item_unit") or ""))})
+            <span style="color:#888;font-size:11px;margin-left:8px">{_esc(str(log.get("created_at") or "")[:19])}</span>
           </summary>
           <div style="margin-top:10px;font-size:12px">
-            <p><b>特征:</b> {str(log.get("item_spec",""))[:200]}</p>
+            <p><b>特征:</b> {_esc(str(log.get("item_spec") or "")[:200])}</p>
             <p><b>班组路由:</b> <code>{_ds(route)}</code></p>
             <p><b>候选 (top5):</b></p><ul>{cand_rows}</ul>
             <p><b>工程理解:</b> <code>{_ds(eng)}</code></p>
