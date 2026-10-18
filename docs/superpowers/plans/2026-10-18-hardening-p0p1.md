@@ -42,6 +42,7 @@
 | 后端新用例 3 组 | `backend/tests/test_api/test_export_error_contract.py`（500 不泄露 + 400 契约）、`test_debug_logs_html.py`（转义）、`test_services/test_debug_logger_auth.py`（service_role 优先/回退） |
 | 全量回归 | `scripts/run_tests.sh` = 5 套 JS 沙箱 + pytest + 双副本检查 |
 | 双副本 | `scripts/check_dual_copy.sh` 六文件 diff 非零退出 |
+| 前端错误提示 | `docs/superpowers/tests/beerrmsg_test.js` — beErrMsg 6 用例 × 两端对偶（后补，随 P0-3 收尾） |
 | 弃用告警 | pytest 输出 0 条 Pydantic `class Config` 告警 |
 
 ## 3. 实施顺序（原子提交）

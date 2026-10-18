@@ -34,7 +34,7 @@ cd frontend && npm run dev
 ## 质量闸门
 
 ```bash
-scripts/run_tests.sh        # 一键：双副本 6 文件 + 5 套 JS 沙箱（539 断言）+ 后端 pytest
+scripts/run_tests.sh        # 一键：双副本 6 文件 + 6 套 JS 沙箱（551 断言）+ 后端 pytest
 scripts/check_dual_copy.sh  # 只查 docs/ ↔ frontend/public/ 六文件同步
 ```
 
