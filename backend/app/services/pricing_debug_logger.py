@@ -9,6 +9,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _rest_auth() -> dict:
+    """调试日志的 Supabase 认证头：优先 service_role、未配回退 anon。
+
+    ai_pricing_logs 含用户清单内容，2026-10-18 起 RLS 锁读
+    （data/migrations/ai_pricing_logs_rls_migration.sql）：匿名只剩 INSERT，
+    读取必须走 service_role（Render 已配）。本机未配该键时回退 anon——
+    写入不受影响；读取会因 RLS 返回空，要在本机看日志请在 backend/.env 补
+    SUPABASE_SERVICE_ROLE_KEY（可选）。
+    """
+    key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+
 class PricingDebugLog:
     """单条清单的调试日志收集器"""
 
@@ -102,8 +115,7 @@ async def save_debug_log(log: PricingDebugLog):
             await client.post(
                 f"{settings.SUPABASE_URL}/rest/v1/ai_pricing_logs",
                 headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
+                    **_rest_auth(),
                     "Content-Type": "application/json",
                     "Prefer": "return=minimal",
                 },
@@ -121,10 +133,7 @@ async def get_recent_logs(limit: int = 20) -> list[dict]:
             r = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/ai_pricing_logs"
                 f"?select=*&order=created_at.desc&limit={limit}",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}",
-                },
+                headers=_rest_auth(),
             )
             if r.status_code == 200:
                 return r.json()
