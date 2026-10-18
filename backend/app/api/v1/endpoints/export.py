@@ -15,6 +15,19 @@ from app.services.group_summary_export import GroupSummaryExporter
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# 500 错误体（P0-3）：异常细节只进服务器日志，绝不回显给浏览器。
+# 曾为 content={"error": str(e)}——内部异常文本（路径/依赖信息）会被前端 toast 直接上屏。
+# ⚠️ 400 的结构化 detail 契约（fitout_area_required / pending[] / coord_fee_not_configured）
+#    是前端分支依赖，不在此列、不得改动。
+_EXPORT_FAILED_MESSAGE = "导出服务异常，请重试；若持续失败请联系管理员"
+
+
+def _export_failed() -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={"error": "export_failed", "message": _EXPORT_FAILED_MESSAGE},
+    )
+
 
 @router.post("/excel")
 async def export_excel(request: ExportRequest):
@@ -43,10 +56,7 @@ async def export_excel(request: ExportRequest):
         )
     except Exception as e:
         logger.error(f"Excel export error: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return _export_failed()
 
 
 @router.post("/aux-excel")
@@ -75,10 +85,7 @@ async def export_aux_excel(request: AuxListExportRequest):
         )
     except Exception as e:
         logger.error(f"Aux list export error: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return _export_failed()
 
 
 @router.post("/group-summary")
@@ -121,10 +128,7 @@ def export_group_summary(request: GroupSummaryRequest):
         )
     except Exception as e:
         logger.error(f"Group summary export error: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return _export_failed()
 
 
 @router.post("/template")
@@ -160,7 +164,4 @@ async def export_template(
         )
     except Exception as e:
         logger.error(f"Template export error: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
-        )
+        return _export_failed()

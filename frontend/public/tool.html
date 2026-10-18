@@ -3261,13 +3261,15 @@ async function doGroupSummaryExport() {
     const t = localStorage.getItem('sb-access-token'); if (t) h['Authorization'] = 'Bearer ' + t;
     const r = await fetch(BACKEND_URL + '/api/v1/export/group-summary', { method: 'POST', headers: h, body: JSON.stringify(payload) });
     if (!r.ok) {
-      // FastAPI HTTPException → {detail:{...}}；detail 不可解析时退回通用提示（不吞掉状态码）
-      let detail = null;
-      try { const j = await r.json(); detail = j && j.detail; } catch (_) {}
+      // FastAPI HTTPException → {detail:{...}}；通用 500 → {error,message}。
+      // 两者都解析，都不吞状态码：detail 分支保持既有机器可读键，其余回退 message。
+      let body = null;
+      try { body = await r.json(); } catch (_) {}
+      const detail = body && body.detail;
       if (detail && detail.pending) { toast('⚠️ 待询价未补价，已拦截：' + detail.pending.length + ' 条：' + detail.pending.slice(0, 5).join('、') + (detail.pending.length > 5 ? '…' : '')); }
       else if (detail && detail.error === 'fitout_area_required') { toast('请先填写装修面积（单方造价分母）'); const fa = document.getElementById('fitoutAreaInp'); if (fa) fa.focus(); }
       else if (detail && detail.error === 'coord_fee_not_configured') { toast('⚠️ 精装修配合费费率未配置，请在管理端配置或显式置 0'); }
-      else { toast('⚠️ 后端导出失败（HTTP ' + r.status + '），已收集 ' + payload.items.length + ' 条 payload'); }
+      else { toast('⚠️ ' + ((body && body.message) || '后端导出失败（HTTP ' + r.status + '）') + '，已收集 ' + payload.items.length + ' 条 payload'); }
       return payload;
     }
     const blob = await r.blob();
@@ -3355,8 +3357,7 @@ async function doConfigExport() {
     });
 
     if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error('后端导出失败: ' + (err || resp.status));
+      throw new Error('后端导出失败: ' + await beErrMsg(resp));
     }
 
     const blob = await resp.blob();
@@ -3470,8 +3471,7 @@ async function doAuxExport(ev) {
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error('后端导出失败: ' + (err || resp.status));
+      throw new Error('后端导出失败: ' + await beErrMsg(resp));
     }
 
     const blob = await resp.blob();
@@ -4231,8 +4231,7 @@ async function doTemplateExport() {
     });
 
     if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error('后端导出失败: ' + (err || resp.status));
+      throw new Error('后端导出失败: ' + await beErrMsg(resp));
     }
 
     const blob = await resp.blob();
@@ -4720,6 +4719,23 @@ function showBoq() { document.getElementById('uploadArea').classList.add('hidden
 function showUpload() { document.getElementById('uploadArea').classList.remove('hidden'); document.getElementById('boqMain').classList.add('hidden'); }
 function clearAll() { if(!groups.length)return; if(!confirm('确认清空全部清单行？'))return; groups=[]; showUpload(); updateSum(); }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// 后端错误体解析（P0-3）：优先 message/error/detail 字段，纯文本兜底。
+// 配合导出端点 500 统一体 {"error":"export_failed","message":…}，不再把原始 JSON 上屏。
+async function beErrMsg(resp, fallback) {
+  const fb = fallback || ('HTTP ' + resp.status);
+  try {
+    const t = await resp.text();
+    if (!t) return fb;
+    try {
+      const j = JSON.parse(t);
+      if (j && typeof j.message === 'string' && j.message) return j.message;
+      if (j && typeof j.error === 'string' && j.error) return j.error;
+      if (j && typeof j.detail === 'string' && j.detail) return j.detail;
+      if (j && j.detail) return JSON.stringify(j.detail);
+    } catch (_) { /* 非 JSON → 原文兜底 */ }
+    return t;
+  } catch (_) { return fb; }
+}
 let toastTm=null;
 // ═══════════ 系统公告中心 ═══════════
 const ANNOUNCE_API = window.location.hostname === 'localhost' ? 'http://localhost:8000/api/v1/releases' : 'https://decoration-pricing-system.onrender.com/api/v1/releases';
