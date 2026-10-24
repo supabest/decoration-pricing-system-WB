@@ -1,0 +1,44 @@
+name: keepalive
+
+# 存在理由：Supabase 免费档闲置会被暂停（暂停期间 *.supabase.co 直接拒连，
+# 表现就是登录「Load failed」、集团库「未加载」），Render 免费档闲置会休眠（冷启动 ~45s）。
+# 这个工作流同时充当 /sb 同源反代的拨测：它挂了就是红，不用等用户来报。
+#
+# 说明：这里用的是 anon（publishable）key —— 它本来就在前端 bundle 和 CLAUDE.md 里公开，
+#      不是机密，故不配 secrets。service_role key 绝不放进本文件。
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SITE: https://decoration-pricing-system.pages.dev
+      RENDER: https://decoration-pricing-system.onrender.com
+      ANON_KEY: sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q
+    steps:
+      - name: 探 /sb 反代（经 Cloudflare 出口保活 Supabase）
+        run: |
+          code=$(curl -s -o /tmp/sb.out -w '%{http_code}' -m 25 \
+            "$SITE/sb/rest/v1/profiles?select=id&limit=1" \
+            -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY")
+          echo "/sb/rest/v1 → HTTP $code | $(head -c 200 /tmp/sb.out)"
+          [ "$code" = "200" ] || { echo "::error::/sb 反代或 Supabase 异常（见上方响应体）"; exit 1; }
+
+      - name: 探 /sb 白名单是否守住（非 rest/auth 前缀必须被拒）
+        run: |
+          code=$(curl -s -o /tmp/den.out -w '%{http_code}' -m 25 \
+            "$SITE/sb/storage/v1/object/x" -H "apikey: $ANON_KEY")
+          echo "/sb/storage → HTTP $code | $(head -c 200 /tmp/den.out)"
+          [ "$code" = "400" ] || { echo "::error::反代白名单失效：storage 前缀未被拒绝"; exit 1; }
+
+      - name: 保活 Render 后端
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 60 "$RENDER/docs")
+          echo "$RENDER/docs → HTTP $code"
+          [ "$code" = "200" ] || { echo "::error::Render 后端不可用"; exit 1; }
