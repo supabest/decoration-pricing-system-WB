@@ -37,8 +37,11 @@ export function getChineseErrorMessage(err: any): string {
   if (msg.includes('Session from session_id')) {
     return '会话异常，请重新登录'
   }
-  if (msg.includes('NetworkError') || msg.includes('Network Error') || msg.includes('Failed to fetch')) {
-    return '网络连接失败，请检查网络后重试'
+  // 网络层失败的原文各家浏览器不同：Chrome/Edge = "Failed to fetch"，Safari/WebKit = "Load failed"，
+  // supabase-js 自己包一层 = "NetworkError ..."。漏掉任一种会把英文原文直接吐到界面上（2026-10 实际踩到）。
+  // /sb 反代失败时函数返回结构化 JSON（upstream_timeout / upstream_unreachable / proxy_path_denied），一并接住。
+  if (/NetworkError|Network Error|Failed to fetch|Load failed|upstream_timeout|upstream_unreachable|proxy_path_denied/i.test(msg)) {
+    return '无法连接数据服务（当前网络访问不了）。若持续出现，请告知管理员你的网络到 supabase.co 是否被拦截'
   }
   if (msg.includes('timeout') || msg.includes('Timeout')) {
     return '请求超时，请稍后重试'

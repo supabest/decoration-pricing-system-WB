@@ -105,7 +105,11 @@ body{background:#f0f5fa;color:#1a2d3d;font-family:'Noto Sans SC',sans-serif;font
 
 <script>
 // ═══════════ SUPABASE ═══════════
-const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
+// 数据链路：线上走同源反代 /sb（Pages Function → Supabase）——部分用户网络直连 *.supabase.co 会被干扰（实测需 VPN 才通）；
+// localhost 保持直连，本机 http.server 没有函数运行时，开发路径零变化。回归：docs/superpowers/tests/sb_proxy_test.js
+const SUPABASE_DIRECT = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
+const SUPABASE_URL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? SUPABASE_DIRECT : location.origin + '/sb';
+
 const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
 const _h = ()=>{const h={'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY};const t=localStorage.getItem('sb-access-token');if(t)h['Authorization']='Bearer '+t;return h};
 const _get=async(t,p)=>{const q=new URLSearchParams();q.set('select',p?.select||'*');if(p?.eq)q.set(p.eq.col,'eq.'+encodeURIComponent(p.eq.val));if(p?.order)q.set('order',p.order.col+(p.order.asc?'.asc':'.desc'));const r=await fetch(SUPABASE_URL+'/rest/v1/'+t+'?'+q,{headers:_h()});return r.ok?(await r.json()):[]};

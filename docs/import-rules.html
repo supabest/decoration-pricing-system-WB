@@ -7,7 +7,10 @@
 <button onclick="doImport()" style="padding:12px 30px;border:none;border-radius:8px;background:#0f3460;color:#fff;font-size:16px;cursor:pointer">开始导入</button>
 <div id="log" style="margin-top:20px;color:#888"></div>
 <script>
-const S='https://lnvtykghcpsjpwczbqsm.supabase.co';
+// 线上走同源反代 /sb，localhost 保持直连（详见 docs/superpowers/tests/sb_proxy_test.js）
+const S_DIRECT='https://lnvtykghcpsjpwczbqsm.supabase.co';
+const S=(location.hostname==='localhost'||location.hostname==='127.0.0.1')?S_DIRECT:location.origin+'/sb';
+
 const K='sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
 
 const RULES = [

@@ -118,6 +118,7 @@ const DECLS = ['let GROUP_RATES', 'let groupBenchMap', 'let groupBenchRows', 'co
   'const GROUP_DISC_TABS',    // I 段：侧栏双库 discipline 标签
   'const OTH_STD_ROWS', 'const OTH_FEE_KEY_MAP', 'let PENDING_STD_FEES'];   // K 段二次裁定：OTH 标准行预置 + 旧草稿回填
 const FNS = ['rebuildGroupBenchMap', 'getGroupBench', 'groupRateLabel', 'loadGroupBenchmark',
+  'dbErrorText',   // /sb 反代后新增：空库提示要能说出错因（网络/超时/HTTP/鉴权）
   'loadGroupPricingRules', 'loadGroupDataOnce', 'ensureGroupData', 'setPricingMode',
   // ── T4：集团公式引擎 ──
   'groupSubPrice', 'groupRowUnitPrice', 'groupRowTotal', 'groupRowComp', 'addGroupSub', 'updateGroupRateHint',
@@ -163,6 +164,8 @@ const HEAD = [
   'let _render=0, _sum=0; function renderBoq(){_render++;} function updateSum(){_sum++;}',
   'function toast(m){TOASTS.push(m);}',
   'let RESP={}; let _get=async function(t,p){GETS.push(t); return (RESP[t]||[]).slice();};',
+  '// 沙箱里 _get 是桩，不会自己写错因；需要错因的用例直接注入 _lastDbError',
+  'let _lastDbError=null;',
 ];
 function buildSandbox() {
   ctx = vm.createContext({
@@ -247,6 +250,11 @@ reset();
 run('RESP = {};');
 ok('B4 未建表/离线：返回 false 并 toast 提示，不抛异常', await runA('return loadGroupBenchmark();') === false);
 ok('B5 失败提示点名表名，便于排障', TOASTS.some(t => String(t).includes('group_benchmark_items')), JSON.stringify(TOASTS));
+reset();
+run('RESP = {}; _lastDbError = {table:"group_benchmark_items",kind:"network",host:"https://x.pages.dev/sb",message:"Load failed"};');
+await runA('return loadGroupBenchmark();');
+ok('B5b 有真实错因时，提示必须说出错因（不再只给「加载失败」）',
+  TOASTS.some(t => String(t).includes('连不上') && String(t).includes('Load failed')), JSON.stringify(TOASTS));
 reset();
 const G_STR = Object.assign({}, G009, { mats: JSON.stringify(G009.mats) });   // JSONB 以文本回传的兜底场景
 run('RESP = {group_benchmark_items: ' + JSON.stringify([G_STR]) + '};');

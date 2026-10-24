@@ -744,7 +744,11 @@ window.addEventListener('error', function(e) {
   if (el) { el.style.display = 'block'; el.style.background = '#fff1f0'; el.style.borderColor = '#ffa39e'; el.style.color = '#a8071a'; el.textContent = '❌ JS错误: ' + (e.message || '未知') + (e.filename ? ' (' + e.filename.split('/').pop() + ':' + e.lineno + ')' : ''); }
 });
 // ═══════════ SUPABASE ═══════════
-const SUPABASE_URL = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
+// 数据链路：线上走同源反代 /sb（Pages Function → Supabase）——部分用户网络直连 *.supabase.co 会被干扰（实测需 VPN 才通）；
+// localhost 保持直连，本机 http.server 没有函数运行时，开发路径零变化。回归：docs/superpowers/tests/sb_proxy_test.js
+const SUPABASE_DIRECT = 'https://lnvtykghcpsjpwczbqsm.supabase.co';
+const SUPABASE_URL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1') ? SUPABASE_DIRECT : location.origin + '/sb';
+
 const SUPABASE_ANON_KEY = 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q';
 const BACKEND_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ? 'http://localhost:8000' : 'https://decoration-pricing-system.onrender.com';  // FastAPI 后端（本地访问走 localhost:8000 便于调试）
 let _backendOk = false;
@@ -772,7 +776,21 @@ async function testBackend() {
   }
 }
 const _h = ()=>{const h={'Content-Type':'application/json','apikey':SUPABASE_ANON_KEY};const t=localStorage.getItem('sb-access-token');if(t)h['Authorization']='Bearer '+t;return h};
-const _get=async(t,p)=>{let c,tm;try{const q=new URLSearchParams();q.set('select',p?.select||'*');if(p?.eq)q.set(p.eq.col,'eq.'+encodeURIComponent(p.eq.val));if(p?.order)q.set('order',p.order.col+(p.order.asc?'.asc':'.desc'));if(p?.limit)q.set('limit',''+p.limit);c=new AbortController();tm=setTimeout(()=>c.abort(),10000);const r=await fetch(SUPABASE_URL+'/rest/v1/'+t+'?'+q,{headers:_h(),signal:c.signal});clearTimeout(tm);if(!r.ok){const t=await r.text();if(t.includes('JWT expired')){localStorage.removeItem('sb-access-token');localStorage.removeItem('sb-refresh-token');const h=location.hostname;if(h!=='localhost'&&h!=='127.0.0.1')window.location.href='index.html';return[]}return[]}return await r.json()}catch(e){clearTimeout(tm);return[]}};
+// 上一次读失败的真实原因（网络/超时/HTTP/鉴权）。存在理由：旧版 _get 把所有失败压成 []，
+// 导致「连不上 / 表里真没数据 / 登录过期」在界面上是同一句「加载失败」，排查只能靠猜。
+let _lastDbError = null;
+const _dbFail = (t, kind, extra) => { _lastDbError = Object.assign({ table: t, kind, host: SUPABASE_URL }, extra || {}); return []; };
+// 面向人的错因描述（HTML 转义后输出：上游 body 可能含尖括号，直接进 innerHTML 就是注入）
+function dbErrorText() {
+  const e = _lastDbError; if (!e) return '';
+  const esc = s => String(s == null ? '' : s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  if (e.kind === 'timeout') return '连接超时 ' + e.ms + 'ms → ' + esc(e.host);
+  if (e.kind === 'network') return '连不上 ' + esc(e.host) + '（' + esc(e.message || '网络错误') + '）';
+  if (e.kind === 'jwt_expired') return '登录已过期，请重新登录';
+  if (e.kind === 'http') return esc(e.host) + ' 返回 HTTP ' + e.status + (e.body ? '：' + esc(e.body) : '');
+  return esc(e.kind);
+}
+const _get=async(t,p)=>{let c,tm,t0=Date.now();try{const q=new URLSearchParams();q.set('select',p?.select||'*');if(p?.eq)q.set(p.eq.col,'eq.'+encodeURIComponent(p.eq.val));if(p?.order)q.set('order',p.order.col+(p.order.asc?'.asc':'.desc'));if(p?.limit)q.set('limit',''+p.limit);c=new AbortController();tm=setTimeout(()=>c.abort(),10000);const r=await fetch(SUPABASE_URL+'/rest/v1/'+t+'?'+q,{headers:_h(),signal:c.signal});clearTimeout(tm);const ms=Date.now()-t0;if(!r.ok){const txt=await r.text();if(txt.includes('JWT expired')){_dbFail(t,'jwt_expired',{status:r.status,ms});localStorage.removeItem('sb-access-token');localStorage.removeItem('sb-refresh-token');const h=location.hostname;if(h!=='localhost'&&h!=='127.0.0.1')window.location.href='index.html';return[]}_lastDbError=null;return _dbFail(t,'http',{status:r.status,ms,body:txt.slice(0,180)})}_lastDbError=null;return await r.json()}catch(e){clearTimeout(tm);const ab=e&&/abort/i.test(String(e.name||'')+String(e.message||''));return _dbFail(t,ab?'timeout':'network',{ms:Date.now()-t0,message:String(e&&e.message||e).slice(0,140)})}};
 const _post=async(t,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t,{method:'POST',headers:h,body:JSON.stringify(b)})};
 const _patch=async(t,id,b)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t+'?id=eq.'+id,{method:'PATCH',headers:h,body:JSON.stringify(b)})};
 const _del=async(t,id)=>{const h=_h();h['Prefer']='return=minimal';await fetch(SUPABASE_URL+'/rest/v1/'+t+'?id=eq.'+id,{method:'DELETE',headers:h})};
@@ -882,8 +900,8 @@ async function loadFromSupabase() {
 // 懒加载：内部模式的启动路径零改动——这两张表只在首次切入 group 模式时由
 //          setPricingMode → ensureGroupData 请求；本机未建表时优雅降级（toast + 可重试）。
 async function loadGroupBenchmark() {
-  const rows = await _get('group_benchmark_items', { order: { col: 'code', asc: true } }).catch(() => []);
-  if (!rows || !rows.length) { toast('⚠️ 集团基准价库（group_benchmark_items）无数据：请确认迁移与导入脚本已执行'); return false; }
+  const rows = await _get('group_benchmark_items', { order: { col: 'code', asc: true } });
+  if (!rows || !rows.length) { toast('⚠️ 集团基准价（group_benchmark_items）读不到数据：' + (dbErrorText() || '表内确实 0 行——请确认迁移与导入脚本已执行')); return false; }
   // PostgREST 一般已把 JSONB 解成数组；文本回传时兜底解析，坏值置空数组而不是拖垮整库
   rows.forEach(r => {
     if (!r) return;
@@ -1188,7 +1206,7 @@ function renderLib() {
     document.getElementById('libCnt').textContent = '集团库未加载';
     document.getElementById('libList').innerHTML = '<div style="padding:20px;text-align:center;font-size:12px;color:var(--tx3)">' +
       '<div style="color:var(--yel);font-weight:600">ZS02 库未加载</div>' +
-      '<div style="margin-top:4px;font-size:10px;color:var(--tx3)">集团基准价表读不到数据（后端不可用或表内无记录）</div>' +
+      '<div style="margin-top:4px;font-size:10px;color:var(--tx3);word-break:break-all">' + (dbErrorText() || '表内无记录（迁移/导入未执行？）') + '</div>' +
       '<div style="margin-top:10px"><button class="btn btn-sm" onclick="libGroupRetry()">🔄 重试加载</button></div></div>';
     return;
   }
@@ -4390,7 +4408,7 @@ function renderGroupPicker() {
   if (!rows.length) {
     list.innerHTML = '<div style="padding:22px;text-align:center;font-size:12px;color:var(--tx2)">' +
       '<div style="color:var(--yel);font-weight:600">ZS02 库未加载</div>' +
-      '<div style="margin-top:4px;font-size:10px;color:var(--tx3)">集团基准价表读不到数据（后端不可用或表内无记录）</div>' +
+      '<div style="margin-top:4px;font-size:10px;color:var(--tx3);word-break:break-all">' + (dbErrorText() || '表内无记录（迁移/导入未执行？）') + '</div>' +
       '<div style="margin-top:10px"><button class="btn btn-sm" onclick="groupPickerRetry()">🔄 重试加载</button></div></div>';
     return;
   }
