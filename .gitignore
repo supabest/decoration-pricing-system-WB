@@ -19,6 +19,7 @@ env/
 # IDE
 .idea/
 .vscode/
+.qoder/
 *.swp
 *.swo
 *~
@@ -40,6 +41,9 @@ logs/
 # Reports
 *.pdf
 *.xlsx
+# 集团计价办法/基准价等办公原文档，与 xlsx 同口径：真实定价资料不入 git
+*.doc
+*.docx
 
 # Node
 frontend/node_modules/
