@@ -12,6 +12,10 @@
 -- 幂等：可重复执行（IF NOT EXISTS / IF EXISTS / OR REPLACE / DROP POLICY IF EXISTS）
 -- 执行方式：Supabase Dashboard → SQL Editor（本仓库脚本不直连 Supabase DDL）
 -- ⚠️ 本文件为「留档 + 灾备重建」用途，生产已存在全部对象，无需再执行。
+-- ⚠️ 本快照含已知缺陷：RPC 是 SECURITY INVOKER + 表无 UPDATE 策略 → 同名重复上报
+--    走 DO UPDATE 被 RLS 拒绝，fail_count / last_seen 从未更新过一次
+--    （2026-10-28 实测 114 / 0 / 0）。灾备重建须按序执行：
+--    本文件 → pricing_failures_upsert_fix_migration.sql
 -- ============================================================
 
 -- ============================================================
@@ -27,7 +31,7 @@ CREATE TABLE IF NOT EXISTS public.pricing_failures (
     item_name   CHARACTER VARYING NOT NULL,        -- 清单名（后端截 200 字符）
     item_spec   TEXT DEFAULT ''::TEXT,             -- 清单特征/规格（后端截 2000 字符）
     item_unit   CHARACTER VARYING DEFAULT ''::CHARACTER VARYING,  -- 单位（后端截 20 字符）
-    fail_count  INTEGER DEFAULT 1,                 -- 累计失败次数（RPC upsert 时 +1）
+    fail_count  INTEGER DEFAULT 1,                 -- 累计失败次数（设计 +1/次；2026-10-28 前从未累加，见修复迁移）
     last_seen   TIMESTAMP WITH TIME ZONE DEFAULT now(),  -- 最近一次失败时间
     created_at  TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
@@ -56,8 +60,9 @@ CREATE POLICY failures_select ON public.pricing_failures
 
 -- ============================================================
 -- 3. report_pricing_failure — 失败上报 RPC（PostgREST /rpc/report_pricing_failure）
---    行为：首次见 (p_name, p_spec) → 插新行 fail_count=1；
+--    行为（设计）：首次见 (p_name, p_spec) → 插新行 fail_count=1；
 --          已存在 → fail_count+1、last_seen=NOW()（item_unit 不更新）
+--    ⚠️ 下面转录的是「修复前」的定义：INVOKER + 无 UPDATE 策略，累加分支实际不可达。
 --    逐字转录自生产 pg_get_functiondef，含签名默认值。
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.report_pricing_failure(
