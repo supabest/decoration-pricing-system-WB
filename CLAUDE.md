@@ -70,7 +70,7 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 | `backend/app/services/benchmark_snapshot.py` | 快照加解密与进程内缓存；解不开/缺文件回空结构并打 `[SNAPSHOT]` |
 | `scripts/encrypt_benchmark_snapshot.py` | 生成密钥 / 重打快照 / `--verify` 校验线上密钥能否解开仓库那份（用 backend venv 跑） |
 | `docs/superpowers/tests/bench_fallback_test.js` | 离线兜底三级退的双端对偶沙箱（无 token 绝不请求后端快照） |
-| `data/migrations/benchmark_rls_confidential_migration.sql` | **价表保密迁移**（待 Dashboard 执行）— 五张价表 SELECT 收到 `authenticated` |
+| `data/migrations/benchmark_rls_confidential_migration.sql` | **价表保密迁移 v2**（待 Dashboard 执行）— 按线上真实策略名 DROP/新建，覆盖 8 张表：3 张价表关 PUBLIC 读、`material_prices` 与 3 张 `main_material_*` 开 RLS、`ai_pricing_logs` 锁读 |
 | `scripts/check_dual_copy.sh` | **双副本同步守卫** — docs ↔ frontend/public 四文件 diff，不一致 exit 1 |
 | `scripts/run_tests.sh` | **一键全量回归** — 双副本 + 8 套 JS 沙箱 + pytest（收尾必跑） |
 | `data/migrations/ai_pricing_logs_rls_migration.sql` | **调试日志表 RLS 锁读**（2026-10-18；匿名只剩 INSERT，后端读走 service_role）|
@@ -124,18 +124,26 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 > 保密边界（2026-10-31 裁定）：**价表对已注册用户不需要保密，对外部绝对保密**。
 > anon/publishable key 本来就写在 `config.py:36` 和前端 bundle 里公开，所以 **RLS 是唯一的门**；
 > 后端读价表走 service_role（`_sb_headers()`，未配时回退 anon）。
-> 下表「应为」列是 `data/migrations/benchmark_rls_confidential_migration.sql` 执行后的目标状态——**该迁移待 Dashboard 执行**。
+> 「现状」列 2026-10-31 由线上 `pg_policy` 只读查询取证（不是从本文档反推的）；
+> 「应为」列是 `data/migrations/benchmark_rls_confidential_migration.sql` **v2** 执行后的目标状态——**该迁移待 Dashboard 执行**。
+>
+> ⚠️ 本表曾写错过一次并造成实际后果：原先记 `benchmark_items` 是 `authenticated`，
+> 真实策略叫 `benchmark_read_public`（`SELECT TO PUBLIC`，USING true）。迁移 v1 据此
+> DROP 了库里不存在的名字，`DROP POLICY IF EXISTS` 静默跳过，「执行成功」但洞没关上。
+> **改 RLS 前必须先查线上 `pg_policy` 拿真实策略名**，别信这张表。
+> `roles` 显示 `["-"]` 就是 `PUBLIC`（含匿名），不是「无角色」。
 
 | 表 | SELECT（现状 → 应为） | INSERT/UPDATE/DELETE |
 |----|--------|---------------------|
-| `benchmark_items` | `authenticated`（已是，迁移里再幂等声明一次） | 需 `is_admin=true` |
-| `material_prices` | 公开（无 RLS）→ **`authenticated`** | 需 `is_admin=true` |
-| `main_material_catalog` | 公开 → **`authenticated`** | 需 `is_admin=true` |
-| `profiles` | — | 仅管理员 |
-| `ai_pricing_logs` | 匿名/登录一律拒绝（2026-10-18 RLS 锁读） | 匿名 INSERT 放行（本机调试写入不炸）；读取走 service_role |
-| `group_benchmark_items` / `group_pricing_rules` | `public`（localhost 免登录 anon 冒烟时留的口子）→ **`authenticated`** | 需 `is_admin=true` |
+| `benchmark_items` | **`PUBLIC`（497 条匿名全量可读）** → `authenticated` | `benchmark_write_admin`（ALL TO PUBLIC，但 `USING is_admin()`） |
+| `group_benchmark_items` / `group_pricing_rules` | **`PUBLIC`（`gbi_read_all`/`gpr_read_all`，USING true）** → `authenticated` | 需 `is_admin=true` |
+| `material_prices` | **RLS 根本没开**（库里 `mat_read_auth` 是空转的死策略）→ 只需 `ENABLE RLS` | `mat_write_admin`（ALL TO authenticated + is_admin） |
+| `main_material_catalog` / `main_material_categories` / `main_material_prices` | **RLS 根本没开、零策略**（`main_material_prices` 才是真正带主材单价的表）→ 开 RLS + `SELECT TO authenticated` | 代码里无任何写入点（已 grep 确认）；改价走 Dashboard Table Editor（超级用户不受 RLS 限制） |
+| `ai_pricing_logs` | **`PUBLIC` 可读**（2026-10-18 那份锁读迁移从未执行）→ 拒绝一切 SELECT | 匿名 INSERT 放行（本机调试与计时落库不炸）；读取走 service_role（`_rest_auth()`，Render 已配 → `timing-stats` 不受影响）；行内无价格（`log_candidates` 只存 code/name/team/unit），但含用户清单原文 |
+| `profiles` | `profiles_select_public`（TO anon/authenticated，表达式未取证） | 仅管理员 |
 | `projects` | 按用户（RLS 实测正常拦截） | 按用户 |
-| `pricing_failures` | 匿名可读（admin 面板直查；行内是用户清单原文，不是价，本次不动） | 匿名可写（统计入口不设身份门槛，既有裁定） |
+| `pricing_failures` | `PUBLIC` 可读（admin 面板直查；行内是用户清单原文，不是价，本次不动） | 匿名可写（统计入口不设身份门槛，既有裁定） |
+| `auxiliary_rules` / `benchmark_notes` / `feedback` | 有 `TO PUBLIC` 策略但 `USING` 表达式**尚未取证**（多半是 is_admin 判定）→ 不动 | — |
 
 ### 数据库当前状态（2026-08-07）
 
@@ -144,7 +152,7 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 | `benchmark_items` | 497 | FIXED 432 / RATE 63 / GROUP 2，含 aux 辅材配方 |
 | `material_prices` | 21 | 21 种辅材信息价（2024-01 基准价） |
 | `main_material_catalog` | 226 | 主材目录+价格 |
-| `ai_pricing_logs` | — | 调试日志（`DEBUG_PRICING=true` 时写入）；已 RLS 锁读（`data/migrations/ai_pricing_logs_rls_migration.sql`，**待 Dashboard 执行**） |
+| `ai_pricing_logs` | — | 调试日志（`DEBUG_PRICING=true` 时写入）；**线上仍是 `SELECT TO PUBLIC`**——`data/migrations/ai_pricing_logs_rls_migration.sql` 那份锁读迁移从未执行，锁读已并入 `benchmark_rls_confidential_migration.sql` v2 第 ⑤ 段，二选一即可 |
 
 ### 数据库恢复
 
