@@ -80,13 +80,19 @@ DROP POLICY IF EXISTS pricing_logs_insert ON public.ai_pricing_logs;
 CREATE POLICY ai_logs_insert ON public.ai_pricing_logs
   FOR INSERT TO anon, authenticated WITH CHECK (true);
 
--- ── ⑥ 复核：跑完这段，三列都应为 0（还有 PUBLIC/anon 可读的价表）────
+-- ── ⑥ 复核：跑完这段，8 行的 rls_enabled 都应为 true、still_open_anon_select 都应为 0
+--    口径说明（2026-10-31 踩过的坑）：不能把 `ALL TO PUBLIC` 一律算成「匿名可读」。
+--    库里 *_write_admin 一批是 ALL TO PUBLIC 但 USING 写着 is_admin()，匿名过不去，
+--    早期版本把它们计入后 benchmark_items 一直报 1，看着像没关上、其实是误报。
+--    所以：纯 SELECT 策略挂在 PUBLIC/anon 上就算洞；ALL 策略只有 USING 恒真才算洞。
 SELECT c.relname AS table_name,
        c.relrowsecurity AS rls_enabled,
        (SELECT count(*) FROM pg_policy p
-         WHERE p.polrelid = c.oid AND p.polcmd IN ('r','*')
+         WHERE p.polrelid = c.oid
            AND (0 = ANY(p.polroles)
-                OR 'anon' = ANY(SELECT x::regrole::text FROM unnest(p.polroles) x)))
+                OR 'anon' = ANY(SELECT x::regrole::text FROM unnest(p.polroles) x))
+           AND ( p.polcmd = 'r'
+                 OR (p.polcmd = '*' AND COALESCE(pg_get_expr(p.polqual, p.polrelid), 'true') = 'true') ))
        AS still_open_anon_select
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
 WHERE c.relname IN ('benchmark_items','group_benchmark_items','group_pricing_rules',

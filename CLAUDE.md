@@ -125,15 +125,22 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 > anon/publishable key 本来就写在 `config.py:36` 和前端 bundle 里公开，所以 **RLS 是唯一的门**；
 > 后端读价表走 service_role（`_sb_headers()`，未配时回退 anon）。
 > 「现状」列 2026-10-31 由线上 `pg_policy` 只读查询取证（不是从本文档反推的）；
-> 「应为」列是 `data/migrations/benchmark_rls_confidential_migration.sql` **v2** 执行后的目标状态——**该迁移待 Dashboard 执行**。
+> 「应为」列是 `data/migrations/benchmark_rls_confidential_migration.sql` **v2** 的目标状态。
+>
+> ✅ **v2 第 ①–⑤ 段已于 2026-10-31 在 Dashboard 执行**，复核查询确认 8 张表 `rls_enabled=true`、
+> `benchmark_read_public` / `gbi_read_all` / `gpr_read_all` / `pricing_logs_select` 均已不在库里。
+> 下表表头因此读作「收紧前 → 现在」。外部匿名验收（`select=*&limit=1` 期望 `[]`）与线上功能回归
+> 仍待逐条确认，见该文件第 ⑦ 段。
 >
 > ⚠️ 本表曾写错过一次并造成实际后果：原先记 `benchmark_items` 是 `authenticated`，
 > 真实策略叫 `benchmark_read_public`（`SELECT TO PUBLIC`，USING true）。迁移 v1 据此
 > DROP 了库里不存在的名字，`DROP POLICY IF EXISTS` 静默跳过，「执行成功」但洞没关上。
 > **改 RLS 前必须先查线上 `pg_policy` 拿真实策略名**，别信这张表。
 > `roles` 显示 `["-"]` 就是 `PUBLIC`（含匿名），不是「无角色」。
+> 复核口径别写太宽：`ALL TO PUBLIC` 但 `USING is_admin()` 不算匿名可读（`benchmark_write_admin`
+> 就被误报过一次）。
 
-| 表 | SELECT（现状 → 应为） | INSERT/UPDATE/DELETE |
+| 表 | SELECT（收紧前 → 现在） | INSERT/UPDATE/DELETE |
 |----|--------|---------------------|
 | `benchmark_items` | **`PUBLIC`（497 条匿名全量可读）** → `authenticated` | `benchmark_write_admin`（ALL TO PUBLIC，但 `USING is_admin()`） |
 | `group_benchmark_items` / `group_pricing_rules` | **`PUBLIC`（`gbi_read_all`/`gpr_read_all`，USING true）** → `authenticated` | 需 `is_admin=true` |
