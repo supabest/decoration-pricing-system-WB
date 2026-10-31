@@ -1,6 +1,6 @@
 """AI 套价全过程调试日志"""
-import json, httpx, traceback
-from datetime import datetime, timezone
+import asyncio, json, httpx, traceback
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from app.core.config import settings
 
@@ -20,6 +20,102 @@ def _rest_auth() -> dict:
     """
     key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
     return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+
+# ── 套价耗时统计（elapsed_ms） ──
+# 与 DEBUG_PRICING 无关：调试日志记的是「这次怎么匹配的」，耗时记的是「花了多久」。
+# 前者默认关（正文含用户清单内容），后者每次套价都要有，否则问了「几百条要跑多久」
+# 仍然只能靠猜。行里只填清单三列 + elapsed_ms，不落 prompt/候选/AI 原文。
+def timing_row(name: str, spec: str, unit: str, elapsed_ms: float) -> dict:
+    return {
+        "item_name": (name or "")[:200],
+        "item_spec": (spec or "")[:2000],
+        "item_unit": (unit or "")[:20],
+        "elapsed_ms": max(0, int(round(elapsed_ms))),
+    }
+
+
+async def _insert_timing(row: dict):
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{settings.SUPABASE_URL}/rest/v1/ai_pricing_logs",
+                headers={
+                    **_rest_auth(),
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+                json=[row],
+            )
+    except Exception as e:
+        # 计时是旁路，写失败不能影响套价
+        print(f"[TIMING] 保存失败: {e}")
+
+
+_bg_tasks: set = set()
+
+
+def schedule_timing(name: str, spec: str, unit: str, elapsed_ms: float):
+    """计时落库不阻塞响应：Supabase 往返几十到几百 ms，同步等待就等于每行多付一次
+    RTT，而这正是用户感知的那段时间。任务引用留在模块级 set，避免被 GC 回收。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # 无运行中事件循环：计时是旁路，丢掉即可
+    task = loop.create_task(_insert_timing(timing_row(name, spec, unit, elapsed_ms)))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+def summarize_elapsed(values: list) -> dict:
+    """把一串耗时（ms）规约成可直接看的统计量；只出聚合值、不出清单名——
+    ai_pricing_logs 的 RLS 锁读就是因为行里有用户清单内容，聚合值才能安全外露。"""
+    vals = []
+    for v in values:
+        try:
+            n = int(float(v))
+        except (TypeError, ValueError):
+            continue
+        if n >= 0:
+            vals.append(n)
+    if not vals:
+        return {"count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0, "total_s": 0}
+    vals.sort()
+
+    def pct(p: float) -> int:
+        # 与 Postgres percentile_disc 同口径：取「累计占比首次达到 p」的实测值
+        # （min/max 插值会给出库里不存在的耗时，看 P95 时容易误判单条最慢的成因）
+        k = p * len(vals)
+        idx = int(k) - 1 if k == int(k) else int(k)
+        return vals[max(0, min(len(vals) - 1, idx))]
+
+    return {
+        "count": len(vals),
+        "avg_ms": int(round(sum(vals) / len(vals))),
+        "p50_ms": pct(0.50),
+        "p95_ms": pct(0.95),
+        "max_ms": vals[-1],
+        "total_s": round(sum(vals) / 1000, 1),
+    }
+
+
+async def fetch_recent_timings(hours: int = 24, limit: int = 5000) -> list:
+    """读近 N 小时的 elapsed_ms。读取需 service_role（RLS 锁读），本机未配该键时返回
+    空列表——与 /pricing/debug-logs 同一既定行为，不是故障。"""
+    since = (datetime.now(timezone.utc) - timedelta(hours=max(1, hours))).isoformat()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{settings.SUPABASE_URL}/rest/v1/ai_pricing_logs"
+                f"?select=elapsed_ms&elapsed_ms=not.is.null&created_at=gte.{since}"
+                f"&order=created_at.desc&limit={max(1, min(limit, 20000))}",
+                headers=_rest_auth(),
+            )
+            if r.status_code == 200:
+                return [row.get("elapsed_ms") for row in r.json()]
+    except Exception as e:
+        print(f"[TIMING] 查询失败: {e}")
+    return []
 
 
 class PricingDebugLog:

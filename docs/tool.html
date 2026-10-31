@@ -4569,6 +4569,15 @@ function aiApplyGroup(r, matched, res) {
     (pend.length ? '　·　待补主材：' + pend.join('、') + '（未补价前不入汇总）' : '') };
 }
 
+// 耗时显示：单条套价在秒级、整轮在分钟级，两种量级都要读得下去
+function fmtDur(ms) {
+  if (!(ms >= 0)) return '—';
+  if (ms < 1000) return ms + 'ms';
+  const s = ms / 1000;
+  if (s < 60) return s.toFixed(1) + 's';
+  return Math.floor(s / 60) + 'm' + String(Math.round(s % 60)).padStart(2, '0') + 's';
+}
+
 async function startAiPricing() {
   // 集团口径不再拦死：AI 从 ZS02 库里选集团子目（后端 mode='group'）。只选子目、不代填主材价。
   const gMode = (pricingMode === 'group');
@@ -4594,6 +4603,8 @@ async function startAiPricing() {
   document.getElementById('aiProgWrap').classList.remove('hidden');
   let done=0,ok=0,warn=0,fail=0;
   const total=targets.length;
+  // 本轮耗时：times 记每行的 wall-clock（含网络），比后端服务端计时更接近实际等待
+  const runT0 = Date.now(), times = [];
 
   function setP(lbl) {
     document.getElementById('aiProgFill').style.width=Math.round(done/total*100)+'%';
@@ -4609,6 +4620,7 @@ async function startAiPricing() {
       const i = idx++;
       const r = targets[i];
       setP('处理：'+r.name.substring(0,18)+'…');
+      const tRow = Date.now();
       try {
         const res=await priceOne(r,key);
         const conf=res.overall_confidence||0;
@@ -4645,6 +4657,8 @@ async function startAiPricing() {
         }
       } catch(e) {
         r.aiNote={conf:0,status:'err',note:'请求失败:'+e.message.substring(0,50)}; fail++;
+      } finally {
+        times.push(Date.now()-tRow);
       }
       done++; setP(done<total?'处理中…':'完成');
       if (done % 5 === 0 || done === total) renderBoq();
@@ -4653,6 +4667,20 @@ async function startAiPricing() {
 
   // 启动并发 workers
   await Promise.all(Array.from({length:CONCURRENCY}, () => worker()));
+
+  // ⏱ 本轮耗时小结：当场结论在此，跨轮聚合在后端（每行 elapsed_ms 已旁路写入
+  // ai_pricing_logs，GET /api/v1/pricing/timing-stats 可看近 N 小时均速/P95）。
+  let tookNote = '';
+  if (times.length) {
+    const runMs = Date.now() - runT0;
+    const sortedMs = times.slice().sort((a,b)=>a-b);
+    const avgMs = Math.round(times.reduce((a,b)=>a+b,0)/times.length);
+    const p95Ms = sortedMs[Math.min(sortedMs.length-1, Math.ceil(sortedMs.length*0.95)-1)];
+    document.getElementById('aiProgLbl').textContent = aiStop ? '已停止' : '完成';
+    document.getElementById('aiProgCnt').textContent =
+      times.length+'条 · '+fmtDur(runMs)+' · 均 '+fmtDur(avgMs);
+    tookNote = '，用时 '+fmtDur(runMs)+'（均 '+fmtDur(avgMs)+'/条，P95 '+fmtDur(p95Ms)+'）';
+  }
 
   renderBoq();
   aiRunning=false;
@@ -4722,7 +4750,7 @@ async function startAiPricing() {
   } catch(e) { console.warn('失败上报跳过', e); }
 
   toast('✨ AI套价完成'+(aiStop?'（已停止）':'')+
-    '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条'+
+    '：挂载'+(ok+warn)+'条，需复核'+warn+'条，低置信/失败'+fail+'条'+tookNote+
     (gMode
       // 集团口径不引导「导入主材询价」：行级暂存价不会分配到集团子目（gtype 护栏），
       // 唯一填价入口是展开子目行里的 mats[].price。

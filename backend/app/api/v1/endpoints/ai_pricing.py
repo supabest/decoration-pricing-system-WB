@@ -120,6 +120,18 @@ async def get_failure_stats(limit: int = 50):
     return {"items": [], "total": 0}
 
 
+@router.get("/timing-stats")
+async def get_timing_stats(hours: int = 24):
+    """AI 套价耗时统计（近 N 小时）：只出聚合值，不含清单内容。
+
+    数据源是每次套价由 price_single 旁路写入 ai_pricing_logs.elapsed_ms 的计时行；
+    读取需 service_role（该表 RLS 锁读），未配置时返回 count=0，与 /debug-logs 同一既定行为。
+    """
+    from app.services.pricing_debug_logger import fetch_recent_timings, summarize_elapsed
+    values = await fetch_recent_timings(hours)
+    return {"hours": hours, **summarize_elapsed(values)}
+
+
 @router.get("/debug-logs")
 async def get_debug_logs(limit: int = 20, format: str = "json",
                           user: dict = Depends(require_auth)):

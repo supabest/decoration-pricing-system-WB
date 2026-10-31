@@ -1,8 +1,8 @@
 """AI 套价服务 — 与 tool.html 逻辑完全一致的 Python 实现"""
-import re, json, asyncio, httpx
+import re, json, asyncio, time, httpx
 from typing import List, Optional
 from app.core.config import settings
-from app.services.pricing_debug_logger import PricingDebugLog, save_debug_log
+from app.services.pricing_debug_logger import PricingDebugLog, save_debug_log, schedule_timing
 
 # ── 班组路由关键词 ──
 TEAM_KEYWORDS = [
@@ -591,6 +591,19 @@ def _validate_group_matches(matched: list, group_rows: list[dict]) -> list[dict]
 async def price_single(name: str, spec: str, unit: str, api_key: str,
                        model: Optional[str] = None, debug_log=None,
                        mode: str = 'internal') -> dict:
+    """单行套价（计时壳）：耗时为「进函数→出结果/抛异常」全程，含取数与候选筛选，
+    与前端从发请求到收到响应的口径一致，才能拿它外推「几百条要多久」。"""
+    t0 = time.perf_counter()
+    try:
+        return await _price_single(name, spec, unit, api_key,
+                                   model=model, debug_log=debug_log, mode=mode)
+    finally:
+        schedule_timing(name, spec, unit, (time.perf_counter() - t0) * 1000)
+
+
+async def _price_single(name: str, spec: str, unit: str, api_key: str,
+                        model: Optional[str] = None, debug_log=None,
+                        mode: str = 'internal') -> dict:
     """单行套价。mode='internal'（默认，向后兼容）走内部 497 条基准价；'group' 走 ZS02 集团库。"""
     is_group = (mode == 'group')
     # 两个口径的候选池互斥加载：集团模式不拉内部库（反之亦然），避开无意义的 497 条流量
