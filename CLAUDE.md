@@ -65,9 +65,14 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 | `docs/admin.html` | 管理面板 — 用户管理 / 信息价录入 / 知识库 / 基准价浏览 |
 | `docs/m.html` | **手机版套价工具**（V1.4 新增）— 五步流卡片式；与 tool.html 代码独立，只共享 groups_json 契约 + 同一套 Supabase/FastAPI；电脑端功能界面不受影响 |
 | `docs/ai_knowledge_base.json` | **AI 知识库** — tips/synonyms/rules 三类规则驱动 AI 匹配决策 |
-| `docs/benchmark_data.json` | 497 条基准价完整备份（含辅材配方），localhost 离线备用 |
-| `scripts/check_dual_copy.sh` | **双副本同步守卫** — docs ↔ frontend/public 六文件 diff，不一致 exit 1 |
-| `scripts/run_tests.sh` | **一键全量回归** — 双副本 + 5 套 JS 沙箱 + pytest（收尾必跑） |
+| `docs/benchmark_data.json` | 497 条基准价明文备份 — **已 .gitignore，只在本机**（加密进快照 + 不再发布到 Pages） |
+| `backend/app/data/benchmark_snapshot.enc` | **基准价加密快照**（497 条 + 475 条损耗率，AES-256-GCM）— 密文进仓库，密钥 `BENCHMARK_SNAPSHOT_KEY` 只在 Render 环境变量与 `backend/.env` |
+| `backend/app/services/benchmark_snapshot.py` | 快照加解密与进程内缓存；解不开/缺文件回空结构并打 `[SNAPSHOT]` |
+| `scripts/encrypt_benchmark_snapshot.py` | 生成密钥 / 重打快照 / `--verify` 校验线上密钥能否解开仓库那份（用 backend venv 跑） |
+| `docs/superpowers/tests/bench_fallback_test.js` | 离线兜底三级退的双端对偶沙箱（无 token 绝不请求后端快照） |
+| `data/migrations/benchmark_rls_confidential_migration.sql` | **价表保密迁移**（待 Dashboard 执行）— 五张价表 SELECT 收到 `authenticated` |
+| `scripts/check_dual_copy.sh` | **双副本同步守卫** — docs ↔ frontend/public 四文件 diff，不一致 exit 1 |
+| `scripts/run_tests.sh` | **一键全量回归** — 双副本 + 8 套 JS 沙箱 + pytest（收尾必跑） |
 | `data/migrations/ai_pricing_logs_rls_migration.sql` | **调试日志表 RLS 锁读**（2026-10-18；匿名只剩 INSERT，后端读走 service_role）|
 | `backend/app/ai/engine.py` | ⚠️ **遗留死代码** — LangChain 初始化（生产依赖未装、未被任何生产端点导入）；实际 LLM 调用在 `ai_pricing_service.call_deepseek`（httpx 直调） |
 | `backend/app/services/ai_pricing_service.py` | AI 套价核心服务：工程解析 → 候选匹配 → AI 推理 |
@@ -116,15 +121,21 @@ DeepSeek 返回子目匹配 + 辅材配方 → tool.html 计算综合单价
 
 ### RLS 策略
 
-| 表 | SELECT | INSERT/UPDATE/DELETE |
+> 保密边界（2026-10-31 裁定）：**价表对已注册用户不需要保密，对外部绝对保密**。
+> anon/publishable key 本来就写在 `config.py:36` 和前端 bundle 里公开，所以 **RLS 是唯一的门**；
+> 后端读价表走 service_role（`_sb_headers()`，未配时回退 anon）。
+> 下表「应为」列是 `data/migrations/benchmark_rls_confidential_migration.sql` 执行后的目标状态——**该迁移待 Dashboard 执行**。
+
+| 表 | SELECT（现状 → 应为） | INSERT/UPDATE/DELETE |
 |----|--------|---------------------|
-| `benchmark_items` | `authenticated` 均可读 | 需 `is_admin=true` |
-| `material_prices` | 公开（无 RLS） | 需 `is_admin=true` |
+| `benchmark_items` | `authenticated`（已是，迁移里再幂等声明一次） | 需 `is_admin=true` |
+| `material_prices` | 公开（无 RLS）→ **`authenticated`** | 需 `is_admin=true` |
+| `main_material_catalog` | 公开 → **`authenticated`** | 需 `is_admin=true` |
 | `profiles` | — | 仅管理员 |
 | `ai_pricing_logs` | 匿名/登录一律拒绝（2026-10-18 RLS 锁读） | 匿名 INSERT 放行（本机调试写入不炸）；读取走 service_role |
-| `group_benchmark_items` / `group_pricing_rules` | `public`（localhost 免登录 anon 冒烟实证） | 需 `is_admin=true` |
+| `group_benchmark_items` / `group_pricing_rules` | `public`（localhost 免登录 anon 冒烟时留的口子）→ **`authenticated`** | 需 `is_admin=true` |
 | `projects` | 按用户（RLS 实测正常拦截） | 按用户 |
-| `pricing_failures` | 匿名可读（admin 面板直查） | 匿名可写（统计入口不设身份门槛，既有裁定） |
+| `pricing_failures` | 匿名可读（admin 面板直查；行内是用户清单原文，不是价，本次不动） | 匿名可写（统计入口不设身份门槛，既有裁定） |
 
 ### 数据库当前状态（2026-08-07）
 
@@ -256,19 +267,27 @@ CREATE POLICY benchmark_read_auth ON benchmark_items FOR SELECT TO authenticated
 -- 方式 B: SQL Editor 执行 data/seeds/ 下所有 SQL 文件
 ```
 
-`docs/benchmark_data.json` 作为前端离线备用，`data/seeds/` 包含完整 SQL 恢复脚本。
+价表明文 `docs/benchmark_data.json` / `docs/waste_rates.json` 已随保密改造 `.gitignore` 掉（只留本机），线上离线兜底改用 `backend/app/data/benchmark_snapshot.enc`（密文进仓库）；`data/seeds/` 包含完整 SQL 恢复脚本。
+
+**刷新加密快照**（基准价有增删改之后必做，否则兜底数据停在旧版）：
+
+```bash
+backend/venv311/bin/python scripts/encrypt_benchmark_snapshot.py            # 重打 .enc（需 backend/.env 里的密钥）
+backend/venv311/bin/python scripts/encrypt_benchmark_snapshot.py --verify   # 校验能否解密、只报条数不报价格
+```
+密钥 `BENCHMARK_SNAPSHOT_KEY` 三处必须一致：Render 环境变量、本机 `backend/.env`、生成快照时用的那把。改密钥后必须重打快照。
 
 ## 注意事项
 
-- **收尾闸门：改完必跑 `scripts/run_tests.sh`**（双副本 6 文件 + 5 套 JS 沙箱 + pytest 一键，任一红即 exit 1）；只查双副本用 `scripts/check_dual_copy.sh`
+- **收尾闸门：改完必跑 `scripts/run_tests.sh`**（双副本 4 文件 + 8 套 JS 沙箱 + pytest 一键，任一红即 exit 1）；只查双副本用 `scripts/check_dual_copy.sh`
 - `docs/tool.html` ↔ `frontend/public/tool.html` 必须保持同步（修改时两处都要改）
-- 同理 `docs/admin.html` ↔ `frontend/public/admin.html`，`docs/m.html` ↔ `frontend/public/m.html`
-- `docs/benchmark_data.json` / `docs/waste_rates.json` / `docs/ai_knowledge_base.json` ↔ `frontend/public/` 必须同步（Pages 只部署 `frontend/public/`，缺了会导致线上离线兜底退化为 4 条内置数据；ai_knowledge_base.json 缺了则 admin.html 未登录时知识库面板读到旧版规则集）
+- 同理 `docs/admin.html` ↔ `frontend/public/admin.html`，`docs/m.html` ↔ `frontend/public/m.html`；`docs/ai_knowledge_base.json` ↔ `frontend/public/`（缺了则 admin.html 未登录时知识库面板读到旧版规则集）
+- **价表明文不再发布到 Pages**：`benchmark_data.json` / `waste_rates.json` 已从未部署。离线兜底走 `GET /api/v1/benchmark/snapshot`（需登录态，后端解密 `.enc` 返回），无 token 的外部拿不到——改动兜底链时保持「无 token 绝不请求后端快照」这条，`bench_fallback_test.js` 会钉住
 - DeepSeek 模型名两处同步: `backend/app/core/config.py`, `docs/tool.html`（`docs/v5.html` 已删除，勿再引用）
 - 新增 BOQ 行字段需同步改: `makeRow()`, `rowTotal()`, `renderBoq()`, `collectExportData()`
 - `rowUnitPrice(r)` 依赖 `r.subs`，`r.subs` 可能为 undefined，调用方需判空
 - 导出格式修改需同时验证方式一和方式二
-- 敏感数据（材料价格）只存 Supabase，不入 git
+- 敏感数据（材料价格/基准价）只存 Supabase；仓库里只允许 `benchmark_snapshot.enc` 这种**密文**形态存在，任何明文价表文件都不得进 git 或 `frontend/public/`
 - **手机版 `docs/m.html`**：`groups_json` 行/子目字段契约权威在 tool.html 的 `makeRow()`/`addSub()`；改这两处时必须同步 m.html 的 `makeRow()`/`addSub()`/`collectExportData()`/`buildDraftPayload()`，否则跨端草稿接力丢字段
 - m.html 回归：`node docs/superpowers/tests/m_logic_test.js`（手机端逻辑）+ `node docs/superpowers/tests/m_parity_test.js`（只读 tool.html 抽同名函数，双沙箱同夹具比对算价/落点/询价匹配一致性；**不修改电脑端**）
 - **调试日志本机可见性**：`ai_pricing_logs` 锁读后，本机 `/pricing/debug-logs` 需在 `backend/.env` 配 `SUPABASE_SERVICE_ROLE_KEY`（可选）；未配时写入不受影响、读取为空——这是预期行为不是故障

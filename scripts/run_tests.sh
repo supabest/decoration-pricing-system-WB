@@ -22,7 +22,7 @@ js_ok=0
 # ── 1. 双副本同步守卫 ──
 echo "── 双副本同步"
 if "$ROOT/scripts/check_dual_copy.sh" >"$TMP/dual.log" 2>&1; then
-  echo "✅ 双副本 6/6 一致"
+  tail -1 "$TMP/dual.log"
 else
   echo "❌ 双副本不一致："
   sed 's/^/   /' "$TMP/dual.log"
@@ -75,7 +75,7 @@ fi
 # ── 汇总 ──
 echo
 if [ "${#fail[@]}" -eq 0 ]; then
-  echo "════ 全量回归通过：双副本 6/6 + JS ${js_ok} 套 + pytest ════"
+  echo "════ 全量回归通过：双副本 + JS ${js_ok} 套 + pytest ════"
   exit 0
 fi
 echo "════ 失败 ${#fail[@]} 项：${fail[*]} ════"

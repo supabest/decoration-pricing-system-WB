@@ -866,17 +866,26 @@ function rebuildAll() {
 rebuildAll();
 let SHEETS = Object.keys(DB_EMBEDDED);
 
+// 损耗率补齐：登录态走后端快照，本机开发退回同目录 JSON
+// （waste_rates.json 已不再发布到公网，价表数据只发给注册用户）
+async function _wasteRates() {
+  const t = localStorage.getItem('sb-access-token');
+  if (t) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/v1/benchmark/waste-rates', { headers: { 'Authorization': 'Bearer ' + t } });
+      if (r.ok) { const j = await r.json(); if (j.waste_rates) return j.waste_rates; }
+    } catch (e) {}
+  }
+  try { const r = await fetch('waste_rates.json'); if (r.ok) return await r.json(); } catch (e) {}
+  return {};
+}
+
 async function loadFromSupabase() {
   const items = await _get('benchmark_items', {order:{col:'trade_team',asc:true}}).catch(()=>[]);
   if (items && items.length > 0) {
-    // select=* 已含 waste_rate 列（无需二次查询），仅当库中损耗率为空时才从本地 waste_rates.json 兜底
+    // select=* 已含 waste_rate 列（无需二次查询），仅当库中损耗率为空时才补齐
     let wrMap = {};
-    if (items.some(it => it.waste_rate == null)) {
-      try {
-        const r = await fetch('waste_rates.json');
-        if (r.ok) { const localWr = await r.json(); Object.assign(wrMap, localWr); }
-      } catch(e) {}
-    }
+    if (items.some(it => it.waste_rate == null)) Object.assign(wrMap, await _wasteRates());
     DB = {};
     items.forEach(it => {
       if (!DB[it.trade_team]) DB[it.trade_team] = [];
@@ -1099,6 +1108,28 @@ function toggleHourlyMode(rid) {
   renderBoq();
 }
 
+// ═══════════ 兜底数据源 ═══════════
+// 价表不再以明文发布在公网，所以离线兜底按「登录态 → 本机文件 → 内置 4 条」三级退：
+//   ① 后端解密快照（要 sb-access-token）——生产环境走这条，外部无 token 拿不到；
+//   ② 同目录 benchmark_data.json——本机开发用（该文件已 .gitignore，不在 git 与 Pages 上）。
+async function loadFallbackBench() {
+  const t = localStorage.getItem('sb-access-token');
+  if (t) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/v1/benchmark/snapshot', { headers: { 'Authorization': 'Bearer ' + t } });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.items && j.items.length) return { items: j.items, wrMap: j.waste_rates || {} };
+      }
+    } catch (e) {}
+  }
+  try {
+    const r = await fetch('benchmark_data.json');
+    if (r.ok) return { items: await r.json(), wrMap: await _wasteRates() };
+  } catch (e) {}
+  return null;
+}
+
 // ═══════════ INIT ═══════════
 function init() {
   return (async () => {
@@ -1113,32 +1144,27 @@ function init() {
     ]);
     diag('token=' + (hasToken ? '有' : '无') + '，Supabase返回=' + (hasSb ? '有数据' : '空') + '，当前ALL=' + ALL.length + '条');
     if (!hasSb || (Array.isArray(hasSb) && hasSb.length === 0)) {
-      document.getElementById('libCnt').textContent = '⚠️ 数据库不可用，加载本地备份...';
-      try {
-        const r = await fetch('benchmark_data.json');
-        if (r.ok) {
-          const items = await r.json();
-          // 加载本地损耗率
-          let wrMap = {};
-          try { const wr = await fetch('waste_rates.json'); if(wr.ok) wrMap = await wr.json(); } catch(e){}
-          DB = {};
-          items.forEach(it => {
-            if (!DB[it.trade_team]) DB[it.trade_team] = [];
-            const wr = wrMap[it.internal_code] != null ? wrMap[it.internal_code] : (it.waste_rate != null ? parseFloat(it.waste_rate) : undefined);
-            DB[it.trade_team].push({
-              id: it.internal_code, trade: it.work_type||'', name: it.item_name,
-              spec: it.spec||'', unit: it.unit, price: parseFloat(it.unit_price),
-              remark: it.remark||'', auxType: it.aux_rule_type||'', auxFixedK: parseFloat(it.aux_fixed_k)||0, auxRateDetail: it.aux_rate_detail||null,
-              waste_rate: wr
-            });
+      document.getElementById('libCnt').textContent = '⚠️ 数据库不可用，加载兜底数据...';
+      const fb = await loadFallbackBench();
+      if (fb) {
+        const items = fb.items, wrMap = fb.wrMap;
+        DB = {};
+        items.forEach(it => {
+          if (!DB[it.trade_team]) DB[it.trade_team] = [];
+          const wr = wrMap[it.internal_code] != null ? wrMap[it.internal_code] : (it.waste_rate != null ? parseFloat(it.waste_rate) : undefined);
+          DB[it.trade_team].push({
+            id: it.internal_code, trade: it.work_type||'', name: it.item_name,
+            spec: it.spec||'', unit: it.unit, price: parseFloat(it.unit_price),
+            remark: it.remark||'', auxType: it.aux_rule_type||'', auxFixedK: parseFloat(it.aux_fixed_k)||0, auxRateDetail: it.aux_rate_detail||null,
+            waste_rate: wr
           });
-          ALL = [];
-          Object.keys(DB).forEach(sh => { (DB[sh]||[]).forEach(it => ALL.push({...it, sheet: sh})); });
-          SHEETS = Object.keys(DB);
-          rebuildBenchMap();
-          document.getElementById('libCnt').textContent = '✅ '+items.length+' 条基准价';
-        } else throw new Error('HTTP '+r.status);
-      } catch(e) {
+        });
+        ALL = [];
+        Object.keys(DB).forEach(sh => { (DB[sh]||[]).forEach(it => ALL.push({...it, sheet: sh})); });
+        SHEETS = Object.keys(DB);
+        rebuildBenchMap();
+        document.getElementById('libCnt').textContent = '✅ '+items.length+' 条基准价（兜底）';
+      } else {
         document.getElementById('libCnt').textContent = '⚠️ 使用内置数据';
         DB = JSON.parse(JSON.stringify(DB_EMBEDDED));
         ALL = [];

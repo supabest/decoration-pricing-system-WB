@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = "sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q"
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
+    # 基准价加密快照密钥（hex64 或 base64，须解出 32 字节）。
+    # 快照文件 backend/app/data/benchmark_snapshot.enc 随仓库走，密钥只在 Render
+    # 环境变量与本机 backend/.env。未配时离线兜底退化为「无候选」，不影响 Supabase 正常时。
+    BENCHMARK_SNAPSHOT_KEY: str = ""
+
     # ── QQ SMTP 邮件 ──
     SMTP_HOST: str = "smtp.qq.com"
     SMTP_PORT: int = 465

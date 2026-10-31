@@ -62,6 +62,14 @@ coverage/
 # Seed data (contains actual pricing info — must not be on GitHub)
 data/seeds/
 
+# 内部基准价 497 条 + 损耗率的明文副本：不入 git、不发布到 Pages。
+# 线上离线兜底改走 backend/app/data/benchmark_snapshot.enc（密文进仓库，密钥只在环境变量），
+# 由 GET /api/v1/benchmark/snapshot 在登录态下解密下发；本机开发仍保留这两份明文。
+docs/benchmark_data.json
+docs/waste_rates.json
+frontend/public/benchmark_data.json
+frontend/public/waste_rates.json
+
 # Database
 *.db
 *.sqlite3

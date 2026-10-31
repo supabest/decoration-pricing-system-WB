@@ -79,8 +79,36 @@ _group_benchmark_cache = None
 _knowledge_cache = None
 
 
+def _sb_headers() -> dict:
+    """Supabase REST 认证头：优先 service_role，未配回退 anon。
+
+    价格表 RLS 从 public 收紧到 authenticated 后，anon 读会被静默返回空数组
+    （PostgREST 不报错），候选池直接变空；后端取全量必须用能绕过 RLS 的键。
+    本机未配 service_role 时退回 anon，行为与收紧前一致，不制造新的静默失败。
+    """
+    key = settings.SUPABASE_SERVICE_ROLE_KEY or settings.SUPABASE_ANON_KEY
+    return {"apikey": key, "Authorization": f"Bearer {key}"}
+
+
+def _map_benchmark_rows(raw: list) -> list[dict]:
+    """把 Supabase 行 / 快照行规约成套价流程用的固定字段集（缺列补默认值）"""
+    return [{
+        'trade_team': d['trade_team'], 'internal_code': d['internal_code'],
+        'work_type': d.get('work_type', ''), 'item_name': d['item_name'],
+        'spec': d.get('spec', ''), 'unit': d['unit'],
+        'unit_price': d['unit_price'], 'remark': d.get('remark', ''),
+        'aux_rule_type': d.get('aux_rule_type', ''), 'aux_fixed_k': d.get('aux_fixed_k', 0),
+        'aux_rate_detail': d.get('aux_rate_detail'),
+    } for d in raw]
+
+
 async def load_benchmark_data() -> list[dict]:
-    """加载全量基准价：先 Supabase，RLS 拦截时从本地 JSON 备用"""
+    """加载全量基准价：Supabase（service_role）→ 加密快照 → 空
+
+    公网不再放明文 benchmark_data.json（价格表对外绝对保密），所以 Supabase 不可达时的
+    第二数据源是仓库里的密文快照，解不开就当库空——由调用方报「基准价库不可用」，
+    而不是静默返回半截候选。
+    """
     global _benchmark_cache
     if _benchmark_cache:
         return _benchmark_cache
@@ -90,28 +118,22 @@ async def load_benchmark_data() -> list[dict]:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/benchmark_items?select=*&order=trade_team.asc",
-                headers={"apikey": settings.SUPABASE_ANON_KEY, "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}"}
+                headers=_sb_headers()
             )
             items = r.json() if r.status_code == 200 else []
     except Exception:
         pass
-    # Supabase 返回空（RLS）→ 加载本地 JSON
+    if not isinstance(items, list):
+        items = []
+    # Supabase 返回空（不可达 / RLS）→ 解密快照
     if not items:
-        import json, os
-        json_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'docs', 'benchmark_data.json')
-        try:
-            with open(json_path) as f:
-                raw = json.load(f)
-            items = [{
-                'trade_team': d['trade_team'], 'internal_code': d['internal_code'],
-                'work_type': d.get('work_type', ''), 'item_name': d['item_name'],
-                'spec': d.get('spec', ''), 'unit': d['unit'],
-                'unit_price': d['unit_price'], 'remark': d.get('remark', ''),
-                'aux_rule_type': d.get('aux_rule_type', ''), 'aux_fixed_k': d.get('aux_fixed_k', 0),
-                'aux_rate_detail': d.get('aux_rate_detail'),
-            } for d in raw]
-        except Exception:
-            pass
+        from app.services.benchmark_snapshot import load_snapshot
+        snap = load_snapshot()
+        if snap.get('benchmark_items'):
+            items = _map_benchmark_rows(snap['benchmark_items'])
+            print(f"[BENCHMARK] Supabase 不可达，改用加密快照 {len(items)} 条")
+    if not items:
+        print("[BENCHMARK] 基准价库为空：Supabase 与加密快照都取不到数据")
     _benchmark_cache = items
     return items
 
@@ -119,6 +141,7 @@ async def load_benchmark_data() -> list[dict]:
 # ── 集团基准价库（mode='group' 候选池）──
 # 无本地 JSON 兜底：对甲口径的数据只有 group_benchmark_items 一个权威源，
 # 静默降级到 benchmark_data.json（内部 497 条）会把错误口径的价送到对甲报价里。
+# 加密快照装的就是那 497 条，口径同样不对，不参与兜底。
 # 拉不到就回空列表，由 price_single 显式报「集团基准价库不可用」。
 async def load_group_benchmark_data() -> list[dict]:
     """加载全量集团基准价（ZS02）：仅 Supabase，失败回空列表"""
@@ -130,7 +153,7 @@ async def load_group_benchmark_data() -> list[dict]:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/group_benchmark_items?select=*&order=code.asc",
-                headers={"apikey": settings.SUPABASE_ANON_KEY, "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}"}
+                headers=_sb_headers()
             )
             items = r.json() if r.status_code == 200 else []
     except Exception:
@@ -155,7 +178,7 @@ async def load_knowledge() -> dict:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(
                 f"{settings.SUPABASE_URL}/rest/v1/ai_knowledge?select=*",
-                headers={"apikey": settings.SUPABASE_ANON_KEY, "Authorization": f"Bearer {settings.SUPABASE_ANON_KEY}"}
+                headers=_sb_headers()
             )
             rows = r.json() if r.status_code == 200 else []
     except Exception:

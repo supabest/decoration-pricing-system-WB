@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════
-# 双副本同步守卫：docs/ ↔ frontend/public/ 六个文件必须逐字节一致
+# 双副本同步守卫：docs/ ↔ frontend/public/ 四个文件必须逐字节一致
 #
 # 为什么：Cloudflare Pages 只部署 frontend/public/。任一副本落单会让线上
-#   · benchmark_data.json 缺失 → 离线兜底退化为 4 条内置数据
 #   · ai_knowledge_base.json 缺失 → admin 未登录时知识库面板读到旧规则集
 #   · tool/m/admin.html 不一致 → 电脑端/手机端/管理端行为分叉且难排查
+#
+# 不再纳管 benchmark_data.json / waste_rates.json：价表已退出公网，线上兜底改走
+#   登录态的 GET /api/v1/benchmark/snapshot（密文快照在后端解密），docs 下这两份
+#   明文只留本机开发用，已进 .gitignore。
 #
 # 用法：scripts/check_dual_copy.sh
 #   全一致 exit 0；有差异逐个列出并 exit 1
@@ -13,7 +16,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FILES=(tool.html m.html admin.html benchmark_data.json waste_rates.json ai_knowledge_base.json)
+FILES=(tool.html m.html admin.html ai_knowledge_base.json)
 
 fail=0
 for f in "${FILES[@]}"; do
@@ -39,4 +42,4 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo
-echo "双副本 6/6 一致"
+echo "双副本 ${#FILES[@]}/${#FILES[@]} 一致"

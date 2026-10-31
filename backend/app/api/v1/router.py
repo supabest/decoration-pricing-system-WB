@@ -2,6 +2,7 @@
 from fastapi import APIRouter
 from app.api.v1.endpoints import (
     ai_pricing as ai_pricing_endpoint,
+    benchmark as benchmark_endpoint,
     export,
     knowledge,
     releases,
@@ -11,6 +12,7 @@ api_router = APIRouter()
 
 # ── 生产端点 ──
 api_router.include_router(ai_pricing_endpoint.router, prefix="/pricing", tags=["AI套价"])
+api_router.include_router(benchmark_endpoint.router, prefix="/benchmark", tags=["基准价"])
 api_router.include_router(export.router, prefix="/export", tags=["导出"])
 api_router.include_router(knowledge.router, prefix="/knowledge", tags=["知识库"])
 api_router.include_router(releases.router, prefix="/releases", tags=["版本发布"])

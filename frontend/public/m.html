@@ -479,19 +479,50 @@ function buildDB(items, wrMap) {
 function rebuildBenchMap() { benchMap = {}; Object.keys(DB).forEach(sh => DB[sh].forEach(i => { benchMap[sh + '|' + i.id] = Object.assign({}, i, {sheet: sh}); })); }
 function getBench(id, sh) { return benchMap[sh + '|' + id] || null; }
 
+// 兜底数据源（与 tool.html 同策略）：价表不再以明文发布在公网
+//   ① 后端解密快照（需 sb-access-token）——生产路径，外部无 token 拿不到；
+//   ② 同目录 JSON——本机开发用（已 .gitignore，不在 git 与 Pages 上）。
+async function _wasteRates() {
+  const t = localStorage.getItem('sb-access-token');
+  if (t) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/v1/benchmark/waste-rates', { headers: { 'Authorization': 'Bearer ' + t } });
+      if (r.ok) { const j = await r.json(); if (j.waste_rates) return j.waste_rates; }
+    } catch (e) {}
+  }
+  try { const r = await fetch('waste_rates.json'); if (r.ok) return await r.json(); } catch (e) {}
+  return {};
+}
+
+async function loadFallbackBench() {
+  const t = localStorage.getItem('sb-access-token');
+  if (t) {
+    try {
+      const r = await fetch(BACKEND_URL + '/api/v1/benchmark/snapshot', { headers: { 'Authorization': 'Bearer ' + t } });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.items && j.items.length) return { items: j.items, wrMap: j.waste_rates || {} };
+      }
+    } catch (e) {}
+  }
+  try {
+    const r = await fetch('benchmark_data.json');
+    if (r.ok) return { items: await r.json(), wrMap: await _wasteRates() };
+  } catch (e) {}
+  return null;
+}
+
 async function loadBenchmarks() {
   const items = await _get('benchmark_items', {order: {col:'trade_team', asc:true}});
   if (items && items.length) {
     let wrMap = {};
-    if (items.some(it => it.waste_rate == null)) { try { const r = await fetch('waste_rates.json'); if (r.ok) wrMap = await r.json(); } catch (e) {} }
+    if (items.some(it => it.waste_rate == null)) wrMap = await _wasteRates();
     buildDB(items, wrMap);
     return items.length;
   }
-  // 离线兜底：本地 JSON → 内置极小集（与 tool.html 同策略）
-  try {
-    const r = await fetch('benchmark_data.json');
-    if (r.ok) { const its = await r.json(); let wrMap = {}; try { const w = await fetch('waste_rates.json'); if (w.ok) wrMap = await w.json(); } catch (e) {} buildDB(its, wrMap); return its.length; }
-  } catch (e) {}
+  // 离线兜底：后端快照 → 本机 JSON → 内置极小集
+  const fb = await loadFallbackBench();
+  if (fb) { buildDB(fb.items, fb.wrMap); return fb.items.length; }
   DB = JSON.parse(JSON.stringify(DB_EMBEDDED));
   ALL = []; Object.keys(DB).forEach(sh => DB[sh].forEach(it => ALL.push(Object.assign({}, it, {sheet: sh}))));
   SHEETS = Object.keys(DB); rebuildBenchMap();
