@@ -13,4 +13,12 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishabl
 
 export const hasSupabaseConfig = true
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// ★ 存储键必须显式钉死：supabase-js 默认键 = `sb-${hostname.split('.')[0]}-auth-token`，
+//   supabaseUrl 换成同源 /sb 后主机名变成了 pages.dev，键名会跟着漂移；
+//   而 AuthContext.syncTokenForTool 与 tool.html/m.html 的桥接契约读的是这个固定键。
+//   （2026-11-03 排障：键漂移导致登录后 sb-access-token 不落盘，tool.html 启动即弹回 index.html）
+export const SUPABASE_STORAGE_KEY = 'sb-lnvtykghcpsjpwczbqsm-auth-token'
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: { storageKey: SUPABASE_STORAGE_KEY },
+})

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
-import { supabase } from '../lib/supabaseClient'
+import { supabase, SUPABASE_STORAGE_KEY } from '../lib/supabaseClient'
 import { auth, Profile } from '../api'
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
@@ -16,8 +16,9 @@ const AuthContext = createContext<AuthState>(null!)
 /** 将 supabase-js 的 session token 同步到 tool.html 期望的 localStorage key */
 function syncTokenForTool() {
   try {
-    const supabaseKey = 'sb-lnvtykghcpsjpwczbqsm-auth-token'
-    const raw = localStorage.getItem(supabaseKey)
+    // 键名必须与 supabaseClient 的 auth.storageKey 同源（SUPABASE_STORAGE_KEY）——
+    // supabase-js 默认键跟 hostname 走，/sb 反代改造后曾漂移导致桥接失效（2026-11-03）
+    const raw = localStorage.getItem(SUPABASE_STORAGE_KEY)
     if (!raw) return
     const session = JSON.parse(raw)
     if (session?.access_token) {
