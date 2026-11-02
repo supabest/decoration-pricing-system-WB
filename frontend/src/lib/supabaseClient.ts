@@ -5,8 +5,10 @@ import { createClient } from '@supabase/supabase-js'
 // 回归：docs/superpowers/tests/sb_proxy_test.js
 const SUPABASE_DIRECT = 'https://lnvtykghcpsjpwczbqsm.supabase.co'
 const isLocal = typeof location !== 'undefined' && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-  || (isLocal ? SUPABASE_DIRECT : (typeof location !== 'undefined' ? location.origin + '/sb' : SUPABASE_DIRECT))
+// ★ 故意不读 VITE_SUPABASE_URL：Pages 项目遗留的这个构建变量会把直连 URL 烤进 bundle、
+//   整个短路 /sb 反代（2026-11-03 线上 bundle 取证：有 10-24 报错文案、零 /sb 引用）。
+//   数据链路只认 localhost 判定，任何构建环境变量都不参与。
+const supabaseUrl = isLocal ? SUPABASE_DIRECT : (typeof location !== 'undefined' ? location.origin + '/sb' : SUPABASE_DIRECT)
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_VQNxLrsKEZuZDeAGa7xOAg__SUeFH_Q'
 
 export const hasSupabaseConfig = true
