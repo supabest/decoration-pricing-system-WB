@@ -39,8 +39,16 @@
 `frontend/public/_routes.json`（Vite 会复制到 `dist/`）：
 
 ```json
-{ "version": 1, "include": ["/sb/*"], "exclude": ["/*"] }
+{ "version": 1, "include": ["/sb/*"], "exclude": ["/assets/*"] }
 ```
+
+> ⚠️ 2026-11-02 复盘：本节与落地文件原先都写的 `"exclude": ["/*"]`，`sb_proxy_test.js` 的 F5
+> 还把这一错误字符串当断言钉住，于是错误被测试合法化、一个多月没人发现。官方规则是
+> **exclude 命中即走静态资源，优先级高于 include**，`/*` 连 `/sb/...` 一起排除 → 函数从不调用
+> → 线上所有 Supabase 请求（登录 `auth/v1/token`、集团 ZS02 库、草稿保存）都拿到 SPA 外壳
+> `index.html`（200 + text/html），表现即「登录不正常」「集团子目加载失败」。
+> 下面第 5 节的验收（`curl …/sb/auth/v1/health` 出 JSON）当时只在 `wrangler pages dev` 本地跑过，
+> **没在线上部署跑过**。改路由后必须在线上部署上补跑这条，只看构建成功不算验证。
 
 ### 3.3 前端 URL 收口
 

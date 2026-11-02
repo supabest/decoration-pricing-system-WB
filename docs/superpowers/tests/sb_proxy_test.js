@@ -111,8 +111,18 @@ function ok(name, cond, extra) {
   ok('F4 函数只认一个固定上游 project 域',
     (fnSrcRaw.match(/lnvtykghcpsjpwczbqsm\.supabase\.co/g) || []).length >= 1);
   const routes = JSON.parse(read('frontend/public/_routes.json'));
-  ok('F5 _routes.json 只 include /sb/*，exclude /*（否则整站计入函数配额）',
-    routes.version === 1 && JSON.stringify(routes.include) === '["/sb/*"]' && JSON.stringify(routes.exclude) === '["/*"]',
+  // 官方规则：exclude 命中即走静态资源，优先级高于 include。
+  // 旧文件写的是 exclude:["/*"] —— /* 连 /sb/... 一起排除掉了，函数从不被调用，
+  // 线上表现为登录与集团库全部拿到 index.html（2026-11-02 事故）。断言因此按「路由行为」写，
+  // 而不是按字符串写死，否则同样的错误理解会被再钉一次。
+  const toRe = p => new RegExp('^' + String(p).replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+  const routedToFn = p => !(routes.exclude || []).some(re => toRe(re).test(p))
+    && (routes.include || []).some(re => toRe(re).test(p));
+  const staticPaths = ['/tool.html', '/index.html', '/assets/index-Bq4Pd6oN.js', '/benchmark_data.json', '/login'];
+  ok('F5 _routes.json：/sb/* 进函数且静态路径不进（exclude 不得盖住 /sb）',
+    routes.version === 1
+    && routedToFn('/sb/rest/v1/benchmark_items') && routedToFn('/sb/auth/v1/token')
+    && !staticPaths.some(routedToFn),
     JSON.stringify(routes));
   const cli = read('frontend/src/lib/supabaseClient.ts');
   ok('F6 React 客户端也走 /sb（supabase-js 需绝对 URL，用 location.origin 拼）',
