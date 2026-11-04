@@ -83,3 +83,6 @@ services/vector-db/data/
 # Celery
 celerybeat-schedule*
 subagent-log.txt
+
+# WorkBuddy 项目数据（本地记忆，不入库）
+.workbuddy/
