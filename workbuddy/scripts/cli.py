@@ -2,10 +2,12 @@
 
     python cli.py prepare <清单.xlsx> -o candidates.json      # 生成候选（不含价格）
     python cli.py apply candidates.json -o 结果.xlsx [--decisions d.json] [--auto]
+    python cli.py apply candidates.json -o 结果.xlsx --split   # 按分部分 sheet
+    python cli.py aux   candidates.json -o 辅材清单.xlsx [--decisions d.json] [--auto]
     python cli.py stats                                       # 快照统计
 
 保密设计：prepare 产出的候选只含编号/名称/规格/单位，不含任何价格字段；
-价格只在 apply 阶段从本地解密快照里读取，不进入模型上下文。
+价格只在 apply / aux 阶段从本地解密快照里读取，不进入模型上下文。
 """
 from __future__ import annotations
 
@@ -16,9 +18,11 @@ from functools import lru_cache
 from pathlib import Path
 
 import aux_rules
+import export_aux
 import export_xlsx
 import ingest
 import price
+import remarks
 import retrieve
 import snapshot
 
@@ -158,6 +162,8 @@ def cmd_apply(args) -> int:
         eff_waste = round((b["material"] / mat_base - 1) * 100, 2) if mat_base else 0.0
         out_rows.append({
             "seq": row["row_id"],
+            "sheet": row.get("sheet") or "未分类",
+            "section": row.get("section") or "",
             "name": row["name"],
             "spec": row["spec"],
             "unit": row["unit"],
@@ -172,14 +178,24 @@ def cmd_apply(args) -> int:
             "unit_price": b["unit_price"],
             "amount": b["amount"],
             "bid": ", ".join(f"{c}/{t}" for c, t in hit),
-            "remark": (d or {}).get("remark", "") if hit else "未匹配",
+            "remark": remarks.build_remark(
+                decision=d, picks=picks, hit=hit,
+                has_candidates=bool(row.get("candidates")),
+            ),
         })
 
     columns = args.columns.split(",") if args.columns else None
-    export_xlsx.export(out_rows, args.out, title="套价结果",
-                       preset=args.preset, columns=columns)
+    if args.split:
+        export_xlsx.export_split(out_rows, args.out, preset=args.preset,
+                                 columns=columns,
+                                 include_summary=not args.no_summary)
+    else:
+        export_xlsx.export(out_rows, args.out, title="套价结果",
+                           preset=args.preset, columns=columns)
     total = sum(r["amount"] for r in out_rows)
-    print(f"[apply] {len(out_rows)} 行，已匹配 {matched}，合计 {total:.2f} → {args.out}")
+    groups = len({r["sheet"] for r in out_rows}) if args.split else 1
+    print(f"[apply] {len(out_rows)} 行，已匹配 {matched}，{groups} 个分部，"
+          f"合计 {total:.2f} → {args.out}")
     return 0
 
 
@@ -188,6 +204,50 @@ def cmd_stats(args) -> int:
     s = snapshot.stats(data)
     for k, v in s.items():
         print(f"{k}: {v}")
+    return 0
+
+
+def cmd_aux(args) -> int:
+    """候选 + 决策 → 分工种辅材费用清单（P1）。
+
+    与 apply 共用 candidates / decisions / --auto，但只走辅材配方引擎：
+    不计算人工、主材与综合单价，也不把任何价格写进中间 JSON。
+    远端口径见 docs/tool.html 的 buildAuxExport() 与 backend/app/services/aux_export.py。
+    """
+    data = json.loads(Path(args.candidates).read_text(encoding="utf-8"))
+    decisions = (json.loads(Path(args.decisions).read_text(encoding="utf-8"))
+                 if args.decisions else {})
+    snap = snapshot.load_snapshot()
+
+    priced_rows = []
+    for row in data["rows"]:
+        d = decisions.get(str(row["row_id"]))
+        priced_rows.append({
+            "row_id": row["row_id"],
+            "name": row.get("name", ""),
+            "spec": row.get("spec", ""),
+            "unit": row.get("unit", ""),
+            "qty": row.get("qty", 0),
+            "picks": _picks(row, d, args.auto),
+        })
+
+    result = export_aux.build_aux_export(priced_rows, snap)
+    if not result["groups"] and not result["unclassified"]:
+        print("[aux] 无可导出的辅材数据（清单为空，或子目均无辅材配方）")
+        return 1
+
+    # 对账：明细合计 vs Σ(每单位清单量辅材费 × 工程量)，与远端 expectTotal 同口径
+    if abs(result["diff"]) > 0.01:
+        print(f"[aux] ⚠ 对账差额 {result['diff']:.2f} 元，请核查辅材配方与信息价")
+
+    export_aux.export_aux_workbook(
+        result, args.out,
+        project_name=args.project_name,
+        contract_amount=args.contract_amount,
+        target_profit_rate=args.target_profit_rate,
+    )
+    print(f"[aux] {len(result['groups'])} 个工种，{len(result['unclassified'])} 行未套子目，"
+          f"辅材合计 {result['grand_total']:.2f} → {args.out}")
     return 0
 
 
@@ -209,7 +269,23 @@ def main(argv=None) -> int:
                     help="导出列预设：client 对甲 / internal 对内 / labor 劳务")
     pa.add_argument("--columns", help="精确指定导出列 key，逗号分隔（优先级高于 --preset）")
     pa.add_argument("--auto", action="store_true", help="无决策时取候选第一名（基线模式）")
+    pa.add_argument("--split", action="store_true",
+                    help="按分部（源工作表）分 sheet，内部按章节插标题行")
+    pa.add_argument("--no-summary", action="store_true",
+                    help="--split 时不生成末尾「汇总」sheet")
     pa.set_defaults(func=cmd_apply)
+
+    px = sp.add_parser("aux", help="候选 + 决策 → 分工种辅材费用清单（P1）")
+    px.add_argument("candidates")
+    px.add_argument("-o", "--out", required=True)
+    px.add_argument("--decisions", help="行号→子目 的判定结果 JSON（与 apply 共用）")
+    px.add_argument("--auto", action="store_true", help="无决策时取候选第一名（基线模式）")
+    px.add_argument("--project-name", default="套价表", help="汇总 sheet 的项目名称")
+    px.add_argument("--contract-amount", type=float, default=0.0,
+                    help="合同额（>0 时汇总表追加「占总成本比例」列）")
+    px.add_argument("--target-profit-rate", type=float, default=0.0,
+                    help="目标利润率(%%)，与合同额共同推算成本基数")
+    px.set_defaults(func=cmd_aux)
 
     ps = sp.add_parser("stats", help="快照统计（不含定价）")
     ps.set_defaults(func=cmd_stats)

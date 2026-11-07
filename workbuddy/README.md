@@ -72,6 +72,15 @@ cd workbuddy
   -o 结果.xlsx --decisions work/decisions.json \
   --overrides work/overrides.json --preset client
 
+# 3b) 按分部分 sheet（S1：每个分部独立表头/合计，末尾追加「汇总」）
+.venv/bin/python scripts/cli.py apply work/candidates.json \
+  -o 分部分项.xlsx --decisions work/decisions.json --split
+
+# 4) 辅材费用清单（P1，与 apply 共用 candidates / decisions）
+.venv/bin/python scripts/cli.py aux work/candidates.json \
+  -o 辅材清单.xlsx --decisions work/decisions.json \
+  --project-name 项目名 --contract-amount 0 --target-profit-rate 0
+
 # 统计与回归
 .venv/bin/python scripts/cli.py stats
 .venv/bin/python -m pytest tests/ -q
@@ -88,8 +97,15 @@ cd workbuddy
 - 导出按远端 `EXP_COLS` 16 列对齐，另加 1 列「套用子目」；`client / internal / labor` 三套预设分别为完整 17 列、对甲 12 列、劳务 10 列，含合计行。
 - 详见 `docs/P0验收报告.md`。
 
+### S1 阶段成果（2026-11-07，分阶段交付第 1 期）
+
+- `apply --split`：按源工作表（分部）分 sheet，sheet 内按章节插标题行，每个分部独立表头与合计行，末尾「汇总」列各分部行数与合价；`--no-summary` 可关闭汇总。口径对齐 `backend/app/services/excel_export.py` 的 `_generate_split()`。
+- 备注分级：`未套价：无候选子目` / `未套价：待判定子目` / `子目缺失` / `部分子目缺失(n/m)` / `低置信度`，决策里显式写的备注优先。口径对齐远端 `buildSplitExport()` 的 reason。
+- 回归 `126 passed + 15 skipped`；拆表形态与单表形态的合计逐次对账一致。
+
 ### 未闭合 / 后续
 
 - 主材价当前为 0：能力已打通，缺真实价目或供应商报价导入。
 - 尚无线上导出的清单报价表，未做字节级 / 逐行线上对比。
-- P1 待办：供应商报价导入、拆表与备注、模板导出、辅材清单导出、知识库、一致性校验。
+- P1 已实现：辅材清单导出（`cli.py aux`）、拆表与备注分级（`apply --split`）。
+- P1 待办：供应商报价导入、模板导出、知识库、一致性校验（后两项需用户提供样例/模板）。

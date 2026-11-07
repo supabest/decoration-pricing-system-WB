@@ -80,8 +80,22 @@ cd ~/.workbuddy/skills/decoration-pricing
 | `--preset` | 导出列预设：`client` 对甲 / `internal` 对内 / `labor` 劳务 |
 | `--columns` | 精确指定列 key，逗号分隔，优先级高于 `--preset` |
 | `--auto` | 无决策时取候选第一名（仅作基线，不要用于正式报价） |
+| `--split` | 按源工作表（分部）分 sheet，内部按章节插标题行，末尾追加「汇总」sheet（S1） |
+| `--no-summary` | `--split` 时不生成末尾「汇总」sheet |
 
 产出报价表：**远端 16 列 + 1 列「套用子目」扩展**，末行为合计。16 列为序号/编号/项目名称/项目特征/单位/工程量/人工单价/主材单价/主材费/主材损耗率/辅材费/管理费/利润/综合单价/合价/备注。内部口径管理费与利润恒为 0。
+
+**备注自动生成（S1）**：未套价分「无候选子目」与「待判定子目」；决策给了编号但快照查不到标「子目缺失」；多子目只部分命中给 `n/m`；`confidence < 60` 标「低置信度，建议复核」。决策里显式写的 `remark` 优先，不被覆盖。判定子目时拿不准的行**不写**，让 `apply` 自动标注原因供人复核。
+
+### 第 4 段 · 辅材费用清单（P1，可选）
+
+```bash
+.venv/bin/python scripts/cli.py aux work/candidates.json -o 辅材清单.xlsx \
+  --decisions work/decisions.json --project-name 项目名 \
+  --contract-amount 0 --target-profit-rate 0
+```
+
+与 `apply` 共用 `candidates / decisions / --auto`，但只走辅材配方引擎，不计算人工、主材与综合单价。按工种分 sheet：品种行按合价降序、固定辅材费包干行置尾；未套子目单列供人工补费；末尾「辅材汇总」含材料费 / 固定费 / 合计，`--contract-amount > 0` 时追加「占总成本比例」。远端口径见 `docs/tool.html` 的 `buildAuxExport()` 与 `backend/app/services/aux_export.py`。
 
 ## 计价口径（不得改动）
 
@@ -109,7 +123,7 @@ cd ~/.workbuddy/skills/decoration-pricing
 ## 保密红线
 
 - 不把基准价明细写进任何可分发文档、对话回复或导出文件之外的地方
-- 只有 `apply` 阶段才从快照读价格；`prepare` 的候选 JSON 里绝不能出现 `unit_price` / `price` 字段
+- 只有 `apply` / `aux` 阶段才从快照读价格；`prepare` 的候选 JSON 里绝不能出现 `unit_price` / `price` 字段
 - 汇报结果时只给汇总金额与匹配率，不逐条罗列定价
 
 ## 已知限制
@@ -119,12 +133,12 @@ cd ~/.workbuddy/skills/decoration-pricing
 - 一条清单行可挂多个子目，但**每个子目只套一个基准价编号**（不自动拆面层/基层）
 - 主材价默认 0，需用 `--overrides` 或子目自带 `mat_price` 提供；辅材已实现 FIXED / RATE / GROUP 三型
 - 编号格式差异（`NS-01` vs `NS-1`）不做模糊匹配，必须精确
-- 拆表、模板导出、辅材清单导出、供应商报价导入属 P1，尚未实现
+- 模板导出、供应商报价导入属 P1，尚未实现（需用户提供模板/报价表样例）；拆表与备注分级（`apply --split`）、辅材清单导出（`cli.py aux`）已实现
 - 召回只做文本相似度，**尺寸/厚度类判断留给模型**（如「100*100 线槽」需按宽+高=200mm 选档）
 - 源清单本身的错误（如名称写「墙布硬包」而特征写成灯槽）无法自动识别，需人工复核
 
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests/ -q     # 103 项
+.venv/bin/python -m pytest tests/ -q     # 126 passed + 15 skipped
 ```
