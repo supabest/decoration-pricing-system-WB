@@ -4,10 +4,14 @@
     python cli.py apply candidates.json -o 结果.xlsx [--decisions d.json] [--auto]
     python cli.py apply candidates.json -o 结果.xlsx --split   # 按分部分 sheet
     python cli.py aux   candidates.json -o 辅材清单.xlsx [--decisions d.json] [--auto]
+    python cli.py kb    [-o work/kb_prompt.txt]                # 脱敏知识库提示块
+    python cli.py check candidates.json --decisions d.json -o consistency.json
     python cli.py stats                                       # 快照统计
 
 保密设计：prepare 产出的候选只含编号/名称/规格/单位，不含任何价格字段；
 价格只在 apply / aux 阶段从本地解密快照里读取，不进入模型上下文。
+kb 默认只打印到 stdout（不落盘），提示块已剔除源库中的定价金额；
+check 只产出一致性 JSON 报告，不自动补全、不上报、不写任何价格。
 """
 from __future__ import annotations
 
@@ -21,9 +25,11 @@ import aux_rules
 import export_aux
 import export_xlsx
 import ingest
+import knowledge
 import price
 import remarks
 import retrieve
+import similarity
 import snapshot
 
 TOP_N = 40
@@ -69,6 +75,14 @@ def cmd_prepare(args) -> int:
         })
     Path(args.out).write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"[prepare] {len(out['rows'])} 行 → {args.out}")
+
+    # 可选：额外写出脱敏知识库提示块。不传时 candidates.json 结构与 P0 完全一致。
+    if getattr(args, "knowledge_out", None):
+        kb = knowledge.load_knowledge()
+        Path(args.knowledge_out).write_text(
+            knowledge.build_prompt_block(kb), encoding="utf-8")
+        print(f"[prepare] 知识库提示块（{kb['total']} 条，脱敏 {kb['sanitized_count']} 条）"
+              f" → {args.knowledge_out}")
     return 0
 
 
@@ -251,6 +265,40 @@ def cmd_aux(args) -> int:
     return 0
 
 
+def cmd_kb(args) -> int:
+    """输出脱敏知识库提示块，供模型判子目时读入。
+
+    默认只打印到 stdout（零落盘、零误提交）；-o 才写文件。
+    源 JSON 里 7 条含价规则已改写，且 assert_no_pricing 会拦截新增含价条目。
+    """
+    kb = knowledge.load_knowledge(args.kb)
+    block = knowledge.build_prompt_block(kb)
+    if args.kb_out:
+        Path(args.kb_out).write_text(block, encoding="utf-8")
+        print(f"[kb] {kb['total']} 条规则（脱敏 {kb['sanitized_count']} 条）→ {args.kb_out}")
+    else:
+        print(block)
+    return 0
+
+
+def cmd_check(args) -> int:
+    """候选 + 决策 → 相似清单一致性 JSON 报告（只校验，不补全、不上报）。"""
+    data = json.loads(Path(args.candidates).read_text(encoding="utf-8"))
+    decisions = (json.loads(Path(args.decisions).read_text(encoding="utf-8"))
+                 if args.decisions else {})
+    items = similarity.build_check_items(data, decisions, args.default_confidence)
+    if args.group_by:
+        report = similarity.check_consistency_by_domain(items, args.group_by,
+                                                        args.threshold)
+    else:
+        report = similarity.check_consistency(items, args.threshold)
+    Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+    print(f"[check] {report['total_items']} 行，{report['groups_found']} 个相似组，"
+          f"{report['warnings_count']} 条警告 → {args.out}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="decoration-pricing")
     sp = p.add_subparsers(dest="cmd", required=True)
@@ -258,7 +306,26 @@ def main(argv=None) -> int:
     pp = sp.add_parser("prepare", help="BOQ → 候选清单（不含价格）")
     pp.add_argument("boq")
     pp.add_argument("-o", "--out", required=True)
+    pp.add_argument("--knowledge-out",
+                    help="额外写出脱敏知识库提示块（不传则候选结构不变）")
     pp.set_defaults(func=cmd_prepare)
+
+    pk = sp.add_parser("kb", help="输出脱敏知识库提示块（默认 stdout，不落盘）")
+    pk.add_argument("--kb", help="源知识库 JSON 路径（默认仓库 docs/ai_knowledge_base.json）")
+    pk.add_argument("-o", "--kb-out", help="写出提示块到指定路径（默认只打印到 stdout）")
+    pk.set_defaults(func=cmd_kb)
+
+    pc = sp.add_parser("check", help="相似清单一致性校验 → JSON 报告（只校验）")
+    pc.add_argument("candidates")
+    pc.add_argument("-o", "--out", required=True)
+    pc.add_argument("--decisions", help="行号→子目 判定结果 JSON（不传则全部视为未套价）")
+    pc.add_argument("--group-by", choices=["sheet", "section"],
+                    help="按源工作表/章节收窄比较域")
+    pc.add_argument("--threshold", type=float, default=0.90,
+                    help="相似度阈值，默认 0.90")
+    pc.add_argument("--default-confidence", type=int, default=100,
+                    help="decisions 无 confidence 字段时的默认置信度，默认 100")
+    pc.set_defaults(func=cmd_check)
 
     pa = sp.add_parser("apply", help="候选 + 决策 → 计价 → Excel")
     pa.add_argument("candidates")
