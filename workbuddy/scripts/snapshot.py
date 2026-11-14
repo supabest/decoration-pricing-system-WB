@@ -91,7 +91,9 @@ def load_snapshot(path=None) -> dict:
 
     调用方是套价候选池，抛异常会把「兜底数据不可用」放大成整体失败。
     """
-    p = Path(path) if path else DEFAULT_SNAPSHOT
+    # 数据不随包走：clone 后可用 BENCHMARK_SNAPSHOT_PATH 指向自备密文，
+    # 密钥由 BENCHMARK_SNAPSHOT_KEY 环境变量注入，两者都不写进仓库。
+    p = Path(path or os.environ.get("BENCHMARK_SNAPSHOT_PATH") or DEFAULT_SNAPSHOT)
     try:
         data = unseal_text(p.read_text(encoding="utf-8"))
     except FileNotFoundError:

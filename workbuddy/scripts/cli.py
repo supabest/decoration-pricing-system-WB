@@ -9,7 +9,9 @@
     python cli.py stats                                       # 快照统计
 
 保密设计：prepare 产出的候选只含编号/名称/规格/单位，不含任何价格字段；
-价格只在 apply / aux 阶段从本地解密快照里读取，不进入模型上下文。
+价格只在 apply / aux 阶段从统一数据源读取，不进入模型上下文。
+数据源由 WB_PRICING_SOURCE 选择：supabase = 项目公共授权直连云端价表（多人协作默认），
+snapshot = 本地加密快照（离线兜底）。云端失败不会静默回退旧价。
 kb 默认只打印到 stdout（不落盘），提示块已剔除源库中的定价金额；
 check 只产出一致性 JSON 报告，不自动补全、不上报、不写任何价格。
 """
@@ -22,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import aux_rules
+import datasource
 import export_aux
 import export_xlsx
 import ingest
@@ -48,12 +51,12 @@ def _aux_cost(item, price_lib=None) -> float:
 
 @lru_cache(maxsize=1)
 def _default_price_lib() -> dict:
-    return snapshot.load_snapshot().get("material_prices") or {}
+    return datasource.load_snapshot().get("material_prices") or {}
 
 
 def cmd_prepare(args) -> int:
     rows = ingest.parse_boq(args.boq)
-    items = snapshot.load_snapshot()["benchmark_items"]
+    items = datasource.load_snapshot()["benchmark_items"]
     out = {"source": str(args.boq), "generated_at": _now(), "rows": []}
     for i, r in enumerate(rows, start=1):
         cands = retrieve.build_candidates(r["name"], r["spec"], r["unit"], items)[:TOP_N]
@@ -152,7 +155,7 @@ def cmd_apply(args) -> int:
     decisions = json.loads(Path(args.decisions).read_text(encoding="utf-8")) if args.decisions else {}
     overrides = json.loads(Path(args.overrides).read_text(encoding="utf-8")) if args.overrides else {}
 
-    snap = snapshot.load_snapshot()
+    snap = datasource.load_snapshot()
     index = {retrieve.identify(i): i for i in snap["benchmark_items"]}
     waste_rates = snap.get("waste_rates") or {}
     price_lib = snap.get("material_prices") or {}
@@ -214,7 +217,7 @@ def cmd_apply(args) -> int:
 
 
 def cmd_stats(args) -> int:
-    data = snapshot.load_snapshot()
+    data = datasource.load_snapshot()
     s = snapshot.stats(data)
     for k, v in s.items():
         print(f"{k}: {v}")
@@ -231,7 +234,7 @@ def cmd_aux(args) -> int:
     data = json.loads(Path(args.candidates).read_text(encoding="utf-8"))
     decisions = (json.loads(Path(args.decisions).read_text(encoding="utf-8"))
                  if args.decisions else {})
-    snap = snapshot.load_snapshot()
+    snap = datasource.load_snapshot()
 
     priced_rows = []
     for row in data["rows"]:
@@ -299,6 +302,41 @@ def cmd_check(args) -> int:
     return 0
 
 
+def cmd_probe(args) -> int:
+    """云端连通性体检：只输出表是否存在、行数、字段名，绝不输出价格。"""
+    try:
+        rows = datasource.probe()
+    except datasource.SourceError as exc:
+        print(f"[probe] 连接失败：{exc}")
+        return 1
+    print(f"[probe] 当前数据源={datasource.source_name()} | REST 地址已配置="
+          f"{'是' if datasource._env('url') else '否'}")
+    print(f"{'表':<26}{'状态':<12}{'行数':>8}  字段(前 8)")
+    bad = []
+    for r in rows:
+        print(f"{r['table']:<26}{r.get('status', ''):<12}"
+              f"{str(r.get('count', '?')):>8}  {','.join(r.get('fields', [])[:8])}")
+        if r.get("status") != "ok" or not r.get("fields"):
+            bad.append(r["table"])
+    if bad:
+        print(f"[probe] ⚠ 需关注：{', '.join(bad)}（缺失或无可读行，按接入文档补库 / 检查授权身份）")
+        return 2
+    print("[probe] 云端价表全部可读")
+    return 0
+
+
+def cmd_sync_seeds(args) -> int:
+    """一次性把云端缺失的损耗率 / 辅材数据补进 Supabase（需管理员令牌）。"""
+    try:
+        result = datasource.sync_seeds()
+    except datasource.SourceError as exc:
+        print(f"[sync-seeds] 失败：{exc}")
+        return 1
+    for table, info in result.items():
+        print(f"[sync-seeds] {table}: {info['rows']} 行 → HTTP {info['status']}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="decoration-pricing")
     sp = p.add_subparsers(dest="cmd", required=True)
@@ -354,8 +392,14 @@ def main(argv=None) -> int:
                     help="目标利润率(%%)，与合同额共同推算成本基数")
     px.set_defaults(func=cmd_aux)
 
-    ps = sp.add_parser("stats", help="快照统计（不含定价）")
+    ps = sp.add_parser("stats", help="数据源统计（不含定价）")
     ps.set_defaults(func=cmd_stats)
+
+    pb = sp.add_parser("probe", help="Supabase 云端连通性体检（只读，不输出价格）")
+    pb.set_defaults(func=cmd_probe)
+
+    py = sp.add_parser("sync-seeds", help="一次性补齐云端缺失的损耗率/辅材表（需管理员令牌）")
+    py.set_defaults(func=cmd_sync_seeds)
 
     args = p.parse_args(argv)
     return args.func(args)

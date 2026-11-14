@@ -49,7 +49,7 @@ def _row(row_id, qty, candidates):
 
 def test_cli_aux_exports_workbook(tmp_path, monkeypatch):
     """--auto 取候选第一名 → 分工种 sheet + 辅材汇总 + 未套子目清单。"""
-    monkeypatch.setattr(cli.snapshot, "load_snapshot", lambda path=None: _snap())
+    monkeypatch.setattr(cli.datasource, "load_snapshot", lambda path=None: _snap())
     cands = _write_candidates(tmp_path / "candidates.json", [
         _row(1, 3, [{"code": "X-1", "team": "泥水班组", "item_name": "虚构子目",
                      "spec": "", "unit": "m2"}]),
@@ -85,7 +85,7 @@ def test_cli_aux_help_renders_all_options(capsys):
 
 def test_cli_aux_empty_candidates_returns_nonzero(tmp_path, monkeypatch, capsys):
     """空清单不产生空工作簿，明确返回非零并给出提示。"""
-    monkeypatch.setattr(cli.snapshot, "load_snapshot", lambda path=None: _snap([]))
+    monkeypatch.setattr(cli.datasource, "load_snapshot", lambda path=None: _snap([]))
     cands = _write_candidates(tmp_path / "empty.json", [])
     out = tmp_path / "aux.xlsx"
 

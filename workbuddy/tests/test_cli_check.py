@@ -164,7 +164,7 @@ def test_prepare_knowledge_out_does_not_change_candidates(tmp_path, monkeypatch)
     monkeypatch.setattr(cli.ingest, "parse_boq", lambda path: [{
         "sheet": "A分部", "section": "地面", "name": "虚构墙面乳胶漆",
         "spec": "刮腻子三遍", "unit": "m2", "qty": 1.0}])
-    monkeypatch.setattr(cli.snapshot, "load_snapshot", lambda path=None: {
+    monkeypatch.setattr(cli.datasource, "load_snapshot", lambda path=None: {
         "benchmark_items": [], "waste_rates": {}, "material_prices": {},
         "aux_excel_items": [], "generated_at": "2026-01-01T00:00:00+00:00"})
 
