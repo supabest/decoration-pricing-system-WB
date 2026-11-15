@@ -3,9 +3,9 @@ name: decoration-pricing
 display_name: "装修套价"
 display_name_en: "Decoration Pricing"
 version: 1.0.0
-description: 装修工程量清单套价与报价。当用户提供 BOQ 清单（Excel/CSV）、要求「套价 / 套定额 / 匹配基准价 / 出报价表 / 算综合单价 / 工程量清单报价」时使用。本地离线运行，基准价来自加密快照，不依赖任何外部 API Key。
-description_zh: 装修工程量清单套价与报价。读取 Excel/CSV 清单，按 497 条企业基准价匹配子目，计算人工+主材+辅材综合单价，导出带合价的报价表。本地离线运行，无需外部 API Key。适用于「套价 / 套子目 / 匹配基准价 / 工程量清单报价 / 算综合单价」。
-description_en: Decoration BOQ pricing. Read an Excel/CSV bill of quantities, match each line to the 497-item internal benchmark price list, compute comprehensive unit price (labour + main material + auxiliary material) and export a priced quotation workbook. Runs fully offline from an encrypted local snapshot with no external API key.
+description: 装修工程量清单套价、报价与成本分析。当用户提供 BOQ 清单（Excel/CSV）、要求「套价 / 套定额 / 匹配基准价 / 出报价表 / 算综合单价 / 成本分析」时使用。本项目为 WorkBuddy 多人协作项目：基准价只存于 Supabase 云端，经项目公共授权在线拉取，成员无需数据库账号，产物存项目资产。
+description_zh: 装修工程量清单套价与报价。读取 Excel/CSV 清单，按企业基准价匹配子目，计算人工+主材+辅材综合单价，导出报价表并做成本分析。数据源是用户 Supabase 账号下的云端价表（项目公共授权一次，全项目共用），价表只在进程内存、不落盘；离线加密快照仅为可选兜底。适用于「套价 / 套子目 / 匹配基准价 / 工程量清单报价 / 算综合单价 / 成本分析」。
+description_en: Decoration BOQ pricing for a multi-member WorkBuddy project. Reads an Excel/CSV bill of quantities, matches items to the internal benchmark price list, computes comprehensive unit price (labour + main material + auxiliary material), exports a quotation and performs cost analysis. Prices live in the user's Supabase project and are fetched at runtime via one project-level shared authorization; members need no database account and price data never touches disk. An encrypted local snapshot is only an optional fallback.
 agent_created: true
 ---
 
@@ -19,16 +19,32 @@ agent_created: true
 
 不适用：集团 296 条对甲报价（管理费 17%、利润 12%，口径不同，属二期）。
 
+## 运行位置与数据源
+
+本技能是 **WorkBuddy 项目 Skill**（项目配置 → 技能，云端统一管理，双端可用），不是个人本地技能。项目成员共用同一份代码与同一份云端价表。
+
+| 项 | 落点 |
+|---|---|
+| 价表 / 主材 / 辅材规则 | 用户 Supabase 账号，云端唯一一份 |
+| 身份 | Supabase 专用只读账号（authenticated，仅价表表 SELECT，非 service_role） |
+| 授权 | 项目配置里**一次公共授权**，凭据由平台云端代持；不落本地、不进对话 / 仓库 |
+| 同事 | 只需是项目成员，不需要 Supabase 账号，看不到任何凭据 |
+| 清单 / 报价 / 成本分析产物 | **项目资产**（云端 5GB，成员共享） |
+
+架构唯一基线见 `docs/系统设计-最终架构.md`；管理员配置步骤见 `docs/Supabase平台接入说明.md` 与 `sql/wb_readonly_access.sql`。
+
 ## 怎么被调用
 
 用户可以说「帮我把这份清单套价」并给出文件路径，也可显式输入 `/decoration-pricing`。
-以下是本文件里的命令约定：**均在技能根目录执行**
+以下命令在技能根目录执行（项目 Skill 展开后的目录，或 clone 后的 `workbuddy/`）：
 
 ```bash
-cd ~/.workbuddy/skills/decoration-pricing
+cd <技能根目录>
 ```
 
-（`scripts/*.py` 自身按 `__file__` 定位数据，换目录也能跑，但相对路径的 `.venv/bin/python` 与 `work/` 需要固定 cwd。）
+`scripts/*.py` 自身按 `__file__` 定位代码；价表由 `datasource.py` 在线拉取，不依赖任何本地数据文件。相对路径的 `.venv/bin/python` 与 `work/` 需要固定 cwd。
+
+**主路径必须设置 `WB_PRICING_SOURCE=supabase`**；不设时沿用 `snapshot`（离线兜底），仅用于调试。云端取数失败会明确报错，不会静默用旧价。
 
 ## 工作流（主链三段 + 可选能力，文件进文件出）
 
@@ -134,39 +150,51 @@ cd ~/.workbuddy/skills/decoration-pricing
 
 **内部口径不含管理费与利润。** 管理费 17% / 利润 12% 是集团 296 条对甲报价的算法，不要套到这里。
 
-## 数据与密钥
+## 数据源（云端为主）
 
-| 项 | 位置 |
+| 项 | 说明 |
 |---|---|
-| 基准价密文 | `data/benchmark_snapshot.enc`：497 基准价 + 475 损耗率 + 21 辅材信息价 + 497 辅材清单项 |
-| 密钥 | `.env` 的 `BENCHMARK_SNAPSHOT_KEY`，或同名环境变量 |
-| 重建快照 | `.venv/bin/python scripts/build_snapshot.py`（从仓库 `data/seeds/` 只读取数） |
+| 唯一数据源 | Supabase：人工基准价、集团基准价、辅材信息价、辅材规则、主材三表、损耗率、映射表 |
+| 取数入口 | `scripts/datasource.py` 的 `load_snapshot()`；`cli.py` 与计价脚本只调它 |
+| 切换 | `WB_PRICING_SOURCE=supabase`（主路径）/ `snapshot`（离线兜底） |
+| 注入变量 | `WB_SUPABASE_URL`、`WB_SUPABASE_ANON_KEY`、`WB_SUPABASE_TOKEN`（或专用账号邮箱 / 口令换令牌） |
+| 体检 | `.venv/bin/python scripts/cli.py probe`（只报表状态 / 行数 / 字段名，不输出价格） |
 | 校验 | `.venv/bin/python scripts/cli.py stats` |
+| 补库 | `.venv/bin/python scripts/cli.py sync-seeds`（需一次性管理员令牌，用完清除） |
 
-密文可随 skill 分发；密钥不随包走。无密钥时 `stats` 会返回 0 条。
-**集团 296 条不在快照内**（二期），重建脚本也不会纳入。
+凭据由项目公共授权的环境注入，**不写进 `.env`、不进仓库、不进对话、不进模型上下文**。变量名清单与兼容别名见 `datasource.py` 文件头、`.env.example` 与 `docs/Supabase平台接入说明.md`。
+
+**离线兜底（可选，不是主路径）**：`data/benchmark_snapshot.enc` + `BENCHMARK_SNAPSHOT_KEY`（或 `BENCHMARK_SNAPSHOT_PATH`）仅供本机调试 / 断网演练；云端失败必须显式设 `WB_PRICING_FALLBACK=1` 才允许回退。密文与密钥不随项目 Skill 分发。`build_snapshot.py` 从仓库 `data/seeds/` 只读取数重建密文。**集团 296 条不在快照内**（二期）。
 
 ## 保密红线
 
 - 不把基准价明细写进任何可分发文档、对话回复或导出文件之外的地方
-- 只有 `apply` / `aux` 阶段才从快照读价格；`prepare` 的候选 JSON 里绝不能出现 `unit_price` / `price` 字段
-- `kb` 提示块、`prepare --knowledge-out` 产物与 `check` 报告都不得出现任何金额 / 单价；模块内置 fail-closed 守卫，测试用正则兜底
-- 汇报结果时只给汇总金额与匹配率，不逐条罗列定价
+- 价表**只在进程内存**：运行时在线拉取，不落盘、不写日志、不进仓库、不进 prompt
+- 凭据由平台公共授权代持：**不给 AI、不给同事、不写文件、不贴对话**；禁止用 `service_role` 作为日常取数身份
+- 只有 `apply` / `aux` / `analyze` 阶段才用价格；`prepare` 的候选 JSON 里绝不能出现 `unit_price` / `price` 字段
+- `kb` 提示块、`prepare --knowledge-out` 产物、`check` 报告与成本分析报告都不得出现逐条金额 / 单价；模块内置 fail-closed 守卫，测试用正则兜底
+- 报价表属机密产物，只写**项目资产**，不生成成本地 xlsx 交付、不进 git
+- 汇报结果时只给汇总金额、匹配率、占比与异常清单，不逐条罗列定价
+- 每次 push 前复核 staged 清单无 `.env` / `.enc` / `*.xlsx` / 明文价表；只推 `dev`
 
 ## 已知限制
 
 - 清单格式：当前适配「多级表头 + 纵向合并」与「单行表头」两类；其他格式需先看结构再接
 - **表头可能折行**（如 `计量\n单位`），列名匹配已做空白归一化
 - 一条清单行可挂多个子目，但**每个子目只套一个基准价编号**（不自动拆面层/基层）
-- 主材价默认 0，需用 `--overrides` 或子目自带 `mat_price` 提供；辅材已实现 FIXED / RATE / GROUP 三型
+- **主材价当前仍为 0**：主材三表已在库但未建立「子目 ↔ 主材」映射，属系统设计阶段 2；在映射完成前必须显式标注「主材价待补」，禁止静默按 0 出表。现阶段可用 `--overrides` 或子目自带 `mat_price` 提供；辅材已实现 FIXED / RATE / GROUP 三型
 - 编号格式差异（`NS-01` vs `NS-1`）不做模糊匹配，必须精确
-- 已交付：拆表与备注分级（`apply --split` / `--no-summary`）、辅材清单导出（`cli.py aux`）、知识库脱敏注入（`cli.py kb` / `prepare --knowledge-out`）、相似清单一致性校验（`cli.py check`）
-- 模板导出、供应商报价导入尚未实现（需用户提供公司模板 / 报价表样例）；云端草稿、AI 并发与失败上报属网页平台域，离线版明确不做
+- 已交付：拆表与备注分级（`apply --split` / `--no-summary`）、辅材清单导出（`cli.py aux`）、知识库脱敏注入（`cli.py kb` / `prepare --knowledge-out`）、相似清单一致性校验（`cli.py check`）、云端取数层（`cli.py probe` / `sync-seeds`）
+- **成本分析（`cli.py analyze`）与产物写项目资产属阶段 3，尚未实现**；规格见 `docs/系统设计-最终架构.md` §8 / §9
+- 模板导出、供应商报价导入尚未实现（需用户提供公司模板 / 报价表样例）；网页平台的云端草稿、AI 并发与失败上报不在本项目范围
+- 本应用是 WorkBuddy 会话式应用，**不做网页前端、不依赖 Render / Pages 网页**；`/sb` 反代仅在云端直连验证通过前作为纯数据通道
 - 召回只做文本相似度，**尺寸/厚度类判断留给模型**（如「100*100 线槽」需按宽+高=200mm 选档）
 - 源清单本身的错误（如名称写「墙布硬包」而特征写成灯槽）无法自动识别，需人工复核
 
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests/ -q     # 169 passed + 15 skipped
+.venv/bin/python -m pytest tests/ -q --basetemp=<工作区内临时目录>   # 198 passed
 ```
+
+全量回归需要离线兜底夹具（自备 `BENCHMARK_SNAPSHOT_KEY` 与 `BENCHMARK_SNAPSHOT_PATH`，或云端环境变量）；`--basetemp` 指向工作区内目录以绕开沙箱对 `tmp_path` 的限制。云端数据源的契约测试见 `tests/test_datasource.py`。

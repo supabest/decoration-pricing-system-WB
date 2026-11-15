@@ -31,6 +31,8 @@ Supabase（唯一数据源：人工 + 辅材 + 主材基准价，RLS 只允许 a
 - 清单、报价表、成本分析结果存**项目资产**（云端），不生成本地 xlsx。
 - 旧 Pages / Render 不参与新链路，是否下线另行决定，本项目不改动它们。
 
+> **架构唯一基线**：`docs/系统设计-最终架构.md`（六层落点、数据契约、成本分析规格、项目资产规范、阶段路线与验收）。本文只负责接入配置。
+
 ## 三、配置步骤（管理员操作，共 4 步）
 
 ### 1. Supabase 建专用只读账号
@@ -38,6 +40,15 @@ Supabase（唯一数据源：人工 + 辅材 + 主材基准价，RLS 只允许 a
 Dashboard → Authentication → Add user，用专用邮箱（如 `wb-readonly@<公司域>`），勾选 **Auto Confirm**。
 这是普通 `authenticated` 用户，**不要给 service_role**。既有读策略是 `TO authenticated USING (true)`，
 该账号自动可读全部价表；不建任何写策略，因此改不了价。可随时在 Dashboard 删除该用户完成撤销。
+
+**「只给专用账号读」的两档处理**（详见 `sql/wb_readonly_access.sql` 与系统设计 §3.3）：
+
+| 档 | 做法 | 触发条件 |
+|---|---|---|
+| **A 档（当前默认）** | 不改既有读策略。专用账号是唯一被平台代持的身份，无写权限、可随时撤销 | 立即生效，配公共授权即可 |
+| **B 档（强隔离）** | 白名单表 + `is_pricing_reader()`，把 12 张价表 SELECT 策略改为仅白名单账号可读 | **旧网页确认停用后**；会让旧网页普通登录用户读不到价表 |
+
+Supabase 的 `authenticated` 是共享角色，无法按账号做表级 GRANT，所以严格意义上的「只给专用账号」在行级只能靠 B 档实现。B 档脚本已备好但**不自动执行**。
 
 > 若平台连接器复用网页登录态并校验 `profiles.is_approved`，需给此账号在 `profiles` 补一行
 > `is_approved = true`；纯 REST + JWT 不需要。
@@ -111,9 +122,13 @@ WB_PRICING_SOURCE=supabase python cli.py stats
   因此 `main` 历史明文价表不会因加人而外泄。
 - 禁止使用 `service_role` 作为日常取数身份（绕 RLS）。
 
-## 七、仍待完成（阶段 2 / 3）
+## 七、后续阶段（规格已定稿，见系统设计 §7 / §8 / §12）
 
-1. **主材映射**：`main_material_prices` / `main_material_catalog` 已在 `load_snapshot()` 中带入内存，
-   但「子目 ↔ 主材」匹配规则尚未建立。当前 497 条基准价 `mat_price` 仍为 0，主材费缺失是最大成本失真来源。
-2. **成本分析模块**：三费构成、占比、单方造价、与合同额/目标成本偏差、异常行清单，尚未实现。
-3. **历史匿名面**：`profiles` / `pricing_failures` 的匿名 SELECT 收紧（SQL 里已备好注释段，待旧网页停用后执行）。
+| 阶段 | 待办 | 规格位置 |
+|---|---|---|
+| 2 三费补全 | `main_material_prices` / `main_material_catalog` 已带入内存，但「子目 ↔ 主材」映射未建立；当前 `mat_price` 仍为 0，是最大成本失真来源。缺价行须显式标注，禁止静默按 0 | 系统设计 §7.1 |
+| 3 成本分析 | `analysis.py` + `cli.py analyze`：三费构成与占比、按班组/分部汇总、单方造价、目标对比、异常行清单；`sink` 抽象把产物写项目资产 | 系统设计 §8 / §9 |
+| B 档 / 匿名面 | `profiles` / `pricing_failures` 匿名 SELECT 收紧，与 12 张价表白名单策略一并执行 | `sql/wb_readonly_access.sql` ⑤、系统设计 §3.3 |
+| 4 多人验收 | 配项目 Skill、邀请成员、第二位成员零配置跑同一清单结果一致 | 系统设计 §10 / §12 |
+
+以上均为**实现与平台动作**，架构不再变动；实施时直接按规格开工，不需要重新确认数据放哪、身份怎么授权。

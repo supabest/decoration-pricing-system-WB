@@ -1,23 +1,31 @@
-# WorkBuddy 会话式套价应用 · P0 → S2 阶段成果
+# WorkBuddy 平台自动套价 · 最终架构实现
 
-本目录是「在 WorkBuddy 会话内完成自动套价 / 报价 / 输出报表」的实现，与仓库原有的 FastAPI + React 网页应用**并行、互不依赖**：不启动后端、不连接 Supabase、不改动 Pages 部署。
+本目录是「在 WorkBuddy 会话内完成自动套价 / 报价 / 成本分析」的实现，按 2026-11-15 定死的六层架构建设：**基准价只在用户 Supabase 云端唯一一份；项目公共授权一次、全体成员共用；技能为项目 Skill；产物存项目资产**。
+
+**这不是网页工具**：不需要网页前端，不需要 Render / FastAPI 运算后端，不改动 Pages 部署。仓库原有的 FastAPI + React 网页应用与本目录无依赖关系。
+
+> 架构唯一基线：[`docs/系统设计-最终架构.md`](docs/系统设计-最终架构.md)；管理员配置：[`docs/Supabase平台接入说明.md`](docs/Supabase平台接入说明.md)。
 
 ## 设计要点
 
-- **确定性脚本负责算价**：候选召回、计价、Excel 导出全部由 `scripts/*.py` 完成，模型只判断「该套哪个子目」。
+- **确定性脚本负责算价**：候选召回、三费计价、导出、成本分析全部由 `scripts/*.py` 完成，模型只判断「该套哪个子目」。
 - **模型不接触价格**：`prepare` 产出的候选 JSON 只含编号 / 名称 / 规格 / 单位，没有任何价格字段。
-- **主链三段式文件进文件出**：`prepare`（候选）→ 模型写 `decisions.json` → `apply`（出报价表）；另有 `aux` 辅材清单、`kb` 知识库提示块、`check` 一致性校验三个可选旁路命令，不改变主链产物。
-- **数据不随包走**：代码与测试入库，价表数据、密钥、报价结果一律不入库。详见下节。
+- **价表云端在线拉取**：`datasource.py` 经项目公共授权读 Supabase REST，价表只在进程内存、不落盘；云端失败明确报错，不静默用旧价。
+- **主链三段式**：`prepare`（候选）→ 模型写 `decisions.json` → `apply`（出报价表）；另有 `aux` / `kb` / `check` / `analyze` 等旁路能力。
+- **数据不随包走**：代码、测试、文档、DDL 入库；价表、密钥、报价产物一律不入库，产物只写项目资产。
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `SKILL.md` | WorkBuddy 技能定义、调用方式、决策格式与口径说明 |
-| `scripts/` | 12 个脚本：快照 / 重建、召回、计价、清单解析、单表与拆表导出、辅材规则与辅材清单、备注分级、知识库脱敏、一致性校验、CLI |
-| `tests/` | 19 个测试模块 + `conftest.py`，覆盖快照 / 解析 / 召回 / 计价 / 多子目 / 覆盖参数 / 辅材规则 / 导出列 / 拆表 / 备注 / 辅材清单 / 知识库 / 一致性 / CLI 冒烟 / 端到端 |
-| `docs/` | 规格与实施计划、与远端功能对齐规格、同事使用说明、P0 验收报告 |
-| `.env.example` | 密钥模板（**不含真实密钥**） |
+| `SKILL.md` | 项目 Skill 定义、运行位置、调用方式、口径与保密红线 |
+| `scripts/` | 13 个脚本：云端取数 / 快照兜底、召回、计价、清单解析、单表与拆表导出、辅材规则与辅材清单、备注分级、知识库脱敏、一致性校验、CLI |
+| `tests/` | 21 个测试模块 + `conftest.py`，覆盖取数层 / 快照 / 解析 / 召回 / 计价 / 多子目 / 覆盖参数 / 辅材规则 / 导出列 / 拆表 / 备注 / 辅材清单 / 知识库 / 一致性 / CLI 冒烟 / 端到端 |
+| `docs/` | **系统设计-最终架构**（唯一基线）、Supabase 平台接入说明、规格与实施计划、与远端功能对齐规格、同事使用说明、P0 验收报告 |
+| `sql/` | `wb_supabase_setup.sql`（补 3 张表 + RLS）、`wb_readonly_access.sql`（专用只读账号白名单 + B 档策略重建） |
+| `.env.example` | 变量名模板（**不含任何真实值**；主路径由平台公共授权注入） |
+
+当前 `workbuddy/` 共 **45 个文件**（3 根 + docs 6 + scripts 13 + sql 2 + tests 21），全部为代码 / 文档 / 测试 / DDL，**不含任何价表数据**。
 
 ## 🔴 保密边界（务必遵守）
 
@@ -25,36 +33,47 @@
 
 | 不入库项 | 原因 |
 |---|---|
-| `.env`（`BENCHMARK_SNAPSHOT_KEY`） | 解密密钥，泄露即等于交出全量价表 |
-| `data/benchmark_snapshot.enc` | 加密后的全量价表。仓库 `backend/app/data/benchmark_snapshot.enc` 是网页应用的线上兜底，本目录不再复制一份 |
-| `*.xlsx` 报价表 / 清单 | 含真实综合单价与合价明细，且 `.gitignore` 已全局忽略 |
+| Supabase 价表数据 | 只在用户 Supabase 云端；快照、主材价、辅材规则一律不导出、不复制、不入库 |
+| 公共授权凭据 / JWT / 口令 | 由平台云端代持，不给 AI、不写文件、不进仓库、不贴对话 |
+| `.env`（`BENCHMARK_SNAPSHOT_KEY`） | 离线兜底解密密钥，泄露即等于交出全量价表 |
+| `data/benchmark_snapshot.enc` | 加密后的全量价表（仅可选离线兜底）。仓库 `backend/app/data/benchmark_snapshot.enc` 是旧网页应用的线上兜底，本目录不再复制一份 |
+| `*.xlsx` 报价表 / 清单 | 含真实综合单价与合价明细，属机密产物；只写**项目资产**，`gitignore` 已全局忽略 |
 | `work/candidates.json`、`work/decisions.json` | 运行产物，随具体项目变化 |
 | `.venv/`、`.pytest_cache/` | 本地环境 |
 
-> 邀请 GitHub collaborator 等同于交出仓库全部内容。邀请前请先确认 `main` 分支及 git 历史中的明文价表已清理。
+> 技能走**项目 Skill + 项目资产**分发，同事不必成为 GitHub collaborator，`main` 历史明文价表不会因加人而外泄；该历史遗留仍在，若日后确需邀请 collaborator，先清 `main`。
 
-## 在新环境准备数据（首次）
+## 在新环境准备（首次）
 
-代码可自由 clone，数据须由有权限者单独提供：
+### 主路径：项目公共授权（成员零配置）
+
+| 步 | 谁做 | 动作 |
+|---|---|---|
+| 1 | 管理员（Supabase） | Dashboard 建**专用只读账号**（普通 authenticated，非 service_role）；SQL Editor 执行 `sql/wb_supabase_setup.sql` 补 3 张表；需要时按 `sql/wb_readonly_access.sql` 收紧策略 |
+| 2 | 管理员（Supabase） | 一次性 `cli.py sync-seeds` 把损耗率 / 辅材数据补进云端，用完立即清除管理员令牌 |
+| 3 | 管理员（WorkBuddy） | 项目详情 → 项目配置 → 连接器 → 把 `supabase` 配成**公共授权**，用专用账号授权一次 |
+| 4 | 平台注入 | `WB_PRICING_SOURCE=supabase` 等变量由运行环境注入，成员不接触任何值；清单见 `.env.example`（只列变量名） |
+| 5 | 验证 | `python scripts/cli.py probe` → 全表 `ok` 且行数非零 |
+| 6 | 分发 | 项目配置 → 技能，把本目录配成**项目 Skill**；右上角「邀请」拉成员，无需 GitHub collaborator |
+
+架构细节与 A / B 档 RLS 触发条件见 `docs/系统设计-最终架构.md`；逐步操作见 `docs/Supabase平台接入说明.md`。
+
+### 可选：离线兜底（仅本机调试 / 断网演练）
+
+代码可自由 clone；离线兜底所需密文与密钥须由有权限者自备，且**不随项目 Skill 分发**：
 
 ```bash
 cd workbuddy
 python3 -m venv .venv
 .venv/bin/pip install openpyxl cryptography pytest
 
-cp .env.example .env
-# 编辑 .env，填入 BENCHMARK_SNAPSHOT_KEY（32 字节 base64）；chmod 600 .env
-# 将有权限的加密快照放到 data/benchmark_snapshot.enc
-# 该路径与 .env 均已被 .gitignore 忽略，不会被提交
+# 自备 BENCHMARK_SNAPSHOT_KEY 与 data/benchmark_snapshot.enc，
+# 或用 BENCHMARK_SNAPSHOT_PATH 指向仓库外的密文；均被 .gitignore 忽略
+# 重建密文：.venv/bin/python scripts/build_snapshot.py
+#          可用 DECORATION_PRICING_REPO 指定含 data/seeds 的仓库根目录
 ```
 
-需要重建含辅材信息价与辅材清单项的快照时，另需仓库 `data/seeds/` 下两份种子数据（同样不在 git 中），然后：
-
-```bash
-cd workbuddy
-.venv/bin/python scripts/build_snapshot.py
-# 可用 DECORATION_PRICING_REPO 指定含 data/seeds 的仓库根目录
-```
+`WB_PRICING_SOURCE` 不设时默认 `snapshot`；**正式使用必须设为 `supabase`**。
 
 ## 工作流
 
@@ -94,10 +113,15 @@ cd workbuddy
   --decisions work/decisions.json -o work/consistency.json \
   --group-by section --threshold 0.90
 
+# 云端只读体检（只报表状态 / 行数 / 字段名，不输出价格）
+.venv/bin/python scripts/cli.py probe
+
 # 统计与回归
 .venv/bin/python scripts/cli.py stats
-.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pytest tests/ -q --basetemp=<工作区内临时目录>
 ```
+
+正式运行前由平台注入 `WB_PRICING_SOURCE=supabase`、`WB_SUPABASE_URL`、`WB_SUPABASE_ANON_KEY`、`WB_SUPABASE_TOKEN`；变量名清单见 `.env.example`，**值不写入任何文件**。
 
 `team` 必填：`internal_code` 在不同班组间存在重复（如 `YQ-01`）。
 
@@ -110,7 +134,7 @@ cd workbuddy
 - 导出按远端 `EXP_COLS` 16 列对齐，另加 1 列「套用子目」；`client / internal / labor` 三套预设分别为完整 17 列、对甲 12 列、劳务 10 列，含合计行。
 - 详见 `docs/P0验收报告.md`。
 
-> 上述数字均为各阶段**当时口径**；当前全量回归见下方 S2 段落：`169 passed + 15 skipped`。
+> 上述数字均为各阶段**当时口径**；当前全量回归为 **198 / 198 通过**（含云端取数层 14 项契约测试）。
 
 ### S1 阶段成果（2026-11-07，分阶段交付第 1 期）
 
@@ -128,11 +152,23 @@ cd workbuddy
 - **回归** `169 passed + 15 skipped`（新增 43 项测试：`test_knowledge.py` / `test_similarity.py` / `test_cli_check.py`）。真实源库端到端验证：提示块 43 条 / 脱敏 7 条 / 零定价痕迹；`check` 分级正确、跨域不连边、报告无金额。
 - 源码 `docs/ai_knowledge_base.json`、`backend/app/services/ai_pricing_service.py`、`similarity_checker.py`、`retrieve.py` 均**未改动**。
 
-### 未闭合 / 后续
+### 阶段路线（架构已定稿，见 `docs/系统设计-最终架构.md` §12）
 
-- 主材价当前为 0：能力已打通，缺真实价目或供应商报价导入。
-- 尚无线上导出的清单报价表，未做字节级 / 逐行线上对比。
-- 已交付：拆表与备注分级（`apply --split`）、辅材清单导出（`cli.py aux`）、知识库脱敏注入（`cli.py kb`）、相似清单一致性校验（`cli.py check`）。
-- 待办（**需用户提供材料**才开工）：供应商报价导入（需报价表样例）、模板导出（需公司模板样例）。
-- 后续阶段：对内成本面板、Excel 公式与折叠层级（P2）；集团 296 条对甲报价（二期）。
-- 上线前门禁：正式生产快照与密钥、Supabase 数据隔离、git 历史明文价表清理。
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| 0 取数层与纠偏 | `datasource.py`、`probe` / `sync-seeds`、补表 SQL、系统设计、技能与文档定位纠偏 | ✅ 已落地 |
+| 1 平台配置 | 专用只读账号 → 补库 → **项目公共授权** → 云端 `probe` 验证直连 | ⏳ 管理员侧动作，脚本与 SQL 已备 |
+| 2 三费补全 | 主材三表接入、「子目 ↔ 主材」映射、缺价显式标注 | ⏳ 规格已定，待实现 |
+| 3 成本分析与资产化 | `analysis.py` + `cli.py analyze` + `sink` 抽象 + 产物写项目资产 | ⏳ 规格已定，待实现 |
+| 4 项目 Skill 与多人验收 | 配项目 Skill、邀请成员、第二位成员跑同一清单结果一致 | ⏳ 待平台侧动作 |
+
+**已决策结论（不需要再确认）**
+
+- 两层架构：WorkBuddy 项目 + Supabase；**不用 Render 后端、不做网页前端**。
+- `/sb` 反代只是临时数据通道：云端任务 `probe` 直连成功即去掉该依赖。
+- RLS 默认 A 档（不改线上策略）；旧网页确认停用后执行 `wb_readonly_access.sql` B 档。
+- `main` 不重写历史；项目 Skill 分发使 GitHub collaborator 非必需。
+- 集团 296 条 / 管理费 17% / 利润 12% 属二期，对内不加。
+- 主材价未接入前必须标注「主材价待补」，**禁止静默按 0 出表**。
+
+**仍需用户提供材料的旁路**：供应商报价导入（报价表样例）、模板导出（公司模板样例）。
