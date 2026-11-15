@@ -198,3 +198,94 @@ def test_sync_seeds_posts_without_printing_values(monkeypatch, capsys):
     assert all(v[0] == "POST" for v in seen.values())
     assert all(b"admin-token" not in (v[2] or b"") for v in seen.values())
     assert "5.0" not in capsys.readouterr().out
+
+
+# --- 阶段 1：体检状态可区分、环境预检不回显、补库分批 ---
+
+def test_probe_distinguishes_missing_empty_and_ok(monkeypatch):
+    _cloud(monkeypatch)
+
+    def fake_request(path, extra=None, method="GET", data=None):
+        if "benchmark_items" in path:
+            return 200, {"Content-Range": "0-0/497"}, b'[{"internal_code":"NS-01"}]'
+        if "material_prices" in path:
+            # 表在、RLS 拦截 → 200 但 0 行
+            return 200, {"Content-Range": "0-0/0"}, b'[]'
+        return 404, {}, b'{}'
+
+    monkeypatch.setattr(datasource, "_request", fake_request)
+    rows = {r["table"]: r for r in datasource.probe()}
+    assert rows["benchmark_items"]["status"] == "ok"
+    assert rows["material_prices"]["status"] == "empty"
+    assert "authenticated" in rows["material_prices"]["hint"]
+    assert rows["waste_rates"]["status"] == "missing"
+    assert "wb_supabase_setup.sql" in rows["waste_rates"]["hint"]
+
+
+def test_preflight_reports_presence_only_never_values(monkeypatch):
+    monkeypatch.setenv("WB_PRICING_SOURCE", "supabase")
+    monkeypatch.setenv("WB_SUPABASE_URL", "https://decoration-pricing-system.pages.dev/sb")
+    monkeypatch.setenv("WB_SUPABASE_ANON_KEY", "publishable-secret")
+    monkeypatch.setenv("WB_SUPABASE_TOKEN", "jwt-secret")
+    pf = datasource.preflight()
+    assert pf["channel"] == "proxy"
+    assert pf["identity"] == "jwt"
+    assert pf["anon_key"] is True
+    assert pf["fallback"] is False
+    out = json.dumps(pf, ensure_ascii=False)
+    assert "publishable-secret" not in out and "jwt-secret" not in out
+
+
+def test_preflight_detects_direct_channel_and_password_identity(monkeypatch):
+    monkeypatch.setenv("WB_PRICING_SOURCE", "supabase")
+    monkeypatch.setenv("WB_SUPABASE_URL", "https://lnvtykghcpsjpwczbqsm.supabase.co")
+    monkeypatch.setenv("WB_SUPABASE_EMAIL", "reader@example.com")
+    monkeypatch.setenv("WB_SUPABASE_PASSWORD", "pw-secret")
+    pf = datasource.preflight()
+    assert pf["channel"] == "direct" and pf["identity"] == "password"
+    assert "reader@example.com" not in json.dumps(pf, ensure_ascii=False)
+    assert "pw-secret" not in json.dumps(pf, ensure_ascii=False)
+
+
+def test_sync_seeds_dry_run_needs_no_token_and_never_calls_network(monkeypatch):
+    monkeypatch.setattr(datasource, "seed_payload_from_snapshot", lambda: {
+        "waste_rates": [{"internal_code": str(i), "waste_rate": 1.0} for i in range(250)],
+        "aux_excel_items": [{"code": str(i)} for i in range(101)],
+        "benchmark_aux_mapping": [],
+    })
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("dry-run 不应触发任何网络请求")
+
+    monkeypatch.setattr(datasource, "_request", forbidden)
+    result = datasource.sync_seeds(dry_run=True)
+    assert result["waste_rates"] == {"rows": 250, "batches": 3, "status": "dry-run"}
+    assert result["aux_excel_items"]["batches"] == 2
+    assert result["benchmark_aux_mapping"]["batches"] == 0
+
+
+def test_sync_seeds_posts_in_batches_and_reports_batch_failure(monkeypatch):
+    _cloud(monkeypatch)
+    monkeypatch.setenv("WB_SUPABASE_SYNC_TOKEN", "admin-token")
+    monkeypatch.setattr(datasource, "seed_payload_from_snapshot", lambda: {
+        "waste_rates": [{"internal_code": str(i), "waste_rate": 1.0} for i in range(250)],
+        "aux_excel_items": [], "benchmark_aux_mapping": [],
+    })
+    calls = []
+
+    def fake_request(path, extra=None, method="GET", data=None):
+        calls.append((path, data))
+        return 201, {}, b''
+
+    monkeypatch.setattr(datasource, "_request", fake_request)
+    result = datasource.sync_seeds()
+    assert result["waste_rates"]["batches"] == 3
+    assert len(calls) == 3
+    assert [len(json.loads(c[1])) for c in calls] == [100, 100, 50]
+
+    def failing(path, extra=None, method="GET", data=None):
+        return 500, {}, b''
+
+    monkeypatch.setattr(datasource, "_request", failing)
+    with pytest.raises(datasource.SourceError, match="第 1 批失败"):
+        datasource.sync_seeds()

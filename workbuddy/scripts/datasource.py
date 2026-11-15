@@ -161,7 +161,14 @@ def fetch_table(table: str, select: str = "*", limit: int = PAGE_LIMIT) -> list[
 
 
 def probe() -> list[dict]:
-    """只读体检：表是否存在、可读行数、字段名。永不返回任何价格数值。"""
+    """只读体检：表是否存在、可读行数、字段名。永不返回任何价格数值。
+
+    状态必须能区分三类情况，否则管理员无法判断阶段 1 卡在哪一步：
+      ok      —— 表在、有可读行（字段名非空）
+      empty   —— 表在但 0 行可读（多半未带 authenticated 身份，RLS 已收紧）
+      missing —— REST 404，表还没建（执行 sql/wb_supabase_setup.sql）
+      error   —— 连接/取身份失败（检查 REST 地址与授权注入）
+    """
     tables = (
         "benchmark_items", "group_benchmark_items", "group_pricing_rules",
         "material_prices", "main_material_catalog", "main_material_categories",
@@ -174,7 +181,8 @@ def probe() -> list[dict]:
         try:
             status, headers, body = _request(f"/rest/v1/{t}?{qs}", {"Prefer": "count=exact"})
         except SourceError as exc:
-            out.append({"table": t, "status": "error", "detail": str(exc)[:120]})
+            out.append({"table": t, "status": "error", "count": "?",
+                        "fields": [], "hint": str(exc)[:120]})
             continue
         cr = next((v for k, v in headers.items() if k.lower() == "content-range"), "")
         count = cr.split("/")[-1] if "/" in cr else "?"
@@ -185,13 +193,52 @@ def probe() -> list[dict]:
                 fields = list(arr[0].keys())[:16] if arr else []
             except Exception:
                 pass
+        if status == 404:
+            state, hint = "missing", "表未创建：执行 sql/wb_supabase_setup.sql"
+        elif status not in (200, 206):
+            state, hint = f"http_{status}", "检查 REST 地址与授权身份"
+        elif not fields:
+            state, hint = "empty", "0 行可读：多半未带 authenticated 身份（RLS 已收紧）或表为空"
+        else:
+            state, hint = "ok", ""
         out.append({
             "table": t,
-            "status": "ok" if status in (200, 206) else ("missing" if status == 404 else f"http_{status}"),
+            "status": state,
             "count": count,
             "fields": fields,
+            "hint": hint,
         })
     return out
+
+
+def preflight() -> dict:
+    """阶段 1 验收：只回报运行环境「有没有」配置，绝不回显任何值。
+
+    云端任务目前没有 secrets / env 注入字段，本函数用于判断脚本能否直连 REST，
+    以及管理员本机临时验证时凭据是否齐备。
+    """
+    url = _env("url")
+    if not url:
+        channel = "none"
+    elif ".supabase.co" in url:
+        channel = "direct"
+    else:
+        channel = "proxy"
+    if _env("token"):
+        identity = "jwt"
+    elif _env("email") and _env("password"):
+        identity = "password"
+    else:
+        identity = "none"
+    return {
+        "source": source_name(),
+        "url_configured": bool(url),
+        "channel": channel,
+        "anon_key": bool(_env("anon")),
+        "identity": identity,
+        "sync_token": bool(os.environ.get("WB_SUPABASE_SYNC_TOKEN", "").strip()),
+        "fallback": os.environ.get("WB_PRICING_FALLBACK", "").strip() == "1",
+    }
 
 
 def _pick(row: dict, *names: str, default: Any = None) -> Any:
@@ -318,12 +365,28 @@ def seed_payload_from_snapshot() -> dict:
     }
 
 
-def sync_seeds() -> dict:
+SYNC_BATCH = 100  # 反代 Worker 上游超时 15s，单次 POST 整表 497 行有超时风险
+
+
+def sync_seeds(dry_run: bool = False) -> dict:
     """一次性补库：把加密快照里云端缺失的三类数据直接 POST 到 Supabase。
 
     需要管理员级写凭据（WB_SUPABASE_SYNC_TOKEN），**普通公共授权只读账号无权执行**。
-    全程不落盘、不打印任何价格，只回传每张表的条数与 HTTP 状态。
+    分批 POST（每批 100 行）以避开反代超时；全程不落盘、不打印任何价格，
+    只回传每张表的条数、批次数与 HTTP 状态。dry_run 时不联网、不要求令牌。
     """
+    def batches(rows: list) -> int:
+        return (len(rows) + SYNC_BATCH - 1) // SYNC_BATCH if rows else 0
+
+    if dry_run:
+        payload = seed_payload_from_snapshot()
+        return {
+            table: {"rows": len(payload.get(table) or []),
+                    "batches": batches(payload.get(table) or []),
+                    "status": "dry-run"}
+            for table in ("waste_rates", "aux_excel_items", "benchmark_aux_mapping")
+        }
+
     sync_token = os.environ.get("WB_SUPABASE_SYNC_TOKEN", "").strip()
     if not sync_token:
         raise SourceError("补库需要管理员级 WB_SUPABASE_SYNC_TOKEN（只读公共授权账号无权写）")
@@ -332,19 +395,27 @@ def sync_seeds() -> dict:
     for table in ("waste_rates", "aux_excel_items", "benchmark_aux_mapping"):
         rows = payload.get(table) or []
         if not rows:
-            result[table] = {"rows": 0, "status": "skipped"}
+            result[table] = {"rows": 0, "batches": 0, "status": "skipped"}
             continue
-        body = json.dumps(rows, ensure_ascii=False).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates,return=minimal",
-            # 补库用管理员令牌覆盖只读身份
-            "Authorization": "Bearer " + sync_token,
-        }
-        status, _h, _b = _request(f"/rest/v1/{table}", extra=headers, method="POST", data=body)
-        if status not in (200, 201, 204):
-            raise SourceError(f"补库 {table} 失败：HTTP {status}")
-        result[table] = {"rows": len(rows), "status": status}
+        statuses = []
+        for start in range(0, len(rows), SYNC_BATCH):
+            body = json.dumps(rows[start:start + SYNC_BATCH], ensure_ascii=False).encode("utf-8")
+            headers = {
+                "Content-Type": "application/json",
+                "Prefer": "resolution=merge-duplicates,return=minimal",
+                # 补库用管理员令牌覆盖只读身份
+                "Authorization": "Bearer " + sync_token,
+            }
+            status, _h, _b = _request(f"/rest/v1/{table}", extra=headers,
+                                      method="POST", data=body)
+            if status not in (200, 201, 204):
+                raise SourceError(
+                    f"补库 {table} 第 {start // SYNC_BATCH + 1} 批失败：HTTP {status}"
+                    "（前序批次可能已写入，重跑因 merge-duplicates 幂等）"
+                )
+            statuses.append(status)
+        result[table] = {"rows": len(rows), "batches": len(statuses),
+                         "status": statuses[-1]}
     return result
 
 

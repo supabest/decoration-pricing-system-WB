@@ -309,31 +309,71 @@ def cmd_probe(args) -> int:
     except datasource.SourceError as exc:
         print(f"[probe] 连接失败：{exc}")
         return 1
-    print(f"[probe] 当前数据源={datasource.source_name()} | REST 地址已配置="
-          f"{'是' if datasource._env('url') else '否'}")
+    pf = datasource.preflight()
+    print(f"[probe] 数据源={pf['source']} | 通道={pf['channel']} | "
+          f"身份={pf['identity']} | apikey={'有' if pf['anon_key'] else '无'}")
     print(f"{'表':<26}{'状态':<12}{'行数':>8}  字段(前 8)")
-    bad = []
     for r in rows:
         print(f"{r['table']:<26}{r.get('status', ''):<12}"
               f"{str(r.get('count', '?')):>8}  {','.join(r.get('fields', [])[:8])}")
-        if r.get("status") != "ok" or not r.get("fields"):
-            bad.append(r["table"])
-    if bad:
-        print(f"[probe] ⚠ 需关注：{', '.join(bad)}（缺失或无可读行，按接入文档补库 / 检查授权身份）")
+    missing = [r["table"] for r in rows if r["status"] == "missing"]
+    empty = [r["table"] for r in rows if r["status"] == "empty"]
+    errors = [r["table"] for r in rows if r["status"] not in ("ok", "empty", "missing")]
+    if missing:
+        print(f"[probe] ⚠ 缺表 {len(missing)} 张：{', '.join(missing)}"
+              " → 先执行 sql/wb_supabase_setup.sql 建表")
+    if empty:
+        print(f"[probe] ⚠ 0 行可读 {len(empty)} 张：{', '.join(empty)}"
+              " → 检查是否带 authenticated 身份，或先跑 sync-seeds 补库")
+    if errors:
+        print(f"[probe] ⚠ 连接异常 {len(errors)} 张：{', '.join(errors)}"
+              " → 检查 REST 地址与授权注入")
+    if not (missing or empty or errors):
+        print("[probe] 云端价表全部可读")
+        return 0
+    # 退出码区分卡点，便于自动化按阶段 1 步骤定位
+    return 2 if missing else (3 if empty else 4)
+
+
+def cmd_preflight(args) -> int:
+    """阶段 1 验收：只回报配置「有无」，绝不回显任何凭据值。"""
+    pf = datasource.preflight()
+    print(f"数据源          : {pf['source']}"
+          f"{'（非云端主路径，需 WB_PRICING_SOURCE=supabase）' if pf['source'] != 'supabase' else ''}")
+    print(f"REST 地址       : {'已配置' if pf['url_configured'] else '未配置'}"
+          f" | 通道={pf['channel']}")
+    print(f"apikey          : {'已配置' if pf['anon_key'] else '未配置'}")
+    print(f"authenticated   : {pf['identity']}")
+    print(f"补库管理员令牌  : {'已配置' if pf['sync_token'] else '未配置（仅 sync-seeds 需要）'}")
+    print(f"离线兜底        : {'开启' if pf['fallback'] else '关闭（推荐）'}")
+    issues = []
+    if pf["source"] != "supabase":
+        issues.append("数据源未切到 supabase")
+    if not pf["url_configured"]:
+        issues.append("缺 WB_SUPABASE_URL")
+    if not pf["anon_key"]:
+        issues.append("缺 apikey")
+    if pf["identity"] == "none":
+        issues.append("缺 authenticated 身份（JWT 或专用账号邮箱/密码）")
+    if issues:
+        print(f"[preflight] 未就绪：{'；'.join(issues)}")
         return 2
-    print("[probe] 云端价表全部可读")
+    print("[preflight] 就绪：可以跑 probe 验收")
     return 0
 
 
 def cmd_sync_seeds(args) -> int:
     """一次性把云端缺失的损耗率 / 辅材数据补进 Supabase（需管理员令牌）。"""
     try:
-        result = datasource.sync_seeds()
+        result = datasource.sync_seeds(dry_run=args.dry_run)
     except datasource.SourceError as exc:
         print(f"[sync-seeds] 失败：{exc}")
         return 1
     for table, info in result.items():
-        print(f"[sync-seeds] {table}: {info['rows']} 行 → HTTP {info['status']}")
+        print(f"[sync-seeds] {table}: {info['rows']} 行 / {info['batches']} 批"
+              f" → {info['status']}")
+    if args.dry_run:
+        print("[sync-seeds] 预演模式：未联网、未写入任何数据")
     return 0
 
 
@@ -395,10 +435,15 @@ def main(argv=None) -> int:
     ps = sp.add_parser("stats", help="数据源统计（不含定价）")
     ps.set_defaults(func=cmd_stats)
 
+    pf = sp.add_parser("preflight", help="阶段1 验收：检查云端取数环境是否就绪（只报有无，不回显值）")
+    pf.set_defaults(func=cmd_preflight)
+
     pb = sp.add_parser("probe", help="Supabase 云端连通性体检（只读，不输出价格）")
     pb.set_defaults(func=cmd_probe)
 
     py = sp.add_parser("sync-seeds", help="一次性补齐云端缺失的损耗率/辅材表（需管理员令牌）")
+    py.add_argument("--dry-run", action="store_true",
+                    help="只预演行数与批次数：不联网、不需要令牌、不写任何数据")
     py.set_defaults(func=cmd_sync_seeds)
 
     args = p.parse_args(argv)
