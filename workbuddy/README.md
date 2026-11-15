@@ -21,11 +21,11 @@
 | `SKILL.md` | 项目 Skill 定义、运行位置、调用方式、口径与保密红线 |
 | `scripts/` | 13 个脚本：云端取数 / 快照兜底、召回、计价、清单解析、单表与拆表导出、辅材规则与辅材清单、备注分级、知识库脱敏、一致性校验、CLI |
 | `tests/` | 21 个测试模块 + `conftest.py`，覆盖取数层 / 快照 / 解析 / 召回 / 计价 / 多子目 / 覆盖参数 / 辅材规则 / 导出列 / 拆表 / 备注 / 辅材清单 / 知识库 / 一致性 / CLI 冒烟 / 端到端 |
-| `docs/` | **系统设计-最终架构**（唯一基线）、Supabase 平台接入说明、规格与实施计划、与远端功能对齐规格、同事使用说明、P0 验收报告 |
+| `docs/` | **系统设计-最终架构**（唯一基线）、**阶段1-平台配置 Runbook**、Supabase 平台接入说明、规格与实施计划、与远端功能对齐规格、同事使用说明、P0 验收报告 |
 | `sql/` | `wb_supabase_setup.sql`（补 3 张表 + RLS）、`wb_readonly_access.sql`（专用只读账号白名单 + B 档策略重建） |
-| `.env.example` | 变量名模板（**不含任何真实值**；主路径由平台公共授权注入） |
+| `.env.example` | 变量名模板（**不含任何真实值**；值由管理员 / 运行环境提供） |
 
-当前 `workbuddy/` 共 **45 个文件**（3 根 + docs 6 + scripts 13 + sql 2 + tests 21），全部为代码 / 文档 / 测试 / DDL，**不含任何价表数据**。
+当前 `workbuddy/` 共 **46 个文件**（3 根 + docs 7 + scripts 13 + sql 2 + tests 21），全部为代码 / 文档 / 测试 / DDL，**不含任何价表数据**。
 
 ## 🔴 保密边界（务必遵守）
 
@@ -52,11 +52,11 @@
 | 1 | 管理员（Supabase） | Dashboard 建**专用只读账号**（普通 authenticated，非 service_role）；SQL Editor 执行 `sql/wb_supabase_setup.sql` 补 3 张表；需要时按 `sql/wb_readonly_access.sql` 收紧策略 |
 | 2 | 管理员（Supabase） | 一次性 `cli.py sync-seeds` 把损耗率 / 辅材数据补进云端，用完立即清除管理员令牌 |
 | 3 | 管理员（WorkBuddy） | 项目详情 → 项目配置 → 连接器 → 把 `supabase` 配成**公共授权**，用专用账号授权一次 |
-| 4 | 平台注入 | `WB_PRICING_SOURCE=supabase` 等变量由运行环境注入，成员不接触任何值；清单见 `.env.example`（只列变量名） |
-| 5 | 验证 | `python scripts/cli.py probe` → 全表 `ok` 且行数非零 |
+| 4 | 平台注入 | `WB_PRICING_SOURCE=supabase` 等变量是**脚本侧契约**；平台是否注入 env 尚未证实，处理方式按 Runbook §3 的分支执行，成员始终不接触任何值；变量名清单见 `.env.example` |
+| 5 | 验证 | `python scripts/cli.py preflight` → exit 0；`python scripts/cli.py probe` → 全表 `ok` 且行数非零 |
 | 6 | 分发 | 项目配置 → 技能，把本目录配成**项目 Skill**；右上角「邀请」拉成员，无需 GitHub collaborator |
 
-架构细节与 A / B 档 RLS 触发条件见 `docs/系统设计-最终架构.md`；逐步操作见 `docs/Supabase平台接入说明.md`。
+架构细节与 A / B 档 RLS 触发条件见 `docs/系统设计-最终架构.md`；**逐步操作、失败处置与完成判据见 `docs/阶段1-平台配置Runbook.md`**；接入体检结论见 `docs/Supabase平台接入说明.md`。
 
 ### 可选：离线兜底（仅本机调试 / 断网演练）
 
